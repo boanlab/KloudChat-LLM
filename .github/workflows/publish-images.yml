@@ -1,0 +1,88 @@
+name: Publish images
+
+# Images this project owns, pushed to Docker Hub. vLLM is upstream and pulled
+# directly by the GPU nodes.
+#
+# Credentials: repository secrets DOCKERHUB_USERNAME / DOCKERHUB_TOKEN.
+# Namespace: repository variable DOCKERHUB_NAMESPACE, default `boanlab`.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to publish (default: latest)"
+        required: false
+        default: latest
+
+permissions:
+  contents: read
+
+env:
+  NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || 'boanlab' }}
+
+jobs:
+  build:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: crawl4ai-shim
+            context: services/crawl4ai-shim
+            platforms: linux/amd64,linux/arm64
+          - image: whisper-shim
+            context: services/whisper-shim
+            platforms: linux/amd64,linux/arm64
+          - image: code-interpreter
+            context: services/code-interpreter
+            platforms: linux/amd64,linux/arm64
+          - image: deep-research
+            context: services/deep-research
+            platforms: linux/amd64,linux/arm64
+          # amd64 only: no CUDA ctranslate2 wheels for aarch64.
+          - image: whisper
+            context: services/whisper
+            platforms: linux/amd64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        if: contains(matrix.platforms, 'arm64')
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.NAMESPACE }}/kloudchat-${{ matrix.image }}
+          # A v1.2.3 tag publishes 1.2.3, 1.2 and latest. A manual run uses the
+          # tag given as input.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max

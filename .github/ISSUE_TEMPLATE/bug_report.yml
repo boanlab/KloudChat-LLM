@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in the backend plane does not work as documented.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, what you got.
+      placeholder: |
+        ./scripts/setup.sh all
+        → gateway responded, but /tools/stt reported "not started"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: |
+        Container logs or command output. Redact keys before pasting —
+        `.env` holds live LiteLLM and OpenRouter credentials.
+      render: shell
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Gateway / routing
+        - LiteLLM / model registration
+        - Scheduler (placement)
+        - GPU node (vLLM)
+        - Transcription (whisper / whisper-shim)
+        - Tools (search, fetch, exec, research)
+        - Setup scripts
+        - Docs
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, GPU model, Docker version.
+      placeholder: Ubuntu 24.04, arm64 (GB10), Docker 27.3
+    validations:
+      required: true

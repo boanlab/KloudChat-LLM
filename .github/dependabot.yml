@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: docker
+    directories:
+      - /services/whisper
+      - /services/whisper-shim
+      - /services/crawl4ai-shim
+      - /services/code-interpreter
+      - /services/deep-research
+      - /services/vllm
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: deps

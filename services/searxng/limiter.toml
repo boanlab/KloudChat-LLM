@@ -1,0 +1,13 @@
+[botdetection]
+ipv4_prefix = 32
+ipv6_prefix = 56
+
+[botdetection.ip_limit]
+filter_link_local = false
+link_token = false
+
+[botdetection.ip_lists]
+pass_ip = [
+    "172.18.0.0/16",
+]
+block_ip = []

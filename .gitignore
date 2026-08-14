@@ -1,0 +1,18 @@
+.env
+.claude/
+
+# Runtime configuration generated per deployment; templates are the *.example files
+services/litellm/config.yaml
+services/searxng/settings.yml
+
+# Service runtime data (postgres, minio, redis)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/
+
+*.log

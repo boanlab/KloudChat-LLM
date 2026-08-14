@@ -1,0 +1,118 @@
+use_default_settings: true
+
+search:
+  default_lang: ko
+  safe_search: 0
+  autocomplete: duckduckgo
+  ban_time_on_fail: 5
+  max_ban_time_on_fail: 120
+  default_doi_resolver: sci-hub.se
+  formats:
+    - html
+    - json
+
+server:
+  # __SEARXNG_SECRET_KEY__ sentinel: gen-searxng-config.sh substitutes
+  # SEARXNG_SECRET_KEY from .env here. Changing the sentinel means changing the
+  # generator too.
+  secret_key: "__SEARXNG_SECRET_KEY__"
+  bind_address: "0.0.0.0"
+  port: 8080
+  image_proxy: true
+  method: POST
+  limiter: false
+
+valkey:
+  url: valkey://valkey:6379/0
+
+ui:
+  results_per_page: 15
+  infinite_scroll: true
+
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 15.0
+  useragent_suffix: "searxng@localhost.localdomain"
+  pool_connections: 100
+  pool_maxsize: 30
+  keepalive_expiry: 10.0
+  enable_http2: false
+
+categories_as_tabs:
+  general:
+  science:
+  images:
+  videos:
+  news:
+  it:
+
+engines:
+
+  - name: google
+    weight: 1.5
+    timeout: 6.0
+    disabled: false
+
+  - name: google english
+    engine: google
+    shortcut: goen
+    language: en
+    weight: 1.3
+    timeout: 6.0
+    categories: [general]
+    disabled: false
+
+  - name: duckduckgo
+    weight: 1.0
+    disabled: false
+
+  - name: google scholar
+    shortcut: gs
+    categories: [science]
+    weight: 0.8
+    timeout: 8.0
+    disabled: false
+
+  - name: arxiv
+    shortcut: arx
+    categories: [science]
+    weight: 0.8
+    timeout: 6.0
+    disabled: false
+
+  - name: semantic scholar
+    shortcut: se
+    categories: [science]
+    weight: 0.7
+    timeout: 8.0
+    disabled: false
+
+  - name: openalex
+    shortcut: oa
+    categories: [science]
+    weight: 0.6
+    timeout: 8.0
+    disabled: false
+
+  - name: crossref
+    shortcut: cr
+    categories: [science]
+    weight: 0.4
+    timeout: 10.0
+    disabled: false
+
+  - name: pubmed
+    shortcut: pm
+    categories: [science]
+    weight: 0.6
+    timeout: 8.0
+    disabled: false
+
+  - name: naver
+    weight: 0.5
+    categories: [general]
+    disabled: false
+
+  - name: wikipedia
+    weight: 1.0
+    disabled: false
