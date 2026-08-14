@@ -1,6 +1,6 @@
 # local-deep-research MCP sidecar, on debian-slim for playwright wheel
 # compatibility. mcp-proxy wraps the stdio ldr-mcp server as streamable-http.
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates wget \
