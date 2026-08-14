@@ -65,7 +65,7 @@ jobs:
 
       - name: Derive tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.NAMESPACE }}/kloudchat-${{ matrix.image }}
           # A v1.2.3 tag publishes 1.2.3, 1.2 and latest. A manual run uses the
