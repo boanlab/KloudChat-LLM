@@ -1,0 +1,22 @@
+.env
+# Editor swap and backup files: a swap of .env holds the same live credentials
+.*.sw[a-p]
+*.sw[a-p]
+*~
+.claude/
+
+# Runtime configuration generated per deployment; templates are the *.example files
+services/litellm/config.yaml
+services/searxng/settings.yml
+
+# Service runtime data (postgres, minio, redis)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/
+
+*.log

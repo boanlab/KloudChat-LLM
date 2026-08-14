@@ -1,0 +1,76 @@
+# The only externally exposed entry point. Strips the path prefix and forwards to
+# each service's root.
+#
+#   /litellm/*         → litellm root       (admin API included, Authorization passed through)
+#   /v1/*              → litellm /v1        (for OpenAI-compatible clients)
+#   /tools/search/*    → searxng
+#   /tools/fetch/*     → crawl4ai-shim      (shim key injected)
+#   /tools/exec/*      → code-interpreter   (x-api-key injected)
+#   /tools/research/*  → deep-research      (MCP streamable-http)
+#   /tools/stt/*       → whisper-shim
+#
+# /tools/* is unauthenticated and assumes a private network. Internal service keys
+# are injected here and never leave the gateway.
+{
+	admin off
+	auto_https off
+	log {
+		output stdout
+		format console
+	}
+}
+
+:8080 {
+	handle /health {
+		header Content-Type application/json
+		respond `{"status":"ok"}` 200
+	}
+
+	# LiteLLM's root. Its admin API (/key/*, /user/*, /model/info, /health/*) does
+	# not live under /v1, so the service root is exposed as-is. LiteLLM itself
+	# authenticates with the master key.
+	handle_path /litellm* {
+		reverse_proxy litellm:8000 {
+			# Forward streamed responses immediately
+			flush_interval -1
+		}
+	}
+
+	# The path for OpenAI-compatible clients connecting directly
+	handle /v1/* {
+		reverse_proxy litellm:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle_path /tools/search* {
+		reverse_proxy searxng:8080
+	}
+
+	handle_path /tools/fetch* {
+		reverse_proxy crawl4ai-shim:8080 {
+			header_up Authorization "Bearer {$SCRAPER_API_KEY}"
+		}
+	}
+
+	handle_path /tools/exec* {
+		reverse_proxy code-interpreter:8000 {
+			header_up x-api-key "{$CODE_INTERPRETER_API_KEY}"
+		}
+	}
+
+	handle_path /tools/research* {
+		reverse_proxy deep-research:8081 {
+			flush_interval -1
+		}
+	}
+
+	handle_path /tools/stt* {
+		reverse_proxy whisper-shim:9000
+	}
+
+	handle {
+		header Content-Type application/json
+		respond `{"error":"unknown path"}` 404
+	}
+}

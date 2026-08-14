@@ -1,0 +1,169 @@
+name: Publish images
+
+# Images this project owns, pushed to Docker Hub. vLLM is upstream and pulled
+# directly by the GPU nodes.
+#
+# What gets built:
+#   push to main   only the images whose service directory changed
+#   tag v*         all of them, as a complete release set
+#   manual run     all, or one named image
+#
+# Credentials: repository secrets DOCKERHUB_USERNAME / DOCKERHUB_TOKEN.
+# Namespace: repository variable DOCKERHUB_NAMESPACE, default `boanlab`.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Image to publish"
+        type: choice
+        default: all
+        options: [all, crawl4ai-shim, whisper-shim, code-interpreter, deep-research, whisper]
+      tag:
+        description: "Tag to publish under"
+        required: false
+        default: latest
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || 'boanlab' }}
+
+jobs:
+  select:
+    name: Decide which images to build
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      count: ${{ steps.pick.outputs.count }}
+    steps:
+      # Two commits are enough for the push diff; a tag or a manual run takes
+      # every image and needs no history at all.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Decide what to build
+        id: pick
+        env:
+          BEFORE: ${{ github.event.before }}
+          WANTED: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+
+          # One entry per image this repository owns. `context` doubles as the
+          # path watched for changes.
+          catalogue='[
+            {"image":"crawl4ai-shim",   "context":"services/crawl4ai-shim",   "platforms":"linux/amd64,linux/arm64"},
+            {"image":"whisper-shim",    "context":"services/whisper-shim",    "platforms":"linux/amd64,linux/arm64"},
+            {"image":"code-interpreter","context":"services/code-interpreter","platforms":"linux/amd64,linux/arm64"},
+            {"image":"deep-research",   "context":"services/deep-research",   "platforms":"linux/amd64,linux/arm64"},
+            {"image":"whisper",         "context":"services/whisper",         "platforms":"linux/amd64"}
+          ]'
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            reason="release tag — every image"
+            selected="$catalogue"
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ "${WANTED}" == "all" ]]; then
+              reason="manual run — every image"
+              selected="$catalogue"
+            else
+              reason="manual run — ${WANTED} only"
+              selected=$(jq -c --arg w "${WANTED}" '[.[] | select(.image == $w)]' <<<"$catalogue")
+            fi
+          else
+            # A force-push or the first commit leaves no usable "before" sha, so
+            # fall back to the previous commit.
+            base="${BEFORE}"
+            if [[ -z "${base}" || "${base}" == "0000000000000000000000000000000000000000" ]] \
+               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              base="${GITHUB_SHA}^"
+            fi
+            changed=$(git diff --name-only "${base}" "${GITHUB_SHA}" || true)
+            echo "changed files:"; echo "${changed}" | sed 's/^/  /'
+            selected=$(jq -c --arg files "${changed}" '
+              ($files | split("\n")) as $f
+              | [ .[] | select(.context as $c | $f | any(startswith($c + "/"))) ]' <<<"$catalogue")
+            reason="push to main — images whose service directory changed"
+          fi
+
+          count=$(jq 'length' <<<"$selected")
+          echo "${reason}: ${count} image(s)"
+          jq -r '.[] | "  " + .image' <<<"$selected"
+          {
+            echo "matrix=$(jq -c '{include: .}' <<<"$selected")"
+            echo "count=${count}"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and push ${{ matrix.image }}
+    needs: select
+    if: needs.select.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The runner starts with ~14 GB free, which a two-platform build of the
+      # larger images exhausts. Dropping the preinstalled toolchains frees ~30 GB.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/local/share/powershell \
+                      /usr/share/swift "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+          df -h /
+
+      - name: Set up QEMU
+        if: contains(matrix.platforms, 'arm64')
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.NAMESPACE }}/kloudchat-${{ matrix.image }}
+          # One build, several tags, all pointing at the same digest.
+          #
+          # Tag v1.2.3  -> v1.2.3, 1.2.3, 1.2, latest
+          #   type=ref carries the literal tag, so a name semver cannot parse
+          #   still publishes rather than yielding latest alone.
+          # Push to main -> latest
+          # Manual run   -> the tag given, plus latest
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }}

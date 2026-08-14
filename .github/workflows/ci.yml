@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    name: Lint shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Bash syntax
+        run: |
+          for f in scripts/*.sh; do
+            bash -n "$f" || exit 1
+          done
+
+      # Settings live in .shellcheckrc. SC1091 is excluded here because the
+      # scripts source lib.sh at runtime.
+      - name: ShellCheck
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck; }
+          shellcheck --version | head -2
+          shellcheck -S warning -e SC1091 scripts/*.sh
+
+  python:
+    name: Test scheduler
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml pytest ruff
+
+      - name: Lint Python
+        run: ruff check scheduler services
+
+      - name: Scheduler tests
+        run: pytest scheduler/tests -q
+
+  compose:
+    name: Validate compose files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Real secrets, since compose interpolation rejects the placeholders.
+      - name: Generate .env
+        run: ./scripts/gen-env.sh
+
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config --quiet
+
+      - name: Validate docker-compose.vllm.yml
+        run: docker compose -f docker-compose.vllm.yml config --quiet
+
+  docs:
+    name: Check documentation links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Relative links and anchors only. External URLs are not fetched.
+      - name: Check internal links
+        run: |
+          python3 - <<'EOF'
+          import pathlib, re, sys
+
+          def slug(text):
+              return re.sub(r"[^\w\s-]", "", text.strip().lower()).replace(" ", "-")
+
+          headings = {}
+          for path in pathlib.Path(".").rglob("*.md"):
+              if ".git" in path.parts:
+                  continue
+              headings[str(path)] = {
+                  slug(m.group(1))
+                  for m in (re.match(r"#{1,6}\s+(.*)", line) for line in path.read_text().splitlines())
+                  if m
+              }
+
+          broken = []
+          for path in headings:
+              text = pathlib.Path(path).read_text()
+              for m in re.finditer(r"\]\((?!https?:|mailto:)([^)#]*)(?:#([^)]+))?\)", text):
+                  target, anchor = m.group(1), (m.group(2) or "").lower()
+                  base = pathlib.Path(path).parent
+                  if target and not (base / target).resolve().exists():
+                      broken.append(f"{path}: missing file {target}")
+                      continue
+                  resolved = path if not target else str((base / target).resolve().relative_to(pathlib.Path(".").resolve()))
+                  if anchor and resolved in headings and anchor not in headings[resolved]:
+                      broken.append(f"{path}: missing anchor {target}#{anchor}")
+
+          print("\n".join(broken) or "All internal links resolve.")
+          sys.exit(1 if broken else 0)
+          EOF

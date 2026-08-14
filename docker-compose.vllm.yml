@@ -1,0 +1,176 @@
+# Everything a GPU node serves, started per node. External OpenAI-compatible
+# backends from LiteLLM's side (VLLM_*_URL in .env), placed and started by the
+# scheduler over SSH.
+#
+#   vllm-qwen35b    unified chat — Qwen3.6-35B-A3B (vision, 262K ctx, agentic coding)
+#   vllm-glmflash   cheap-decode floor — GLM-4.7-Flash 31.2B-A3B
+#   whisper         transcription — resident on the node rather than placed.
+#                   amd64 only: arm64 nodes skip it and delegate STT to OpenRouter
+#
+# Both models on one node is ~41 GiB of weights, so PRO5000 (48G) or larger.
+# NVFP4 weights need an FP4-capable card. The image defaults to arm64; amd64
+# nodes set VLLM_IMAGE.
+name: kloudchat-vllm
+
+services:
+  vllm-qwen35b:
+    container_name: vllm-qwen35b
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-aarch64}
+    # Every vLLM service shares one image, so the build stanza lives here only
+    build:
+      context: ./services/vllm
+      args:
+        BASE_IMAGE: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-aarch64}
+    restart: unless-stopped
+    ipc: host
+    # List form: a YAML flow scalar would eat the quotes in the JSON arguments
+    command:
+      - --model
+      - /model
+      - --served-model-name
+      - local/qwen3.6-35b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "${VLLM_QWEN35B_MAX_LEN:-262144}"
+      - --gpu-memory-utilization
+      - "${VLLM_QWEN35B_GPU_UTIL:-0.55}"
+      - --kv-cache-dtype
+      - fp8
+      # Reserves the multimodal vision mm-budget, which needs batched-tokens >= 16384
+      - --max-num-batched-tokens
+      - "${VLLM_QWEN35B_MAX_BATCHED_TOKENS:-16384}"
+      # qwen3_xml matches the tool-call format of the Qwen3.6 chat template
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_xml
+      # Splits <think>...</think> out into reasoning_content
+      - --reasoning-parser
+      - qwen3
+      # Thinking off by default — latency and tokens in ordinary chat.
+      # Enabled per request through chat_template_kwargs.
+      - --default-chat-template-kwargs
+      - '{"enable_thinking": false}'
+      # Per-sequence conv-state cache limits CUDA-graph capture. Unset, cudagraph
+      # profiling OOMs.
+      - --max-num-seqs
+      - "${VLLM_QWEN35B_MAX_NUM_SEQS:-128}"
+      - --trust-remote-code
+      # No --enforce-eager: CUDA graphs off costs 4x decode throughput
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_QWEN35B_DIR:-qwen3.6-35b-nvfp4}:/model:ro
+    ports:
+      - "8001:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      # Weight load, torch.compile and KV profiling on first start
+      start_period: 600s
+
+  # Title generation, memory extraction, query rewriting, default chat. 3B active
+  # parameters, so this call volume does not tie up the larger model.
+  vllm-glmflash:
+    container_name: vllm-glmflash
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-aarch64}
+    restart: unless-stopped
+    ipc: host
+    command:
+      - --model
+      - /model
+      - --served-model-name
+      - local/glm-4.7-flash
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "${VLLM_GLMFLASH_MAX_LEN:-131072}"
+      - --gpu-memory-utilization
+      - "${VLLM_GLMFLASH_GPU_UTIL:-0.65}"
+      - --kv-cache-dtype
+      - fp8
+      - --max-num-batched-tokens
+      - "${VLLM_GLMFLASH_MAX_BATCHED_TOKENS:-16384}"
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - glm45
+      # Without it, chain-of-thought leaks into content. glm47 is the registered
+      # name for the GLM-4.7 family.
+      - --reasoning-parser
+      - glm47
+      # Thinking off by default: with a small max_tokens it spends the budget on
+      # reasoning and returns empty content
+      - --default-chat-template-kwargs
+      - '{"enable_thinking": false}'
+      - --trust-remote-code
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_GLMFLASH_DIR:-glm-4.7-flash}:/model:ro
+    ports:
+      - "8002:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      # MLA model. The default TRITON_MLA decode kernel exceeds GB10's
+      # shared-memory limit (101376 B) and fails engine init. Per-card
+      # alternatives: CUTLASS_MLA, FLASHMLA, FLASH_ATTN_MLA.
+      VLLM_ATTENTION_BACKEND: ${VLLM_GLMFLASH_ATTN_BACKEND:-FLASHINFER_MLA}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+
+  # Transcription backend, resident on the same card as vLLM and called by the
+  # stack's whisper-shim through WHISPER_URLS. amd64 only: aarch64 ctranslate2
+  # wheels are CPU-only, and the resulting empty WHISPER_URLS routes STT to
+  # OpenRouter.
+  whisper:
+    container_name: whisper
+    image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-whisper:${KLOUDCHAT_IMAGE_TAG:-latest}
+    build:
+      context: ./services/whisper
+    restart: unless-stopped
+    ports:
+      - "${WHISPER_PORT:-9000}:9000"
+    environment:
+      # HF token for the lazy-load download — rate limits
+      HF_TOKEN: ${HF_TOKEN:-}
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-auto}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+    volumes:
+      # Weight cache (HF_HOME) — downloaded once
+      - ${WHISPER_DATA_ROOT:-/var/lib/whisper}:/var/lib/whisper
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

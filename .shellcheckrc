@@ -1,0 +1,7 @@
+# lib.sh is a library: its catalogues and helpers are consumed by the scripts
+# that source it, and ENV_FILE is read by lib.sh itself from its callers.
+# ShellCheck analyses each file alone and reports all of that as unused.
+disable=SC2034
+
+# Follow `source` so the shared helpers are resolved rather than guessed at.
+external-sources=true

@@ -1,0 +1,48 @@
+# Models that vLLM can serve. Which of them are actually deployed is decided by
+# VLLM_MODELS in .env.
+#
+# Everything else is read from the checkpoint's config.json and its size on disk:
+# layer count, KV heads, quantisation dtype, native context, weight size. Values
+# that need not be declared are not declared.
+#
+# Transcription is absent by design. It is resident on amd64 GPU nodes, so there
+# is nothing to decide about where it goes, and the scheduler's whole involvement
+# is subtracting its footprint from node capacity
+# (__main__.WHISPER_RESERVE_BYTES). arm64 nodes keep no backend, so the probe
+# never answers and their STT is delegated to OpenRouter by leaving WHISPER_URLS
+# empty.
+
+models:
+  - id: qwen3.6-35b
+    hf_repo: Qwen/Qwen3.6-35B-A3B
+    openrouter: qwen/qwen3.6-35b-a3b
+    # The checkpoint directory differs from the id: an unquantised build of the
+    # same model exists separately, and the derived default (= id) points there.
+    dir: qwen3.6-35b-nvfp4
+    # .env key prefix — VLLM_QWEN35B_{URL,MAX_LEN,GPU_UTIL}
+    env_prefix: VLLM_QWEN35B
+    # Deep research loses accumulated context below 128K, so this floor is set
+    # above the derived default of a quarter of native.
+    ctx_floor: 131072
+
+  - id: glm-4.7-flash
+    hf_repo: zai-org/GLM-4.7-Flash
+    openrouter: z-ai/glm-4.7-flash
+    env_prefix: VLLM_GLMFLASH
+
+# ── Derived values and overrides ────────────────────────────────────────────
+#
+# Everything below is determined automatically. Declaring a field of the same
+# name on a model entry overrides it, which is only worth doing when the derived
+# value is wrong.
+#
+#   dir            = id                     checkpoint directory under VLLM_MODELS_ROOT
+#   weight         measured size of the checkpoint on disk
+#   ctx_target     max_position_embeddings from config.json
+#   ctx_floor      ctx_target / 4, never below 32768
+#   service        env_prefix lowercased    service name in docker-compose.vllm.yml
+#   port           sequential from 8001
+#   served_name    local/<id>               the name LiteLLM exposes
+#   arches         all of them              declare only when an architecture cannot serve it
+#
+# The ctx_floor on qwen3.6-35b above is an example of such an override.
