@@ -2,7 +2,7 @@
 # docker-compose.vllm.yml. amd64 only: aarch64 ctranslate2 wheels are CPU-only,
 # so arm64 nodes keep no backend and delegate STT to OpenRouter.
 # GPU inference through faster-whisper (ctranslate2) needs cuBLAS and cuDNN.
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:13.3.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
 
