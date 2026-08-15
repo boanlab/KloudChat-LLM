@@ -14,7 +14,7 @@ Which models are registered where, and how requests are routed to them.
 | `OPENAI_MODELS` / `ANTHROPIC_MODELS` / `GOOGLE_MODELS` / `XAI_MODELS` / `PERPLEXITY_MODELS` | Frontier tier, all through OpenRouter — no direct native APIs |
 | `TENCENT_MODELS` / `DEEPSEEK_MODELS` / `ZAI_MODELS` / `XIAOMI_MODELS` / `MOONSHOTAI_MODELS` | Open-weight tier — 295B to 2.8T, far too large to self-host, which is exactly where renting beats owning |
 | `VLLM_MODELS` | Local vLLM models (chat and floor). What each demands of a card is in `VLLM_MODEL_QUANT` and `VLLM_MODEL_WEIGHT_GB` |
-| `OPENAI_EMBED_CATALOG` | OpenRouter embeddings (RAG fallback) |
+| `OPENAI_EMBED_CATALOG` | OpenAI embeddings, the fallback when no local one is deployed |
 | `MODEL_PRICE_IN_PM` / `MODEL_PRICE_OUT_PM` | USD per 1M tokens, for LiteLLM spend tracking |
 
 **Pricing policy**
@@ -202,15 +202,20 @@ nodes.
 | `qwen3.6-35b` | 128K (262K native) | Chat, deep research, coding |
 | `glm-4.7-flash` | 128K | Internal calls and default chat |
 
-### Embeddings (RAG fallback)
+### Embeddings
 
-There is no local embedding deployment: nothing in the app calls `/embeddings`
-and there is no retrieval path yet. With an OpenAI key, only
-`text-embedding-3-small` is registered (~$0.02 per 1M). OpenRouter does not serve
-embedding models at all.
+`bge-m3` (`BAAI/bge-m3`, 1024 dimensions, 8K context, multilingual) serves
+KloudChat's retrieval index through `/tools/index`. It is a **pooling** runner,
+not a chat one: no tool parser, no reasoning parser, and no KV cache — so
+`scheduler/planner.py` charges it weights and activation only. About 2 GiB, so
+it rides along on a card already serving a chat model.
 
-When a retrieval path appears, add the embedding model to
-`scheduler/models.yaml`.
+Add it to `VLLM_MODELS` like any other. Registered with `mode: embedding`,
+which keeps it out of KloudChat's model picker.
+
+With no local deployment and an OpenAI key, `text-embedding-3-small` is
+registered as the fallback (~$0.02 per 1M). OpenRouter serves no embedding
+models. With neither, KloudChat falls back to lexical retrieval.
 
 ## Commercial defaults
 

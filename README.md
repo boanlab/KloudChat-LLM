@@ -18,6 +18,7 @@ that one address in its admin screen. No backend address is compiled into the UI
 │                         │        │   /tools/exec/*     → code-interpreter  │
 └─────────────────────────┘        │   /tools/research/* → deep-research     │
                                    │   /tools/stt/*      → whisper-shim      │
+                                   │   /tools/index/*    → index-shim        │
                                    │                                         │
                                    │  GPU nodes: vllm-* + whisper            │
                                    └─────────────────────────────────────────┘

@@ -170,6 +170,28 @@ emit_or_audio() {
   [[ -n "$per_call" ]] && echo "      output_cost_per_request: ${per_call}"
 }
 
+# Local embedding deployment, registered only when the scheduler placed one:
+# an api_base pointing at nothing would fail every index write instead of
+# falling back.
+emit_vllm_embed() {
+  local m="$1" url_csv="$2" urls
+  [[ -n "$url_csv" ]] || return 0
+  urls="$(__vllm_resolved_urls "local/${m}" "$url_csv")"
+  while IFS= read -r url; do
+    [[ -n "$url" ]] || continue
+    echo "  - model_name: local/${m}"
+    echo "    litellm_params:"
+    echo "      model: hosted_vllm/local/${m}"
+    echo "      api_base: ${url%/}/v1"
+    echo "    model_info:"
+    # `mode: embedding` keeps it out of KloudChat's model picker, which maps
+    # only chat/completion/image_generation/audio_speech to a surface.
+    echo "      mode: embedding"
+    echo "      input_cost_per_token: 0.0000000000"
+    echo "      output_cost_per_token: 0.0000000000"
+  done <<< "$urls"
+}
+
 emit_openai_embed() {
   local m="$1" in_pm
   [[ -n "$(env_get OPENAI_API_KEY)" ]] || return 0
@@ -267,10 +289,13 @@ SECTION=$(
   # --- local (vLLM) ---
   # Chat models: the local vLLM when one exists, otherwise the same model direct
   # from OpenRouter. qwen3.6-35b covers chat, vision, deep research and coding;
-  # glm-4.7-flash is the cheap-decode floor. No embedding deployment — nothing
-  # calls /embeddings.
+  # glm-4.7-flash is the cheap-decode floor.
   emit_brain "qwen3.6-35b"   "$(env_get VLLM_QWEN35B_URL)"    "qwen/qwen3.6-35b-a3b" 0.15 1.00
   emit_brain "glm-4.7-flash" "$(env_get VLLM_GLMFLASH_URL)"   "z-ai/glm-4.7-flash"  0.06 0.40
+  # Embeddings for RAG. Local when placed; the OpenAI catalogue below is the
+  # fallback, and with neither there is no /embeddings route and retrieval
+  # falls back to lexical matching in KloudChat.
+  emit_vllm_embed "bge-m3" "$(env_get VLLM_BGEM3_URL)"
   # STT twin — registered whenever no local whisper is deployed, matching the
   # scheduler's delegation. Its absence is what hides the microphone.
   [[ -z "$(env_get WHISPER_URLS)" ]] && emit_or_stt "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" 0.10 0.30

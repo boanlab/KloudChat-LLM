@@ -228,6 +228,9 @@ declare -A VLLM_MODELS=(
   # there with a packed/unpacked shape mismatch.
   [qwen3.6-35b]="Qwen/Qwen3.6-35B-A3B"
   [glm-4.7-flash]="unsloth/GLM-4.7-Flash-NVFP4"
+  # Retrieval embeddings. BF16 — at 2.2 GiB quantising buys nothing, and shifted
+  # numerics mean a rebuilt index.
+  [bge-m3]="BAAI/bge-m3"
 )
 : "${VLLM_MODELS_ROOT:=/var/lib/vllm/models}"
 
@@ -240,11 +243,14 @@ declare -A VLLM_MODEL_WEIGHT_GB=(
   [qwen3.6-35b-nvfp4]=21
   [qwen3.6-35b]=35
   [glm-4.7-flash]=20
+  [bge-m3]=3
 )
 declare -A VLLM_MODEL_QUANT=(
   [qwen3.6-35b-nvfp4]=nvfp4
   [qwen3.6-35b]=fp8
   [glm-4.7-flash]=nvfp4
+  # BF16 — every card that can run the lineup can run this.
+  [bge-m3]=bf16
 )
 # Runtime headroom on top of the weights: activation buffers plus enough KV to
 # admit one request. A card that fits only the weights cannot start the engine.

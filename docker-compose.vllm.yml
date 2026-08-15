@@ -4,6 +4,7 @@
 #
 #   vllm-qwen35b    unified chat — Qwen3.6-35B-A3B (vision, 262K ctx, agentic coding)
 #   vllm-glmflash   cheap-decode floor — GLM-4.7-Flash 31.2B-A3B
+#   vllm-bgem3      retrieval embeddings — BAAI/bge-m3, pooling runner (~2 GiB)
 #   whisper         transcription — resident on the node rather than placed.
 #                   amd64 only: arm64 nodes skip it and delegate STT to OpenRouter
 #
@@ -139,6 +140,52 @@ services:
       timeout: 5s
       retries: 5
       start_period: 600s
+
+  # Retrieval embeddings. A pooling runner: no tool parser, no reasoning parser,
+  # no chat-template kwargs, no KV cache. ~2 GiB, so it shares a card.
+  vllm-bgem3:
+    container_name: vllm-bgem3
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-aarch64}
+    restart: unless-stopped
+    ipc: host
+    command:
+      - --model
+      - /model
+      - --served-model-name
+      - local/bge-m3
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      # Pooling, not generation: makes /v1/embeddings answer.
+      - --runner
+      - pooling
+      # bge-m3 declares 8194 positions; well past any chunk the indexer sends.
+      - --max-model-len
+      - "${VLLM_BGEM3_MAX_LEN:-8192}"
+      # Overwritten by the scheduler per placement; a floor for standalone runs.
+      - --gpu-memory-utilization
+      - "${VLLM_BGEM3_GPU_UTIL:-0.08}"
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_BGEM3_DIR:-bge-m3}:/model:ro
+    ports:
+      - "8003:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      # No torch.compile or KV profiling to wait through.
+      start_period: 120s
 
   # Transcription backend, resident on the same card as vLLM and called by the
   # stack's whisper-shim through WHISPER_URLS. amd64 only: aarch64 ctranslate2

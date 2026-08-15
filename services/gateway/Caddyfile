@@ -2,6 +2,7 @@
 # each service's root.
 #
 #   /litellm/*         → litellm root       (admin API included, Authorization passed through)
+#   /tools/index/*     → index-shim         (RAG: chunk, embed, store, search)
 #   /v1/*              → litellm /v1        (for OpenAI-compatible clients)
 #   /tools/search/*    → searxng
 #   /tools/fetch/*     → crawl4ai-shim      (shim key injected)
@@ -67,6 +68,10 @@
 
 	handle_path /tools/stt* {
 		reverse_proxy whisper-shim:9000
+	}
+
+	handle_path /tools/index* {
+		reverse_proxy index-shim:8080
 	}
 
 	handle {

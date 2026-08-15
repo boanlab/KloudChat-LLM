@@ -26,7 +26,9 @@ vLLM node is present.
 | Variable | Default | Notes |
 |---|---|---|
 | `GATEWAY_PORT` | `8080` | The only published port |
-| `COMPOSE_PROFILES` | `tools,models` | What to run. `setup.sh` appends `whisper` (the transcription shim) once a backend answers |
+| `COMPOSE_PROFILES` | `tools,models` | What to run. `setup.sh` appends `whisper` (the transcription shim) once a backend answers. Add `index` for the retrieval index |
+| `INDEX_DB_USER` / `INDEX_DB_PASSWORD` | `index` | Credentials for the retrieval index's pgvector database |
+| `INDEX_EMBED_MODELS` | `local/bge-m3,text-embedding-3-small` | Embedding preference order, tried through LiteLLM by name |
 
 ## 3. Generated secrets
 

@@ -61,6 +61,10 @@ class ModelSpec:
     or_twin: Optional[ORTwin]
     #: Architectures that can serve it. Empty means all.
     arches: tuple[str, ...] = ()
+    #: vLLM runner. "generate" is autoregressive; "pooling" is an embedding or
+    #: reranking model, which decodes nothing and holds no KV cache — see
+    #: `planner.kv_bytes`.
+    runner: str = "generate"
     #: None until config.json is probed. Filled by bind().
     metadata: Optional[ModelMetadata] = None
     #: Native context; 0 before probing.
@@ -68,6 +72,10 @@ class ModelSpec:
     #: When declared, these override whatever probing found.
     ctx_target_override: Optional[int] = None
     weight_override: Optional[int] = None
+
+    @property
+    def is_pooling(self) -> bool:
+        return self.runner == "pooling"
 
     def runs_on(self, arch: str) -> bool:
         """Servability on an architecture. A failed probe ("") is not excluded."""
@@ -130,6 +138,7 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
         ),
         or_twin=twin,
         arches=tuple(entry.get("arches") or ()),
+        runner=str(entry.get("runner") or "generate"),
         ctx_target_override=int(entry["ctx_target"]) if entry.get("ctx_target") else None,
         weight_override=parse_size(entry["weight"]) if entry.get("weight") else None,
     )

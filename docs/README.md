@@ -13,7 +13,7 @@ the index: it points at where each thing is changed.
 
 ## Structure
 
-One gateway port is exposed. Behind it, six capabilities are split by path.
+One gateway port is exposed. Behind it, seven capabilities are split by path.
 
 | Path | Service | Profile |
 |---|---|---|
@@ -23,6 +23,7 @@ One gateway port is exposed. Behind it, six capabilities are split by path.
 | `/tools/exec/*` | code-interpreter | `tools` |
 | `/tools/research/*` | deep-research (MCP) | `tools` |
 | `/tools/stt/*` | whisper-shim | `whisper` |
+| `/tools/index/*` | index-shim + pgvector | `index` |
 
 GPU nodes live outside this stack. A node runs vLLM and transcription together —
 there is one node list, `NODES_VLLM` — and LiteLLM and whisper-shim call them at

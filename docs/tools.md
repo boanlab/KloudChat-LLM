@@ -19,6 +19,7 @@ everything up to the prefix as a base URL and appends the service-specific path.
 | Code execution | `/tools/exec` | `/tools/exec/exec` | code-interpreter |
 | Deep research | `/tools/research` | `/tools/research/mcp` | deep-research |
 | Transcription | `/tools/stt` | `/tools/stt/v1/audio/transcriptions` | whisper-shim |
+| Retrieval index | `/tools/index` | `/tools/index/{documents,search}` | index-shim |
 
 The contract is identical without the gateway, so a raw service address works
 too.

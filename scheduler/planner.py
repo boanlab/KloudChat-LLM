@@ -58,9 +58,15 @@ class Plan:
 
 
 def kv_bytes(spec: ModelSpec, ctx: int) -> int:
-    """KV bytes needed to hold context ``ctx`` for every concurrent session."""
+    """KV bytes to hold context ``ctx`` for every concurrent session.
+
+    Zero for a pooling runner: an embedding model keeps nothing between tokens,
+    so the ``2 · L · H · d · ctx`` reservation is memory it never touches.
+    """
     if spec.metadata is None:
         raise ValueError(f"{spec.id}: no metadata — bind() must run first")
+    if spec.is_pooling:
+        return 0
     per_token = kv_bytes_per_token(spec.metadata, Dtype.FP8)
     sessions = max(1, spec.concurrent_sessions)
     return int(per_token * ctx * sessions * ADMISSION_MARGIN)

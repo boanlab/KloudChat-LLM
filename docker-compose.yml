@@ -278,6 +278,57 @@ services:
       - host.docker.internal:host-gateway
     networks: [kloudchat]
 
+  # ── retrieval index ─────────────────────────────────────────────────
+  # Vectors for RAG. Separate from litellm-db: LiteLLM's rows are the gateway's
+  # own state, these are a derived index KloudChat can rebuild.
+  index-db:
+    container_name: kloudchat-index-db
+    image: pgvector/pgvector:pg16
+    profiles: [index]
+    restart: always
+    environment:
+      POSTGRES_USER: ${INDEX_DB_USER:-index}
+      POSTGRES_PASSWORD: ${INDEX_DB_PASSWORD:-index}
+      POSTGRES_DB: index
+    volumes:
+      - ./data/index/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${INDEX_DB_USER:-index} -d index"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [kloudchat]
+
+  index-shim:
+    container_name: kloudchat-index-shim
+    image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-index-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
+    build:
+      context: ./services/index-shim
+    profiles: [index]
+    restart: always
+    depends_on:
+      index-db:
+        condition: service_healthy
+    environment:
+      INDEX_DATABASE_URL: postgresql://${INDEX_DB_USER:-index}:${INDEX_DB_PASSWORD:-index}@index-db:5432/index
+      # Embeddings go through the gateway by model name: which backend answers
+      # is LiteLLM's routing decision, not a second address to keep in step.
+      LITELLM_URL: ${INDEX_LITELLM_URL:-http://litellm:8000}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+      # Preference order: local when placed, commercial otherwise. Neither is
+      # fatal — KloudChat falls back to lexical search.
+      EMBED_MODELS: ${INDEX_EMBED_MODELS:-local/bge-m3,text-embedding-3-small}
+      LOG_LEVEL: INFO
+    healthcheck:
+      # "ok" means the database answers. Embeddings are reported separately:
+      # deletes keep working while the GPU node is down.
+      test: ["CMD", "python3", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8080/health')); raise SystemExit(0 if d.get('status')=='ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [kloudchat]
+
 networks:
   kloudchat:
     driver: bridge

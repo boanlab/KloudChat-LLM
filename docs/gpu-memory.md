@@ -54,6 +54,12 @@ tokens**, about **31× concurrency** at 128K per request.
 | Chat alone | ~21 GiB | RTX 5090 32 GB or better (NVFP4 required) |
 | Chat + floor | ~41 GiB | PRO 5000 48 GB or better |
 | Chat + floor with KV headroom | ~41 GiB + KV | PRO 6000 96 GB or GB10 |
+| Add embeddings (`bge-m3`) | +~2 GiB | any of the above |
+
+**Pooling models hold no KV.** An embedding model does one forward pass per
+input and keeps nothing between tokens, so `planner.kv_bytes` returns 0 for it
+and the charge is weights plus activation. Sizing it as a chat model would
+reserve tens of gigabytes it never touches.
 
 Weights are only the starting point. KV is whatever remains of
 `gpu_util × VRAM` after weights and activation (~4 GiB). If the utilisation

@@ -30,6 +30,16 @@ models:
     openrouter: z-ai/glm-4.7-flash
     env_prefix: VLLM_GLMFLASH
 
+  # Retrieval embeddings. A pooling runner: no tool parser, no reasoning parser,
+  # no KV cache to size. No `openrouter:` twin — OpenRouter serves no embedding
+  # models, and the fallback is OpenAI, wired in gen-litellm-config.sh.
+  - id: bge-m3
+    hf_repo: BAAI/bge-m3
+    env_prefix: VLLM_BGEM3
+    runner: pooling
+    # Native context: one chunk at a time, so the usual floor buys nothing.
+    ctx_floor: 8192
+
 # ── Derived values and overrides ────────────────────────────────────────────
 #
 # Everything below is determined automatically. Declaring a field of the same
@@ -44,5 +54,6 @@ models:
 #   port           sequential from 8001
 #   served_name    local/<id>               the name LiteLLM exposes
 #   arches         all of them              declare only when an architecture cannot serve it
+#   runner         generate                 "pooling" for embedding/reranking models
 #
 # The ctx_floor on qwen3.6-35b above is an example of such an override.
