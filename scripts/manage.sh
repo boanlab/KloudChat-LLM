@@ -11,6 +11,7 @@ Usage: manage.sh <resource> <action> [opts]
 team   create  --alias <n> [--budget --duration --tpm --rpm --models a,b,c]
        list / delete --id <team_id>
        sync                                                ← re-sync every team's model allowlist after a catalog change
+       add-strict                                          ← add only strict aliases matching each team's allowed local models
 
 user   list / delete --id <email>                           ← LiteLLM-side users
        usage  [--user <email>]                             ← per-user usage (spend) vs monthly budget
@@ -113,6 +114,52 @@ cmd_team_sync() {
     fi
   done < <(echo "$teams" | jq -r '.[] | "\(.team_id)\t\(.team_alias)"')
   echo "team/sync: $n_ok/$n updated, $n_fail failed (models: $(echo "$models" | tr ',' '\n' | wc -l))"
+}
+
+# Add privacy-safe aliases without replacing an existing team's restrictions.
+# An explicit local/<model> grant implies the matching strict-local/<model>
+# grant. Empty/null lists are left untouched because LiteLLM treats them as an
+# unrestricted team; teams that do not allow the normal local model get no new
+# access.
+cmd_team_add_strict() {
+  local catalogue strict_json teams
+  catalogue="$(litellm_chat_models_csv)"
+  strict_json=$(printf '%s' "$catalogue" | tr ',' '\n' \
+    | { grep '^strict-local/' || true; } | jq -R . | jq -s .)
+  [[ "$(echo "$strict_json" | jq 'length')" -gt 0 ]] || {
+    err "no strict-local aliases available — configure a vLLM URL first"
+    exit 1
+  }
+  teams=$(litellm_get "/team/list")
+  local n=0 n_ok=0 n_unchanged=0 n_fail=0
+  while IFS= read -r team; do
+    local tid talias current updated payload
+    tid=$(echo "$team" | jq -r '.team_id')
+    talias=$(echo "$team" | jq -r '.team_alias // .team_id')
+    current=$(echo "$team" | jq -c '.models // []')
+    updated=$(jq -cn --argjson current "$current" --argjson strict "$strict_json" '
+      reduce $strict[] as $safe ($current;
+        ($safe | sub("^strict-local/"; "local/")) as $normal
+        | if (index($normal) != null and index($safe) == null)
+          then . + [$safe]
+          else .
+          end
+      )
+    ')
+    n=$((n+1))
+    if [[ "$updated" == "$current" ]]; then
+      n_unchanged=$((n_unchanged+1))
+      continue
+    fi
+    payload=$(jq -cn --arg id "$tid" --argjson models "$updated" \
+      '{team_id:$id, models:$models}')
+    if litellm_post "/team/update" "$payload" >/dev/null 2>&1; then
+      n_ok=$((n_ok+1)); ok "$talias ($tid)"
+    else
+      n_fail=$((n_fail+1)); err "$talias ($tid)"
+    fi
+  done < <(echo "$teams" | jq -c '.[]')
+  echo "team/add-strict: $n_ok updated, $n_unchanged unchanged, $n_fail failed ($n total)"
 }
 
 cmd_user_list() {
@@ -332,6 +379,7 @@ case "${resource}/${action}" in
   team/list)    cmd_team_list ;;
   team/delete)  cmd_team_delete "$@" ;;
   team/sync)    cmd_team_sync ;;
+  team/add-strict) cmd_team_add_strict ;;
   user/list)    cmd_user_list ;;
   user/usage)   cmd_user_usage "$@" ;;
   user/topup)   cmd_user_topup "$@" ;;

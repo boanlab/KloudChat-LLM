@@ -3,9 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-ENV_FILE="${PROJECT_DIR}/.env"
-CONFIG_FILE="${PROJECT_DIR}/services/litellm/config.yaml"
-CONFIG_EXAMPLE="${PROJECT_DIR}/services/litellm/config.yaml.example"
+ENV_FILE="${KLOUDCHAT_ENV_FILE:-${PROJECT_DIR}/.env}"
+CONFIG_FILE="${KLOUDCHAT_LITELLM_CONFIG_FILE:-${PROJECT_DIR}/services/litellm/config.yaml}"
+CONFIG_EXAMPLE="${KLOUDCHAT_LITELLM_CONFIG_EXAMPLE:-${PROJECT_DIR}/services/litellm/config.yaml.example}"
 source "${SCRIPT_DIR}/lib.sh"
 
 MARKER_START='# >>> KLOUDCHAT_AUTOGEN_START'
@@ -56,6 +56,16 @@ declare -A MODEL_TIMEOUT=( [qwen3.6-35b]=900 [glm-4.7-flash]=300 )
 # embeddings. Operator-tunable via KC_OR_VARIANT (set empty to disable).
 OR_VARIANT="${KC_OR_VARIANT-:floor}"
 
+# KloudChat reads these custom model_info fields from LiteLLM's /model/info.
+# A model id is never itself a trust boundary: local/* can be backed directly by
+# OpenRouter, and the normal local alias can spill there under load. Keep the
+# current deployment topology explicit on every generated entry.
+emit_kchat_boundary() {  # $1=self_hosted|hybrid|external  $2=strict  $3=privacy_only
+  echo "      kchat_data_boundary: $1"
+  echo "      kchat_strict_local: $2"
+  echo "      kchat_privacy_only: $3"
+}
+
 # canonical name=`<prov>/<id>`, route=`openrouter/<prov>/<id>`. Not registered if there's no OR key.
 # Free models. The :free suffix is kept in the name so the picker distinguishes
 # them from paid ones, and a price of 0 means no credit is deducted.
@@ -68,6 +78,7 @@ emit_or_free() {
   echo "    model_info:"
   echo "      input_cost_per_token: 0.0"
   echo "      output_cost_per_token: 0.0"
+  emit_kchat_boundary external false false
 }
 
 emit_commercial_or() {
@@ -83,6 +94,7 @@ emit_commercial_or() {
   echo "    model_info:"
   echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
   echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
+  emit_kchat_boundary external false false
 }
 
 # OpenRouter twin of a local vLLM model. router_settings.fallbacks routes
@@ -99,6 +111,7 @@ emit_or_fallback() {
   echo "    model_info:"
   echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
   echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
+  emit_kchat_boundary external false false
   # Router-only. Without this the twin lands in the picker under the same vendor
   # and name as the local model it backs — two identical rows where one is free
   # and the other bills OpenRouter, with nothing on screen to tell them apart.
@@ -134,6 +147,7 @@ emit_or_image() {
   echo "      mode: image_generation"
   echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
   echo "      output_cost_per_token: ${out_per_token}"
+  emit_kchat_boundary external false false
 }
 
 # STT through OpenRouter, for deployments with no transcription backend.
@@ -150,6 +164,7 @@ emit_or_stt() {
   echo "    model_info:"
   echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
   echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
+  emit_kchat_boundary external false false
   echo "      kchat_hidden: true"
 }
 
@@ -168,6 +183,7 @@ emit_or_audio() {
   echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
   echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
   [[ -n "$per_call" ]] && echo "      output_cost_per_request: ${per_call}"
+  emit_kchat_boundary external false false
 }
 
 # Local embedding deployment, registered only when the scheduler placed one:
@@ -189,6 +205,7 @@ emit_vllm_embed() {
     echo "      mode: embedding"
     echo "      input_cost_per_token: 0.0000000000"
     echo "      output_cost_per_token: 0.0000000000"
+    emit_kchat_boundary self_hosted false false
   done <<< "$urls"
 }
 
@@ -200,6 +217,7 @@ emit_openai_embed() {
   echo "    model_info:"
   echo "      mode: embedding"
   [[ -n "$in_pm" ]] && echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
+  emit_kchat_boundary external false false
   echo "    litellm_params:"
   echo "      model: openai/${m}"
   echo "      api_key: os.environ/OPENAI_API_KEY"
@@ -221,11 +239,41 @@ __vllm_resolved_urls() {
   done | awk '!seen[$0]++'
 }
 
-emit_vllm_chat() {
-  local m="$1" url_csv="$2" in_pm out_pm urls ctx_fallback
-  [[ -n "$url_csv" ]] || return 0
+emit_vllm_chat_entry() {
+  local m="$1" url="$2" ctx="$3" alias="$4" boundary="$5" strict="$6" privacy_only="$7"
+  local in_pm out_pm tmo
   in_pm="${MODEL_PRICE_IN_PM[$m]:-}"
   out_pm="${MODEL_PRICE_OUT_PM[$m]:-}"
+  echo "  - model_name: ${alias}"
+  echo "    litellm_params:"
+  # The backend's served id remains local/<model>. strict-local/* is a LiteLLM
+  # alias over that exact deployment, never a separately hosted or remote model.
+  echo "      model: hosted_vllm/local/${m}"
+  echo "      api_base: ${url%/}/v1"
+  tmo="${MODEL_TIMEOUT[$m]:-}"
+  [[ -n "$tmo" ]] && echo "      timeout: ${tmo}"
+  echo "    model_info:"
+  # vLLM supports native function calling via --enable-auto-tool-choice +
+  # tool-call-parser. Exposing this flag is what makes the client
+  # actually execute tools via structured tool_calls instead of the ReAct
+  # (action/action_input) text fallback.
+  echo "      supports_function_calling: true"
+  echo "      supports_tool_choice: true"
+  # Conservative limit: the router reserves a buffer for the tools schema. With
+  # different ctx per node it selects a deployment by input token count.
+  echo "      max_input_tokens: $(__declared_max_input_tokens "$ctx")"
+  if [[ -n "$in_pm" && -n "$out_pm" ]]; then
+    echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
+    echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
+  fi
+  emit_kchat_boundary "$boundary" "$strict" "$privacy_only"
+}
+
+emit_vllm_chat() {
+  local m="$1" url_csv="$2" urls ctx_fallback regular_boundary
+  [[ -n "$url_csv" ]] || return 0
+  regular_boundary=self_hosted
+  has_openrouter && regular_boundary=hybrid
   # Fallback chain: (1) max_model_len from vLLM /v1/models — the scheduler may set
   # different values per node, so query per deployment. (2) CTX_FALLBACK on failure
   # (a safety net when the backend just came up or gen-litellm-config runs standalone).
@@ -238,26 +286,11 @@ emit_vllm_chat() {
       warn "${url} max_model_len discovery failed — fallback ${ctx_fallback}"
       ctx="$ctx_fallback"
     fi
-    echo "  - model_name: local/${m}"
-    echo "    litellm_params:"
-    echo "      model: hosted_vllm/local/${m}"
-    echo "      api_base: ${url%/}/v1"
-    local tmo="${MODEL_TIMEOUT[$m]:-}"
-    [[ -n "$tmo" ]] && echo "      timeout: ${tmo}"
-    echo "    model_info:"
-    # vLLM supports native function calling via --enable-auto-tool-choice +
-    # tool-call-parser. Exposing this flag is what makes the client
-    # actually execute tools via structured tool_calls instead of the ReAct
-    # (action/action_input) text fallback.
-    echo "      supports_function_calling: true"
-    echo "      supports_tool_choice: true"
-    # Conservative limit: the router reserves a buffer for the tools schema. With
-    # different ctx per node it selects a deployment by input token count.
-    echo "      max_input_tokens: $(__declared_max_input_tokens "$ctx")"
-    if [[ -n "$in_pm" && -n "$out_pm" ]]; then
-      echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
-      echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
-    fi
+    emit_vllm_chat_entry "$m" "$url" "$ctx" "local/${m}" "$regular_boundary" false false
+    # Privacy-only alias over the same vLLM deployment. It is deliberately not
+    # named in router_settings.fallbacks; the concurrency gate rejects overload
+    # rather than rewriting this alias to an external twin.
+    emit_vllm_chat_entry "$m" "$url" "$ctx" "strict-local/${m}" self_hosted true true
   done <<<"$urls"
 }
 
@@ -274,6 +307,7 @@ emit_local_or_brain() {  # $1=local-model  $2=or-slug  $3=in_pm  $4=out_pm
   echo "      supports_tool_choice: true"
   echo "      input_cost_per_token: $(per_token_cost "$3")"
   echo "      output_cost_per_token: $(per_token_cost "$4")"
+  emit_kchat_boundary external false false
 }
 
 # Brain registration: if a local vLLM URL exists use local (+ a separate OR twin
@@ -377,6 +411,36 @@ src = splice(src, "# >>> KLOUDCHAT_AUTOGEN_START", "# <<< KLOUDCHAT_AUTOGEN_END"
              os.environ["KC_SECTION"], "AUTOGEN")
 src = splice(src, "# >>> KLOUDCHAT_FALLBACKS_START", "# <<< KLOUDCHAT_FALLBACKS_END",
              os.environ["KC_FALLBACKS"], "FALLBACKS")
+
+# config.yaml predates the privacy-safe default on existing installations. Do a
+# narrow textual migration so regeneration disables prompt/response persistence
+# without reserialising or discarding operator comments and passthrough routes.
+lines = src.splitlines(keepends=True)
+general = next((i for i, line in enumerate(lines) if line.rstrip() == "general_settings:"), None)
+if general is None:
+    sys.exit("error: general_settings missing from LiteLLM config")
+end = len(lines)
+for i in range(general + 1, len(lines)):
+    stripped = lines[i].strip()
+    if stripped and not lines[i].startswith((" ", "\t", "#")):
+        end = i
+        break
+setting = None
+for i in range(general + 1, end):
+    if lines[i].lstrip().startswith("store_prompts_in_spend_logs:"):
+        setting = i
+        break
+if setting is not None:
+    indent = lines[setting][:len(lines[setting]) - len(lines[setting].lstrip())]
+    newline = "\n" if lines[setting].endswith("\n") else ""
+    lines[setting] = f"{indent}store_prompts_in_spend_logs: false{newline}"
+else:
+    insert_at = general + 1
+    for i in range(general + 1, end):
+        if lines[i].strip().startswith(("master_key:", "store_model_in_db:")):
+            insert_at = i + 1
+    lines.insert(insert_at, "  store_prompts_in_spend_logs: false\n")
+src = "".join(lines)
 pathlib.Path(sys.argv[2]).write_text(src)
 PY
 mv "$tmp" "$CONFIG_FILE"; trap - EXIT

@@ -537,6 +537,11 @@ litellm_chat_models_csv() {
   # agents in the picker while direct calls fail as model-not-allowed.
   { [[ -n "$vllm_chat_url" ]] || has_openrouter; } && out+=("local/qwen3.6-35b")
   { [[ -n "$vllm_fast_url" ]] || has_openrouter; } && out+=("local/glm-4.7-flash")
+  # strict-local aliases exist only over a real vLLM deployment. Including them
+  # for OpenRouter-only installations would advertise a privacy boundary that
+  # the generated LiteLLM config intentionally does not create.
+  [[ -n "$vllm_chat_url" ]] && out+=("strict-local/qwen3.6-35b")
+  [[ -n "$vllm_fast_url" ]] && out+=("strict-local/glm-4.7-flash")
   if has_openrouter; then
     for m in "${OPENAI_EMBED_CATALOG[@]}"; do out+=("$m"); done
   fi
@@ -560,7 +565,9 @@ __litellm_call() {
   [[ -n "$payload" ]] && args+=(-H "Content-Type: application/json" -d "$payload")
   local resp; resp=$(curl "${args[@]}")
   local code; code=$(echo "$resp" | tail -1)
-  local body; body=$(echo "$resp" | head -n -1)
+  # `head -n -1` is GNU-only; `sed '$d'` keeps host-side management usable on
+  # the macOS machines operators commonly use to reach this deployment.
+  local body; body=$(echo "$resp" | sed '$d')
   if (( code < 200 || code >= 300 )); then
     echo "ERROR [HTTP $code]: $body" >&2; return 1
   fi
