@@ -66,6 +66,7 @@ jobs:
             {"image":"whisper-shim",    "context":"services/whisper-shim",    "platforms":"linux/amd64,linux/arm64"},
             {"image":"code-interpreter","context":"services/code-interpreter","platforms":"linux/amd64,linux/arm64"},
             {"image":"deep-research",   "context":"services/deep-research",   "platforms":"linux/amd64,linux/arm64"},
+            {"image":"index-shim",      "context":"services/index-shim",      "platforms":"linux/amd64,linux/arm64"},
             {"image":"whisper",         "context":"services/whisper",         "platforms":"linux/amd64"}
           ]'
 
