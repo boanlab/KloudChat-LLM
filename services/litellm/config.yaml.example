@@ -41,7 +41,10 @@ router_settings:
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   store_model_in_db: false
-  store_prompts_in_spend_logs: true
+  # Usage and cost stay available, but request/response bodies never enter the
+  # spend-log rows. Per-request message suppression from the client remains a
+  # defence-in-depth signal rather than the only privacy control.
+  store_prompts_in_spend_logs: false
   # Video Studio: the OpenRouter Video API (Veo, Sora) through LiteLLM, keeping
   # keys and egress central and billing per user. Submit is charged once per clip
   # through cost_per_request and attributed with x-litellm-end-user-id; polling

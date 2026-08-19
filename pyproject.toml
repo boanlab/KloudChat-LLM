@@ -19,5 +19,5 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["scheduler/tests"]
+testpaths = ["scheduler/tests", "services/litellm/tests"]
 pythonpath = ["."]
