@@ -20,7 +20,8 @@ Which models are registered where, and how requests are routed to them.
 **Pricing policy**
 
 - **Commercial** — the OpenRouter catalogue price.
-- **Local** (`local/*`) — **free (0)**. Self-hosted GPU, no per-token billing.
+- **Local** (`local/*` and `strict-local/*`) — **free (0)**. Self-hosted GPU,
+  no per-token billing.
 - **When the OpenRouter fallback fires** (node down or overloaded) — billed at
   the price of the deployment that actually served it.
 
@@ -47,6 +48,20 @@ regenerates the block between markers.
 The model picker reads LiteLLM's `/v1/models` directly, so there is nothing to
 generate on the UI side.
 
+Every generated deployment carries an explicit KloudChat boundary contract in
+`model_info`. Consumers must treat a missing or unknown value as external rather
+than deriving trust from the model name.
+
+| Field | Meaning |
+|---|---|
+| `kchat_data_boundary` | `self_hosted`, `hybrid`, or `external` for the generated route |
+| `kchat_strict_local` | `true` only for a no-egress `strict-local/*` alias |
+| `kchat_privacy_only` | Keeps the strict alias out of ordinary default selection |
+
+The normal `local/*` alias is `hybrid` when an OpenRouter fallback exists,
+`self_hosted` without one, and `external` when no GPU URL exists and the alias is
+served directly by OpenRouter. Only `strict-local/*` has both boolean flags set.
+
 ## The model set
 
 vLLM is the only local LLM backend, on two architectures:
@@ -59,6 +74,8 @@ vLLM is the only local LLM backend, on two architectures:
 |---|---|---|---|---|
 | `local/qwen3.6-35b` | `vllm-qwen35b` | 8001 | NVFP4 | Unified chat — conversation, artifacts, vision, deep research, coding |
 | `local/glm-4.7-flash` | `vllm-glmflash` | 8002 | NVFP4 | Cheap-decode floor — titles, memory extraction, query rewriting, default chat (31.2B-A3B) |
+| `strict-local/qwen3.6-35b` | same as `local/qwen3.6-35b` | 8001 | NVFP4 | Privacy-only alias; fails rather than leaving vLLM |
+| `strict-local/glm-4.7-flash` | same as `local/glm-4.7-flash` | 8002 | NVFP4 | Privacy-only alias; fails rather than leaving vLLM |
 
 **Why two models**
 
@@ -128,6 +145,9 @@ there the provider stated the price.
   registers only the nodes that answer.
 - **Multi-node** — one deployment per node under the same model name. The
   LiteLLM router picks with `least-busy`.
+- **Strict aliases** — each configured chat vLLM also registers a
+  `strict-local/<model>` alias over the same backend. An empty URL never creates
+  that alias, even if OpenRouter can serve the corresponding `local/*` name.
 
 **Operations**
 
@@ -185,6 +205,36 @@ independent paths:
   distinct from the local alias and is used only as a fallback.
 - **Cost** — a fallback is **paid OpenRouter egress**. A node that dies often
   leaks money.
+
+### Strict-local fail-closed routing
+
+`strict-local/*` is the route for requests that must not leave the self-hosted
+vLLM deployment. It has two independent fail-closed controls:
+
+- The generated `router_settings.fallbacks` table never contains a strict alias,
+  so node errors, timeouts and cooldown do not select OpenRouter.
+- The concurrency gate reads `model_info.kchat_strict_local`. At the same
+  saturation threshold used to spill a normal local alias, it returns
+  `strict_local_unavailable` without rewriting the model id.
+
+A `/metrics` scrape failure marks strict capacity unavailable and rejects the
+request; normal aliases retain their existing fail-open behavior. If vLLM fails
+after a healthy capacity check, LiteLLM retries only the deployments registered
+under the strict alias and then returns an error. It has no external target to
+try.
+
+After introducing strict aliases into an existing LiteLLM installation, run
+`./scripts/manage.sh team add-strict`. It preserves each team's current
+allowlist and adds a strict alias only where that team already has the matching
+`local/*` model. Do not use `team sync` solely for this rollout: that command
+intentionally replaces a team's allowlist with the full generated catalogue.
+
+### Spend-log privacy
+
+`general_settings.store_prompts_in_spend_logs` is `false`. LiteLLM continues to
+record token usage and cost attribution, but spend rows do not retain prompt or
+response bodies. Clients may additionally suppress message logging per request;
+that signal is defence in depth, not a substitute for the server default.
 
 ### Per-model `max_model_len`
 

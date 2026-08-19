@@ -52,8 +52,8 @@ jobs:
       - name: Lint Python
         run: ruff check scheduler services
 
-      - name: Scheduler tests
-        run: pytest scheduler/tests -q
+      - name: Scheduler and LiteLLM routing tests
+        run: pytest scheduler/tests services/litellm/tests -q
 
   compose:
     name: Validate compose files
@@ -70,6 +70,13 @@ jobs:
 
       - name: Validate docker-compose.vllm.yml
         run: docker compose -f docker-compose.vllm.yml config --quiet
+
+      - name: Verify pinned LiteLLM spend-log redaction
+        run: |
+          docker run --rm --entrypoint python \
+            -v "$PWD/services/litellm/tests/verify_spend_log_redaction.py:/tmp/verify_spend_log_redaction.py:ro" \
+            ghcr.io/berriai/litellm:v1.83.7-stable \
+            /tmp/verify_spend_log_redaction.py
 
   docs:
     name: Check documentation links

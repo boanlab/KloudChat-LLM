@@ -93,8 +93,11 @@ Where the defaults come from, and how they relate to the placement step, is in
 | `LITELLM_NUM_WORKERS` | `4` | ~600 MB per worker |
 | `LITELLM_LOG` | `INFO` | |
 | `KC_OR_VARIANT` | `:floor` | OpenRouter provider routing variant. `:nitro` for throughput, empty for the OpenRouter default |
+| `CONCURRENCY_GATE_CAPS` | built-in per-model caps | JSON map of model aliases to positive concurrency caps; nonpositive values cannot disable strict-local protection |
+| `CONCURRENCY_GATE_TTL` | `1.5` | Seconds between vLLM capacity polls |
+| `CONCURRENCY_GATE_SCRAPE_TIMEOUT` | `1.0` | Timeout in seconds for one vLLM metrics request |
 | `CONCURRENCY_GATE_DEBUG` | (empty) | Log the overload gate's decisions |
-| `CONCURRENCY_GATE_FORCE` | (empty) | Force the gate on or off |
+| `CONCURRENCY_GATE_FORCE` | (empty) | Comma-separated model aliases to force through the saturated path for testing |
 
 ## 8. Deep research
 
