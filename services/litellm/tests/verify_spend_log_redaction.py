@@ -33,6 +33,14 @@ def main() -> None:
     standard = {
         "messages": [{"role": "user", "content": PROMPT_SECRET}],
         "response": {"role": "assistant", "content": RESPONSE_SECRET},
+        # Required by LiteLLM's StandardLoggingPayload in v1.83.7.  The
+        # production logger always supplies this model-map envelope; keep the
+        # contract fixture shaped like a real callback payload so the test
+        # reaches the redaction assertions instead of failing on a missing key.
+        "model_map_information": {
+            "model_map_key": "strict-local/test",
+            "model_map_value": None,
+        },
         "metadata": {"user_api_key_end_user_id": "redaction-contract"},
     }
     payload = get_logging_payload(
