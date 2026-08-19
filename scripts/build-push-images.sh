@@ -7,11 +7,9 @@
 #
 #   default         Build all images for the host architecture → push.
 #   SERVICE...      Target only specific image short-names (multiple OK). All if omitted.
-#                   Available: litellm
-#                   amd64-only (only when explicitly selected, excluded from 'build all'): whisper
-#
 #                   Available: crawl4ai-shim, whisper-shim, code-interpreter,
-#                   deep-research
+#                   deep-research, index-shim
+#                   amd64-only (only when explicitly selected, excluded from 'build all'): whisper
 #   --no-push       build only (local use).
 #   --push-only     skip build, push local images only.
 #   --multi-arch    Build linux/amd64,linux/arm64 simultaneously (buildx) → push. For mixed-node
@@ -36,6 +34,7 @@ BUILD_TABLE=(
   "whisper-shim|services/whisper-shim/Dockerfile|services/whisper-shim"
   "code-interpreter|services/code-interpreter/Dockerfile|services/code-interpreter"
   "deep-research|services/deep-research/Dockerfile|services/deep-research"
+  "index-shim|services/index-shim/Dockerfile|services/index-shim"
 )
 
 # GPU media backends (amd64-only — arm64 delegates STT to OpenRouter), built only on explicit
