@@ -428,7 +428,7 @@ declare -A MODEL_PRICE_IN_PM=(
   [claude-fable-5]=10    [claude-opus-5]=5      [claude-sonnet-5]=2    [claude-haiku-4.5]=1
   [gemini-3.1-pro-preview]=2   [gemini-3.7-flash]=0.375  [gemini-3.1-flash-lite]=0.25
   [grok-4.6]=2           [sonar]=1.00              [sonar-pro]=3.00
-  [hy3]=0.132            [deepseek-v4-pro]=1.44    [deepseek-v4-flash]=0.083
+  [hy3]=0.132            [deepseek-v4-pro]=1.44    [deepseek-v4-flash]=0.0886
   [glm-5.3]=1.40         [mimo-v2.5]=0.14          [kimi-k3]=3.00
   [qwen3.8-max]=2.00     [qwen3.7-flash]=0.03      [qwen3-coder-plus]=0.65
   [minimax-m3]=0.30
@@ -443,12 +443,32 @@ declare -A MODEL_PRICE_OUT_PM=(
   [claude-fable-5]=50    [claude-opus-5]=25     [claude-sonnet-5]=10   [claude-haiku-4.5]=5
   [gemini-3.1-pro-preview]=12  [gemini-3.7-flash]=1.875  [gemini-3.1-flash-lite]=1.50
   [grok-4.6]=6           [sonar]=1.00              [sonar-pro]=15.00
-  [hy3]=0.528            [deepseek-v4-pro]=2.88    [deepseek-v4-flash]=0.165
+  [hy3]=0.528            [deepseek-v4-pro]=2.88    [deepseek-v4-flash]=0.1772
   [glm-5.3]=4.40         [mimo-v2.5]=0.28          [kimi-k3]=15.00
   [qwen3.8-max]=6.00     [qwen3.7-flash]=0.13      [qwen3-coder-plus]=3.25
   [minimax-m3]=1.20
   [qwen3.6-35b]=0    [glm-4.7-flash]=0    [qwen3.5-122b-a10b]=0    [gemma-4-26b-a4b]=0
   [qwen3-coder-30b]=0 [qwen3.6-27b]=0
+)
+
+# Last-known prices for slugs that are not in the commercial catalogue: the
+# OpenRouter twins of locally served models, and the STT fallback. Keyed by slug
+# because that is what the catalogue is keyed by.
+#
+# These are fallbacks, like the tables above — `or_price` prefers the live
+# figure. They live here rather than as literals at the call sites so that one
+# place holds every declared price and `--check-prices` can see all of them.
+declare -A OR_TWIN_PRICE_IN_PM=(
+  [qwen/qwen3.6-35b-a3b]=0.14              [z-ai/glm-4.7-flash]=0.06
+  [qwen/qwen3.5-122b-a10b]=0.26            [google/gemma-4-26b-a4b-it]=0.07
+  [qwen/qwen3-coder-30b-a3b-instruct]=0.07 [qwen/qwen3.6-27b]=0.60
+  [mistralai/voxtral-small-24b-2507]=0.10
+)
+declare -A OR_TWIN_PRICE_OUT_PM=(
+  [qwen/qwen3.6-35b-a3b]=1.00              [z-ai/glm-4.7-flash]=0.40
+  [qwen/qwen3.5-122b-a10b]=2.08            [google/gemma-4-26b-a4b-it]=0.34
+  [qwen/qwen3-coder-30b-a3b-instruct]=0.28 [qwen/qwen3.6-27b]=3.60
+  [mistralai/voxtral-small-24b-2507]=0.30
 )
 
 per_token_cost() { awk -v v="$1" 'BEGIN { printf "%.10f", v/1000000 }'; }
@@ -464,12 +484,89 @@ has_openrouter() { [[ -n "$(env_get OPENROUTER_API_KEY)" ]]; }
 #
 # Guardrail models are excluded: they emit text but classify their input, so one
 # picked as a chat partner returns a verdict instead of an answer.
+#: The catalogue, fetched once per run and reused. Three callers want it — the
+#: free-model list, the price refresh and the drift check — and it is a megabyte
+#: over the network each time.
+__OR_CATALOGUE_CACHE=""
+
+or_catalogue() {
+  has_openrouter || return 1
+  command -v jq &>/dev/null || return 1
+  if [[ -z "$__OR_CATALOGUE_CACHE" || ! -s "$__OR_CATALOGUE_CACHE" ]]; then
+    local key tmp; key="$(env_get OPENROUTER_API_KEY)"
+    tmp="$(mktemp -t or-catalogue.XXXXXX)" || return 1
+    if ! curl -sf --max-time 20 https://openrouter.ai/api/v1/models \
+              -H "Authorization: Bearer ${key}" -o "$tmp" 2>/dev/null; then
+      rm -f "$tmp"; return 1
+    fi
+    __OR_CATALOGUE_CACHE="$tmp"
+  fi
+  cat "$__OR_CATALOGUE_CACHE"
+}
+
+# One model's live price, or the fallback. USD per 1M tokens.
+#
+#   or_price qwen/qwen3.6-35b-a3b in 0.14
+#
+# The fallback is what the repository last knew, and it is what a run without an
+# OpenRouter key or without a network gets. It is not the source of truth: prices
+# move on OpenRouter's schedule, not on this repository's, and a figure that only
+# changes when somebody commits is a figure that is wrong most of the time.
+or_price() {
+  local slug="$1" field="$2" fallback="${3:-}" key live
+  if [[ "$field" == "in" ]]; then
+    key="prompt";     fallback="${fallback:-${OR_TWIN_PRICE_IN_PM[$slug]:-0}}"
+  else
+    key="completion"; fallback="${fallback:-${OR_TWIN_PRICE_OUT_PM[$slug]:-0}}"
+  fi
+  live="$(or_catalogue 2>/dev/null \
+          | jq -r --arg s "$slug" --arg k "$key" '
+              .data[] | select(.id == $s) | (.pricing[$k] // empty | tonumber * 1000000)
+            ' 2>/dev/null | head -1)"
+  [[ -n "$live" && "$live" != "null" ]] && echo "$live" || echo "$fallback"
+}
+
+# Declared prices overlaid with the live ones, in place. Called once before the
+# config is generated, so every emit_commercial_or below reads current figures
+# without knowing that is what it is doing.
+or_refresh_prices() {
+  has_openrouter || return 0
+  local live; live="$(or_catalogue 2>/dev/null)" || return 0
+  [[ -n "$live" ]] || return 0
+
+  local prov disp var m slug pair moved=0 total=0
+  for prov in openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI \
+              perplexity:PERPLEXITY tencent:TENCENT deepseek:DEEPSEEK z-ai:ZAI \
+              xiaomi:XIAOMI moonshotai:MOONSHOTAI qwen:QWEN minimax:MINIMAX; do
+    disp="${prov%%:*}"; var="${prov##*:}_MODELS[@]"
+    for m in "${!var}"; do
+      slug="${disp}/${m}"
+      pair="$(jq -r --arg s "$slug" '
+                .data[] | select(.id == $s)
+                | "\((.pricing.prompt // "0" | tonumber) * 1000000) \((.pricing.completion // "0" | tonumber) * 1000000)"
+              ' <<<"$live" 2>/dev/null | head -1)"
+      [[ -n "$pair" ]] || continue
+      total=$((total+1))
+      local lin="${pair%% *}" lout="${pair##* }"
+      # Numerically, not as strings: a declared "2" against a live "2.0" is the
+      # same price, and counting it as a move makes the number meaningless — the
+      # kind of noisy signal people learn to scroll past.
+      if ! awk -v a="$lin" -v b="${MODEL_PRICE_IN_PM[$m]:-0}" \
+               -v c="$lout" -v d="${MODEL_PRICE_OUT_PM[$m]:-0}" \
+              'BEGIN { exit !(a-b < 0.0005 && b-a < 0.0005 && c-d < 0.0005 && d-c < 0.0005) }'; then
+        moved=$((moved+1))
+      fi
+      MODEL_PRICE_IN_PM[$m]="$lin"
+      MODEL_PRICE_OUT_PM[$m]="$lout"
+    done
+  done
+  echo "${total} ${moved}"
+}
+
 or_free_models() {
   has_openrouter || return 0
   command -v jq &>/dev/null || return 0
-  local key; key="$(env_get OPENROUTER_API_KEY)"
-  curl -sf --max-time 15 https://openrouter.ai/api/v1/models \
-       -H "Authorization: Bearer ${key}" 2>/dev/null \
+  or_catalogue 2>/dev/null \
     | jq -r '.data[]
         | select((.pricing.prompt // "0" | tonumber) == 0)
         | select((.pricing.completion // "0" | tonumber) == 0)
@@ -521,6 +618,27 @@ or_price_drift() {
       fi
     done
   done
+  # The twins and the STT fallback, which are not in any provider array.
+  local slug
+  for slug in "${!OR_TWIN_PRICE_IN_PM[@]}"; do
+    actual="$(jq -r --arg s "$slug" '
+      .data[] | select(.id == $s)
+      | "\((.pricing.prompt // "0" | tonumber) * 1000000)\t\((.pricing.completion // "0" | tonumber) * 1000000)"
+    ' <<<"$live" 2>/dev/null | head -1)"
+    if [[ -z "$actual" ]]; then
+      echo "GONE      ${slug} — a local model's OpenRouter twin is not in the catalogue"
+      drift=1; continue
+    fi
+    local tin="${actual%%$'\t'*}" tout="${actual##*$'\t'}"
+    if ! awk -v a="$tin" -v b="${OR_TWIN_PRICE_IN_PM[$slug]}" \
+             -v c="$tout" -v e="${OR_TWIN_PRICE_OUT_PM[$slug]}" \
+            'BEGIN { exit !(a-b < 0.0005 && b-a < 0.0005 && c-e < 0.0005 && e-c < 0.0005) }'; then
+      printf 'DRIFT     %-40s declared %s/%s  actual %s/%s\n' \
+             "$slug" "${OR_TWIN_PRICE_IN_PM[$slug]}" "${OR_TWIN_PRICE_OUT_PM[$slug]}" "$tin" "$tout"
+      drift=1
+    fi
+  done
+
   # Image and audio are priced on different keys — image_output per image token,
   # audio/audio_output per audio token — and the gpt-audio entry was wrong on
   # both when this check was written. Same comparison, different fields.

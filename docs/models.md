@@ -32,24 +32,31 @@ Which models are registered where, and how requests are routed to them.
 
 - **`text-embedding-3-small`** — through OpenRouter, so it is paid.
 
-> Prices move, and the same model differs by provider. Verify against
-> `curl https://openrouter.ai/api/v1/models` — the live catalogue, not a blog
-> post — before trusting a billing report.
+> Prices move, and the same model differs by provider. The catalogue is the
+> source of truth, and `gen-litellm-config.sh` reads it directly: every price it
+> emits is the live figure, fetched once per run.
 
-**`./scripts/gen-litellm-config.sh --check-prices`** does that comparison and
-writes nothing. Worth running whenever the catalogue is touched: a wrong price
-breaks no request — the model answers, the call succeeds — so it surfaces only
-when someone reads a billing report and disbelieves it. An audit in this repo
-found seven of eighteen declared chat prices had drifted, one of them by 14×,
-and `gpt-audio` wrong on both its token rates.
+The tables in `lib.sh` are the **fallback**, for a run with no OpenRouter key or
+no network. They are not what a normal deployment bills against — a figure that
+only changes when somebody commits is wrong for however long nobody does, and an
+audit here found seven of eighteen adrift, one by 14×. Generation now prints how
+many it read and how many differed:
 
-It covers chat (`prompt`/`completion`), image (`image_output`) and audio
-(`audio`/`audio_output`) prices, and reports a declared id that has left the
-catalogue as `GONE` — that one 404s on first call. Per-clip models are the
-awkward case: OpenRouter leaves their `pricing` block empty and states the figure
-in the model description instead ("30 second duration clips are priced at $0.04
-per clip"), so the check reads it from there rather than treating it as
-unverifiable.
+```
+[INFO] prices: 25 read from the catalogue, 1 differ from the declared fallback
+```
+
+**`--check-prices`** compares the fallbacks against the catalogue and writes
+nothing. Its job changed with this: it no longer guards billing accuracy, it
+tells you when the fallbacks have rotted far enough to be worth refreshing. It
+covers chat, the local models' OpenRouter twins, image and audio rates, and
+reports a declared id that has left the catalogue as `GONE` — that one 404s on
+first call.
+
+Per-clip models are the awkward case for both the live read and the check:
+OpenRouter leaves their `pricing` block empty and states the figure in the model
+description instead ("30 second duration clips are priced at $0.04 per clip"), so
+that one is read from the description and stays a declared value.
 
 **Generated configuration**
 

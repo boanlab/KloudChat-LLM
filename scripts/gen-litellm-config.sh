@@ -364,6 +364,24 @@ emit_brain() {  # $1=local-model  $2=url_csv  $3=or-slug  $4=or_in_pm  $5=or_out
 }
 
 # Registration order = local → openai → anthropic → google (by provider group)
+# Live prices overlaid onto the declared tables before anything is emitted. The
+# tables stay as the fallback for a run with no key or no network; they are not
+# the source of truth, because a figure that only changes when somebody commits
+# is wrong for however long nobody does. An audit found seven of eighteen adrift,
+# one by 14x, and a price that is wrong breaks no request — it only shows up in a
+# billing report that nobody believes.
+PRICE_REFRESH="$(or_refresh_prices || true)"
+if [[ -n "$PRICE_REFRESH" ]]; then
+  read -r PRICED MOVED <<<"$PRICE_REFRESH"
+  if (( MOVED > 0 )); then
+    info "prices: ${PRICED} read from the catalogue, ${MOVED} differ from the declared fallback"
+  else
+    info "prices: ${PRICED} read from the catalogue, all matching the declared fallback"
+  fi
+else
+  warn "prices: could not reach the catalogue — using the declared fallbacks"
+fi
+
 SECTION=$(
   echo "  ${MARKER_START}"
   # --- local (vLLM) ---
@@ -371,12 +389,12 @@ SECTION=$(
   # its OpenRouter slug — the local/ alias is not created without a deployment
   # behind it. qwen3.6-35b covers chat, vision, deep research and coding;
   # glm-4.7-flash is the cheap-decode floor.
-  emit_brain "qwen3.6-35b"   "$(env_get VLLM_QWEN35B_URL)"    "qwen/qwen3.6-35b-a3b" 0.14 1.00
-  emit_brain "glm-4.7-flash" "$(env_get VLLM_GLMFLASH_URL)"   "z-ai/glm-4.7-flash"  0.06 0.40
-  emit_brain "qwen3.5-122b-a10b" "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b" 0.26 2.08
-  emit_brain "gemma-4-26b-a4b" "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it" 0.07 0.34
-  emit_brain "qwen3-coder-30b" "$(env_get VLLM_CODER30B_URL)" "qwen/qwen3-coder-30b-a3b-instruct" 0.07 0.28
-  emit_brain "qwen3.6-27b" "$(env_get VLLM_QWEN27B_URL)" "qwen/qwen3.6-27b" 0.30 2.00
+  emit_brain "qwen3.6-35b"   "$(env_get VLLM_QWEN35B_URL)"    "qwen/qwen3.6-35b-a3b" "$(or_price qwen/qwen3.6-35b-a3b in)" "$(or_price qwen/qwen3.6-35b-a3b out)"
+  emit_brain "glm-4.7-flash" "$(env_get VLLM_GLMFLASH_URL)"   "z-ai/glm-4.7-flash" "$(or_price z-ai/glm-4.7-flash in)" "$(or_price z-ai/glm-4.7-flash out)"
+  emit_brain "qwen3.5-122b-a10b" "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b" "$(or_price qwen/qwen3.5-122b-a10b in)" "$(or_price qwen/qwen3.5-122b-a10b out)"
+  emit_brain "gemma-4-26b-a4b" "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it" "$(or_price google/gemma-4-26b-a4b-it in)" "$(or_price google/gemma-4-26b-a4b-it out)"
+  emit_brain "qwen3-coder-30b" "$(env_get VLLM_CODER30B_URL)" "qwen/qwen3-coder-30b-a3b-instruct" "$(or_price qwen/qwen3-coder-30b-a3b-instruct in)" "$(or_price qwen/qwen3-coder-30b-a3b-instruct out)"
+  emit_brain "qwen3.6-27b" "$(env_get VLLM_QWEN27B_URL)" "qwen/qwen3.6-27b" "$(or_price qwen/qwen3.6-27b in)" "$(or_price qwen/qwen3.6-27b out)"
   # Embeddings for RAG. Local when placed; the OpenAI catalogue below is the
   # fallback, and with neither there is no /embeddings route and retrieval
   # falls back to lexical matching in KloudChat.
@@ -384,7 +402,7 @@ SECTION=$(
   emit_vllm_rerank "bge-reranker-v2-m3" "$(env_get VLLM_RERANK_URL)"
   # STT twin — registered whenever no local whisper is deployed, matching the
   # scheduler's delegation. Its absence is what hides the microphone.
-  [[ -z "$(env_get WHISPER_URLS)" ]] && emit_or_stt "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" 0.10 0.30
+  [[ -z "$(env_get WHISPER_URLS)" ]] && emit_or_stt "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" "$(or_price "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" in)" "$(or_price "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" out)"
   # --- openai (commercial + embed fallback) ---
   for m in "${OPENAI_MODELS[@]}";        do emit_commercial_or openai "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
   for m in "${OPENAI_EMBED_CATALOG[@]}"; do emit_openai_embed "$m"; done
@@ -427,12 +445,12 @@ SECTION=$(
     emit_or_audio "$m" "${MODEL_AUDIO_IN_PM[$m]}" "${MODEL_AUDIO_OUT_PM[$m]}" "${MODEL_AUDIO_PER_CALL[$m]:-}"
   done
   # --- others: local vLLM → OR same-model fallback twin (see router_settings.fallbacks, not shown in UI) ---
-  emit_or_fallback "$(env_get VLLM_QWEN35B_URL)"  "qwen/qwen3.6-35b-a3b" 0.14 1.00
-  emit_or_fallback "$(env_get VLLM_GLMFLASH_URL)" "z-ai/glm-4.7-flash" 0.06 0.40
-  emit_or_fallback "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b" 0.26 2.08
-  emit_or_fallback "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it" 0.07 0.34
-  emit_or_fallback "$(env_get VLLM_CODER30B_URL)" "qwen/qwen3-coder-30b-a3b-instruct" 0.07 0.28
-  emit_or_fallback "$(env_get VLLM_QWEN27B_URL)" "qwen/qwen3.6-27b" 0.30 2.00
+  emit_or_fallback "$(env_get VLLM_QWEN35B_URL)"  "qwen/qwen3.6-35b-a3b" "$(or_price qwen/qwen3.6-35b-a3b in)" "$(or_price qwen/qwen3.6-35b-a3b out)"
+  emit_or_fallback "$(env_get VLLM_GLMFLASH_URL)" "z-ai/glm-4.7-flash" "$(or_price z-ai/glm-4.7-flash in)" "$(or_price z-ai/glm-4.7-flash out)"
+  emit_or_fallback "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b" "$(or_price qwen/qwen3.5-122b-a10b in)" "$(or_price qwen/qwen3.5-122b-a10b out)"
+  emit_or_fallback "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it" "$(or_price google/gemma-4-26b-a4b-it in)" "$(or_price google/gemma-4-26b-a4b-it out)"
+  emit_or_fallback "$(env_get VLLM_CODER30B_URL)" "qwen/qwen3-coder-30b-a3b-instruct" "$(or_price qwen/qwen3-coder-30b-a3b-instruct in)" "$(or_price qwen/qwen3-coder-30b-a3b-instruct out)"
+  emit_or_fallback "$(env_get VLLM_QWEN27B_URL)" "qwen/qwen3.6-27b" "$(or_price qwen/qwen3.6-27b in)" "$(or_price qwen/qwen3.6-27b out)"
   echo "  ${MARKER_END}"
 )
 
