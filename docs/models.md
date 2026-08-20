@@ -115,7 +115,8 @@ the recorded digest real.
 | `local/qwen3.5-122b-a10b` | `vllm-qwen122b` | 8004 | NVFP4 | Top chat — 10B active, 128K here. Needs the card to itself |
 | `local/qwen3.6-35b` | `vllm-qwen35b` | 8001 | NVFP4 | Unified chat and floor — conversation, artifacts, vision, deep research, coding, titles, memory extraction |
 | `local/gemma-4-26b-a4b` | `vllm-gemma26b` | 8005 | NVFP4 | Second family — vision, tool calling, 256K. 4B active of 26B |
-| `local/qwen3-coder-30b` | `vllm-coder30b` | 8006 | FP8 | Coding. 48 KiB/token, the most KV-expensive model here |
+| `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | Coding (Qwen3-Coder-Next-80B-A3B). Hybrid attention — 12 of 48 layers hold KV — so 12 KiB/token at 262K |
+| `local/qwen3-coder-30b` | `vllm-coder30b` | 8006 | FP8 | Coding. 48 KiB/token, the most KV-expensive model here. **Superseded by `qwen3-coder-next`**, kept in the catalogue for a card that cannot hold 75 GiB |
 | `local/qwen3.6-27b` | `vllm-qwen27b` | 8007 | NVFP4 | The one dense model — no routing, a different kind of answer |
 | `local/glm-4.7-flash` | `vllm-glmflash` | 8002 | NVFP4 | Cheap-decode floor (31.2B-A3B). **Defined, not deployed here** — a fourth chat model costs `qwen3.6-35b` half its context on two nodes |
 | `strict-local/<model>` | same backend as its `local/` twin | — | NVFP4 | Privacy-only alias; fails rather than leaving vLLM |
@@ -153,6 +154,7 @@ Its `local/` alias is therefore not registered at all — see
 
 | Model | Tool parser | Reasoning parser | Notes |
 |---|---|---|---|
+| `qwen3-coder-next` | `qwen3_coder` | — | Same XML dialect as the 30B — the checkpoint's chat template emits `<tool_call><function=…><parameter=…>`, which is what this parser reads |
 | `qwen3-coder-30b` | `qwen3_coder` | — | Qwen3-Coder has its own XML dialect; `qwen3_xml` is a different format and silently yields no tool calls. No thinking mode, so no reasoning parser |
 | `qwen3.6-27b` | `qwen3_xml` | `qwen3` | Same family plumbing as `qwen3.6-35b` |
 | `gemma-4-26b-a4b` | `gemma4` | `gemma4` | Gemma states tool calls in its own `<\|tool>` form, which no generic parser reads. Without `gemma4` the model falls back to ReAct text and the client cannot execute anything |

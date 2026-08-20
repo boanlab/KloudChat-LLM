@@ -1,13 +1,14 @@
 """Model placement across GPU nodes.
 
-Two phases:
+Three phases:
 
 1. Coverage — one instance of each model at its context floor, largest first,
    onto the node with the most capacity left. Seating at target context first
    would let a large model claim a node and starve the next one.
 2. Restoration — leftover capacity raises contexts toward their targets.
+3. Replication — capacity coverage did not need is filled with extra instances,
+   deepening models in priority order. ``replicas`` caps it; 1 turns it off.
 
-Replication happens only when ``replicas`` is given, after full coverage.
 Unplaced models are delegated to OpenRouter with a reason.
 """
 
@@ -249,7 +250,7 @@ def plan(
     nodes: Sequence[NodeSpec],
     *,
     reserved: Optional[dict[str, int]] = None,
-    replicas: int = 1,
+    replicas: Optional[int] = None,
     deployed: Optional[dict[str, frozenset[str]]] = None,
 ) -> Plan:
     """Decide the placement.
@@ -259,7 +260,8 @@ def plan(
         nodes: probed nodes.
         reserved: per-node bytes held by resident, unplaced workloads such as
             transcription. Subtracted before packing.
-        replicas: maximum instances per model. 1 disables replication.
+        replicas: cap on instances per model. None fills whatever capacity is
+            left after coverage, deepening by priority; 1 disables replication.
         deployed: model id to the node ids already running it. A model that fits
             where it is stays there; without this the plan is free to migrate it
             on a capacity difference too small to matter.
@@ -330,8 +332,12 @@ def plan(
     # ── 2. Restoration: grow contexts toward their targets ────────────────
     _restore_context(result, specs, by_id, free, card_capacity)
 
-    # ── 3. Replication: only when asked for ───────────────────────────────
-    if replicas > 1:
+    # ── 3. Replication: fill what coverage left ───────────────────────────
+    #
+    # A card that coverage did not need is a card queueing requests for no
+    # reason, so the default is to use it. `replicas=1` is how a caller says
+    # "one of each and stop".
+    if replicas is None or replicas > 1:
         _replicate(result, specs, nodes, free, card_capacity, replicas)
         # Replicas seat at the floor too — redistribute the remainder
         _restore_context(result, specs, by_id, free, card_capacity)
@@ -467,9 +473,14 @@ def _restore_context(
 
 def _replicate(
     plan_: Plan, specs: Sequence[ModelSpec], nodes: Sequence[NodeSpec],
-    free: dict[str, list[int]], card_capacity: dict[str, int], replicas: int,
+    free: dict[str, list[int]], card_capacity: dict[str, int],
+    replicas: Optional[int],
 ) -> None:
-    """Extra instances, once every model has one."""
+    """Extra instances, once every model has one, highest priority first.
+
+    ``replicas`` caps the count per model; None means fill until nothing more
+    seats. Either way the loop ends when no node can take another instance.
+    """
     placed = {p.model_id for p in plan_.placements}
     eligible = [s for s in specs if s.id in placed]
     counts = {s.id: 1 for s in eligible}
@@ -477,9 +488,13 @@ def _replicate(
     grew = True
     while grew:
         grew = False
-        # Fewest instances first
-        for spec in sorted(eligible, key=lambda s: counts[s.id]):
-            if counts[spec.id] >= replicas:
+        # Fewest instances first, then by declared priority. Without the
+        # priority tiebreak the second copy goes to whichever model the
+        # catalogue happens to list first, which is not a decision anyone made:
+        # spare capacity should deepen the model the cluster least wants to
+        # queue on, and that is the same ranking coverage already uses.
+        for spec in sorted(eligible, key=lambda s: (counts[s.id], -s.priority)):
+            if replicas is not None and counts[spec.id] >= replicas:
                 continue
             used = {p.node_id for p in plan_.placements if p.model_id == spec.id}
             seatable = {
