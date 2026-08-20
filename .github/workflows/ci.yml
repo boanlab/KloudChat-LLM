@@ -78,6 +78,59 @@ jobs:
             ghcr.io/berriai/litellm:v1.83.7-stable \
             /tmp/verify_spend_log_redaction.py
 
+  images:
+    name: Check image lists agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # An image is named in four places: the compose file that deploys it,
+      # BUILD_TABLE in build-push-images.sh, the publish workflow's catalogue,
+      # and the dropdown a manual publish picks from. Every one of those pairs
+      # has drifted at least once, and none of them fails loudly when it does —
+      # an image simply stops being built, or cannot be selected.
+      - name: Compare the lists
+        run: |
+          python3 - <<'EOF'
+          import json, pathlib, re, sys
+
+          wf = pathlib.Path(".github/workflows/publish-images.yml").read_text()
+          sh = pathlib.Path("scripts/build-push-images.sh").read_text()
+
+          catalogue = [e["image"] for e in
+                       json.loads(re.search(r"catalogue='(\[.*?\])'", wf, re.S).group(1))]
+          options = [o.strip() for o in
+                     re.search(r"^\s*options: \[(.*?)\]", wf, re.M).group(1).split(",")]
+
+          # Entries are "<short>|<dockerfile>|<context>[|<platform>]".
+          def table(name):
+              body = re.search(rf"^{name}=\((.*?)^\)", sh, re.S | re.M).group(1)
+              return [e.split("|")[0] for e in re.findall(r'"([^"]+)"', body)]
+
+          script = table("BUILD_TABLE") + table("MEDIA_TABLE")
+
+          # kloudchat-vllm is upstream, built on the GPU nodes from ${VLLM_IMAGE}
+          # and never pushed; keying on the namespace variable is what tells a
+          # published image apart from that one.
+          compose = sorted({
+              m.group(1)
+              for f in ("docker-compose.yml", "docker-compose.vllm.yml")
+              for m in re.finditer(r"\$\{KLOUDCHAT_IMAGE_NS[^}]*\}/kloudchat-([a-z0-9-]+):",
+                                   pathlib.Path(f).read_text())
+          })
+
+          problems = []
+          if sorted(script) != sorted(catalogue):
+              problems.append(f"build-push-images.sh {sorted(script)} != catalogue {sorted(catalogue)}")
+          if [o for o in options if o != "all"] != catalogue:
+              problems.append(f"workflow_dispatch options {options} != catalogue {catalogue} (order included)")
+          if compose != sorted(catalogue):
+              problems.append(f"compose images {compose} != catalogue {sorted(catalogue)}")
+
+          print("\n".join(problems) or f"image lists agree: {catalogue}")
+          sys.exit(1 if problems else 0)
+          EOF
+
   docs:
     name: Check documentation links
     runs-on: ubuntu-latest
