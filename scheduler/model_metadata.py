@@ -125,13 +125,42 @@ def _count_kv_bearing_layers(cfg: dict) -> int:
     ``full_attention`` layers grow KV with sequence length; linear-attention
     layers keep a fixed-size state that we account for separately (and which
     is negligible at the scales we plan for).
+
+    Two spellings of the same fact: an explicit ``layer_types`` list, or a
+    ``full_attention_interval`` stride. The stride is checked only alongside the
+    linear-attention keys, so an ordinary model that happens to carry the field
+    is not mistaken for a hybrid.
     """
     layer_types = cfg.get("layer_types")
     if isinstance(layer_types, list) and layer_types:
         full = sum(1 for t in layer_types if t == "full_attention")
         if full > 0:
             return full
-    return int(cfg.get("num_hidden_layers") or 0)
+
+    # Qwen3-Next states the same hybrid pattern as a stride instead of a list:
+    # every ``full_attention_interval``-th layer is full attention. Without this
+    # the whole family reads as pure-attention and its KV cost comes out 4x high,
+    # which rejects placements that fit.
+    total = int(cfg.get("num_hidden_layers") or 0)
+    interval = int(cfg.get("full_attention_interval") or 0)
+    if total and interval > 1 and cfg.get("linear_key_head_dim"):
+        return max(1, total // interval)
+    return total
+
+
+def _count_sliding_layers(cfg: dict) -> tuple[int, int]:
+    """(layer count, window) for sliding-window attention, or (0, 0).
+
+    Gemma interleaves five sliding layers per full one. They are not free — each
+    holds ``window`` tokens of KV per sequence — but their cost does not grow
+    with the context, so they are charged separately.
+    """
+    layer_types = cfg.get("layer_types")
+    window = int(cfg.get("sliding_window") or 0)
+    if not window or not isinstance(layer_types, list):
+        return 0, 0
+    sliding = sum(1 for t in layer_types if isinstance(t, str) and "sliding" in t)
+    return (sliding, window) if sliding else (0, 0)
 
 
 def _resolve_kv_heads(cfg: dict) -> int:
@@ -226,6 +255,7 @@ def fetch(
     cfg = _unwrap_text_config(cfg)
     dtype = _parse_dtype(cfg)
     weight_bytes = on_disk_weight_bytes or _estimate_weight_bytes(cfg, dtype)
+    sliding_layers, sliding_window = _count_sliding_layers(cfg)
     return ModelMetadata(
         model_id=model_id,
         n_layers=_count_kv_bearing_layers(cfg),
@@ -235,6 +265,8 @@ def fetch(
         weight_bytes=weight_bytes,
         kv_latent_dim=_resolve_kv_latent_dim(cfg),
         native_ctx=_resolve_native_ctx(cfg),
+        sliding_layers=sliding_layers,
+        sliding_window=sliding_window,
     )
 
 
@@ -247,17 +279,30 @@ def _resolve_native_ctx(cfg: dict) -> int:
     return 0
 
 
+#: Weights vLLM actually loads, not everything the repository ships. A HuggingFace
+#: repo may carry the same model as safetensors, a flax msgpack, a pickled .bin
+#: and an fp32 copy — whisper-large-v3 measures 24.7 GB whole and 3.1 GB as the
+#: shards vLLM reads. Charging the directory would have the planner reserve eight
+#: times the model. `du` on the whole path is the fallback for a checkpoint that
+#: ships no safetensors at all.
+_WEIGHT_BYTES = r"""
+sum=$(find %(path)s -maxdepth 1 -name '*.safetensors' ! -name '*fp32*'         -printf '%%s
+' 2>/dev/null | awk '{t+=$1} END {print t+0}')
+if [ "${sum:-0}" -gt 0 ]; then echo "$sum"; else du -sb %(path)s 2>/dev/null | cut -f1; fi
+"""
+
+
 def measure_weight_bytes(host: str, path: str) -> Optional[int]:
-    """Measured size of the checkpoint directory; None on failure, which falls
+    """Measured size of the weights vLLM will load; None on failure, which falls
     back to an analytical estimate."""
     import subprocess
     try:
         r = subprocess.run(
             ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=6",
-             "-o", "LogLevel=ERROR", host, f"du -sb {path} 2>/dev/null | cut -f1"],
+             "-o", "LogLevel=ERROR", host, _WEIGHT_BYTES % {"path": path}],
             capture_output=True, text=True, timeout=30,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
-    out = (r.stdout or "").strip()
-    return int(out) if out.isdigit() else None
+    out = (r.stdout or "").strip().splitlines()
+    return int(out[-1]) if out and out[-1].isdigit() else None
