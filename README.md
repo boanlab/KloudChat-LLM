@@ -134,13 +134,16 @@ no AMD equivalent. Porting the probe layer is a day's work; carrying a second
 model lineup — AMD cannot run NVFP4 at all — is not, and none of it can be
 verified without the hardware. Adding ROCm is a real project, not a flag.
 
-**Within NVIDIA, the default weights are NVFP4**, which needs compute capability
-10.0 (Blackwell: GB10, RTX 5090, PRO 5000/6000). An older card is not excluded
-from the project, only from the default lineup: the catalogue carries AWQ int4
-builds of three models that reach back to 7.5, and `scripts/download-vllm-models.sh`
-refuses weights the card cannot execute rather than letting it fail at engine
-start. Where nothing fits, the placement step says so and delegates to
-OpenRouter.
+**Within NVIDIA, two things decide whether a card can serve: size, then format.**
+32 GiB usable is the floor — on 24 GiB exactly one model in the catalogue places,
+at its 32K context floor and 0.92 of the card, which is a demonstration rather
+than a deployment. Above that floor, the default weights are NVFP4 and need
+compute capability 10.0 (GB10, RTX 5090, PRO 5000/6000); an FP4-less card of
+48 GiB or more runs the AWQ int4 aliases instead, at 128K–256K.
+
+`scripts/download-vllm-models.sh` refuses weights the card cannot hold or cannot
+execute, with the reason, rather than letting it fail at engine start. Where
+nothing fits, the placement step says so and delegates to OpenRouter.
 
 ## Documentation
 
