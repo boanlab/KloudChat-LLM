@@ -37,14 +37,38 @@ connected only by URL.
 
 | Requirement | Minimum |
 |---|---|
-| NVIDIA GPU | RTX 5090 32 GB (NVFP4 required — the RTX 4090 has no FP4 support) |
+| NVIDIA GPU | RTX 5090 32 GB for the default NVFP4 lineup; an FP4-less card needs the int4 aliases below |
 | Model disk | 100 GB |
+
+**NVIDIA only.** AMD/ROCm is out of scope, and the reason is not that nobody got
+to it. `nvidia-smi` is what the inventory reads capacity, card class and
+per-process memory from; the compose services reserve `driver: nvidia`; devices
+are pinned with `CUDA_VISIBLE_DEVICES`; the MLA attention backends are CUDA
+kernels; and `gpu_supports_quant` gates on compute capability, which AMD does not
+have. Each of those has an equivalent — but the default weights are **NVFP4, a
+Blackwell format with no AMD counterpart**, so ROCm support means maintaining a
+second model lineup with its own measured weights, KV parameters and verified
+parsers. That is a project, and one that cannot be written blind: a backend
+nobody has run is worse than an honest "not supported".
+
+Quantisation is gated by compute capability, so what a card can serve is a
+property of the card rather than of its name:
+
+| Weights | Needs | Cards |
+|---|---|---|
+| NVFP4 (default lineup) | cc ≥ 10.0 | GB10, RTX 5090, PRO 5000/6000 |
+| FP8 | cc ≥ 8.9 | Ada and later — includes RTX 4090 |
+| AWQ / GPTQ int4 | cc ≥ 7.5 | Turing and later |
+
+`download-vllm-models.sh` refuses weights the card cannot execute, with the
+reason, rather than letting it fail at engine start. An RTX 4090 cannot run the
+default lineup and can run the `*-awq` aliases.
 
 VRAM per model:
 
 | Model | Requirement |
 |---|---|
-| Chat (`qwen3.6-35b`) | RTX 5090 32 GB with NVFP4 minimum; PRO 5000 48 GB or better recommended |
+| Chat (`qwen3.6-35b`) | RTX 5090 32 GB with NVFP4 minimum — placed at 128K and 2 concurrent sessions there; PRO 5000 48 GB or better recommended |
 | Chat + floor | PRO 5000 48 GB (~41 GiB of weights) |
 
 Deep research does not place a model of its own. The constraint it imposes is
@@ -100,8 +124,8 @@ transcription using `--no-whisper`.
 - **vLLM image per architecture**
   - **amd64 (RTX 5090 / PRO 5000 / PRO 6000)** — `vllm/vllm-openai:cu129-nightly`
   - **GB10 (arm64)** — `vllm/vllm-openai:nightly-aarch64`
-- **RTX 4090** — no FP4 support and no int4 build of 35B-A3B to substitute, so
-  this lineup cannot run on it.
+- **RTX 4090** — no FP4 support, so the default lineup cannot run on it. The
+  `*-awq` aliases can; see the quantisation table above.
 
 Occupancy figures are in the [GPU memory guide](gpu-memory.md).
 
