@@ -125,9 +125,25 @@ Every script prints its usage when run without arguments.
 | Linux amd64, no GPU | OpenRouter only |
 | Linux amd64 + NVIDIA GPU (RTX 5090 / PRO 5000 / PRO 6000) | Local GPU with OpenRouter fallback |
 | Linux arm64 — GB10 | Local GPU with OpenRouter fallback |
+| AMD / ROCm, Apple, anything else | Not supported — OpenRouter only |
 
-The default weights are NVFP4. A card without FP4 support (RTX 4090) cannot host
-this lineup; the placement step says so explicitly and delegates to OpenRouter.
+**Local serving is NVIDIA-only, deliberately.** Detection, the container runtime
+reservation, device pinning and kernel selection all go through NVIDIA
+interfaces, and the quantisation gate is written in compute capability, which has
+no AMD equivalent. Porting the probe layer is a day's work; carrying a second
+model lineup — AMD cannot run NVFP4 at all — is not, and none of it can be
+verified without the hardware. Adding ROCm is a real project, not a flag.
+
+**Within NVIDIA, two things decide whether a card can serve: size, then format.**
+32 GiB usable is the floor — on 24 GiB exactly one model in the catalogue places,
+at its 32K context floor and 0.92 of the card, which is a demonstration rather
+than a deployment. Above that floor, the default weights are NVFP4 and need
+compute capability 10.0 (GB10, RTX 5090, PRO 5000/6000); an FP4-less card of
+48 GiB or more runs the AWQ int4 aliases instead, at 128K–256K.
+
+`scripts/download-vllm-models.sh` refuses weights the card cannot hold or cannot
+execute, with the reason, rather than letting it fail at engine start. Where
+nothing fits, the placement step says so and delegates to OpenRouter.
 
 ## Documentation
 
