@@ -146,6 +146,22 @@ def cmd_inventory(args) -> int:
     return 0
 
 
+def _deployed(probes, specs) -> dict[str, frozenset[str]]:
+    """Model id to the node ids already running its container.
+
+    Read from `docker ps`, not from the .env: a node whose container died is not
+    a home to stay at.
+    """
+    by_service = {s.service: s.id for s in specs}
+    out: dict[str, set[str]] = {}
+    for probe in probes:
+        for container in probe.running_containers:
+            model_id = by_service.get(container)
+            if model_id:
+                out.setdefault(model_id, set()).add(probe.spec.node_id)
+    return {k: frozenset(v) for k, v in out.items()}
+
+
 def _build_plan(args):
     specs = _load_specs(args.models)
     hosts = _resolve_hosts(args.hosts)
@@ -158,6 +174,7 @@ def _build_plan(args):
         bound, nodes,
         reserved=_reservations(probes),
         replicas=max(1, args.replicas),
+        deployed=_deployed(probes, bound),
     )
     for model_id, reason in failed:
         result.delegations.append(planner.Delegation(model_id, reason))
@@ -168,8 +185,17 @@ def _print_plan(result) -> None:
     if result.placements:
         print("Placements")
         for p in sorted(result.placements, key=lambda x: (x.node_id, x.model_id)):
-            print(f"  {p.node_id:<8} {p.model_id:<18} ctx {p.ctx // 1024:>4}K  "
-                  f"util {p.gpu_util:<5.2f} {p.charge / GB:>5.1f} GiB")
+            # Cards and TP width only when they say something: on the common
+            # single-card node "gpu 0, TP 1" is noise in every row.
+            extra = ""
+            if p.devices and p.devices != (0,):
+                extra += f"  gpu {','.join(str(d) for d in p.devices)}"
+            if p.tp > 1:
+                extra += f"  TP{p.tp}"
+            # Whisper's 448 is a real context, and 448 // 1024 printed "0K"
+            ctx = f"{p.ctx // 1024}K" if p.ctx >= 1024 else str(p.ctx)
+            print(f"  {p.node_id:<8} {p.model_id:<18} ctx {ctx:>5}  "
+                  f"util {p.gpu_util:<5.2f} {p.charge / GB:>5.1f} GiB{extra}")
     else:
         print("no model could be placed")
     if result.delegations:
@@ -202,6 +228,17 @@ def cmd_apply(args) -> int:
         local_env_path=str(ENV_FILE),
         # Probed backends only — an empty result routes STT to OpenRouter
         stt_hosts=[p.spec.hostname for p in probes if p.whisper_running],
+        # The whole catalogue, so a model dropped from VLLM_MODELS has its URL
+        # cleared rather than left pointing at a container that is now stopped
+        known=registry.load(MODELS_YAML),
+        # Each node's current options, so an apply that changes nothing does
+        # nothing instead of reloading every model's weights
+        node_env={
+            p.spec.node_id: inventory.read_env(
+                p.spec.hostname, f"{_remote_workdir()}/.env"
+            )
+            for p in probes if p.alive
+        },
     )
     if change.is_empty:
         print("\nNo changes — the cluster already matches the plan")

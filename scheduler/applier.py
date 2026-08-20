@@ -91,8 +91,15 @@ def _read_env_keys(path: str, keys: Iterable[str]) -> dict[str, str]:
 
 def _url_csvs(target: Plan, specs: Sequence[ModelSpec],
               nodes: Sequence[NodeSpec],
-              stt_hosts: Sequence[str] = ()) -> dict[str, str]:
+              stt_hosts: Sequence[str] = (),
+              known: Sequence[ModelSpec] = ()) -> dict[str, str]:
     """URL CSVs per model. Unplaced models get an empty value, never a stale URL.
+
+    ``known`` is the whole models.yaml catalogue, not just what is being
+    deployed. Dropping a model from VLLM_MODELS otherwise left its URL untouched,
+    and gen-litellm-config went on registering a route to a container that had
+    been stopped — a model that appears healthy in the picker and times out on
+    call.
 
     ``stt_hosts`` are nodes whose transcription backend answered a probe, so
     nodes without one (arm64) never appear. An empty ``WHISPER_URLS`` is what
@@ -100,7 +107,9 @@ def _url_csvs(target: Plan, specs: Sequence[ModelSpec],
     """
     host_of = {n.node_id: n.hostname.split("@")[-1] for n in nodes}
     by_id = {s.id: s for s in specs}
-    urls: dict[str, set[str]] = {f"{s.env_prefix}_URL": set() for s in specs}
+    urls: dict[str, set[str]] = {
+        f"{s.env_prefix}_URL": set() for s in (list(known) + list(specs))
+    }
     for p in target.placements:
         spec = by_id.get(p.model_id)
         if spec is None:
@@ -108,6 +117,7 @@ def _url_csvs(target: Plan, specs: Sequence[ModelSpec],
         host = host_of.get(p.node_id, p.node_id)
         urls[f"{spec.env_prefix}_URL"].add(f"http://{host}:{spec.port}")
     out = {k: ",".join(sorted(v)) for k, v in urls.items()}
+
     out["WHISPER_URLS"] = ",".join(
         f"http://{h.split('@')[-1]}:{WHISPER_PORT}" for h in stt_hosts
     )
@@ -123,6 +133,8 @@ def compute_diff(
     layout: RemoteLayout = RemoteLayout(),
     local_env_path: Optional[str] = None,
     stt_hosts: Sequence[str] = (),
+    known: Sequence[ModelSpec] = (),
+    node_env: Optional[dict[str, dict[str, str]]] = None,
 ) -> ChangePlan:
     """Changes that take ``current`` to ``target``.
 
@@ -131,6 +143,10 @@ def compute_diff(
         local_env_path: the orchestrator's .env. None skips the URL update.
         stt_hosts: hosts whose transcription backend answered. Becomes
             ``WHISPER_URLS``.
+        node_env: node id to that node's current .env values. What makes a
+            re-apply a no-op: without it every placed service was rewritten and
+            force-recreated on every run, so `setup.sh all` reloaded models that
+            had not changed. Omitted, the old unconditional behaviour returns.
     """
     change = ChangePlan(notes=list(target.notes))
     by_id = {s.id: s for s in specs}
@@ -155,14 +171,41 @@ def compute_diff(
         }
 
         # (a) Options first — .env must be current before a service starts
+        here = node_env.get(node_id) if node_env is not None else None
+        restated: set[str] = set()
         for p in sorted(placements, key=lambda x: x.model_id):
             spec = by_id.get(p.model_id)
             if spec is None:
                 continue
-            for key, value in (
+            options = [
                 (f"{spec.env_prefix}_MAX_LEN", str(p.ctx)),
                 (f"{spec.env_prefix}_GPU_UTIL", f"{p.gpu_util:.2f}"),
-            ):
+            ]
+            # TP 1 is the absence of sharding, and compose already defaults to
+            # it. Writing it into a node that never had the key would change
+            # nothing about the container while still costing a force-recreate —
+            # twenty minutes of weight loading to restate a default. So it is
+            # written only to undo a node that really is sharded.
+            tp_key = f"{spec.env_prefix}_TP"
+            if p.tp > 1 or (here or {}).get(tp_key) not in (None, "", "1"):
+                options.append((tp_key, str(p.tp)))
+
+            # Which cards this container may see. Only written for a node with
+            # more than one, where it is the difference between two models on two
+            # cards and two models fighting over card 0; a single-card node is
+            # told nothing and keeps compose's "every GPU".
+            dev_key = f"{spec.env_prefix}_DEVICES"
+            devices = ",".join(str(d) for d in p.devices)
+            node = next((n for n in nodes if n.node_id == node_id), None)
+            if devices and node is not None and node.gpu_count > 1:
+                options.append((dev_key, devices))
+            elif (here or {}).get(dev_key):
+                options.append((dev_key, devices))
+
+            for key, value in options:
+                if here is not None and here.get(key) == value:
+                    continue
+                restated.add(spec.service)
                 change.actions.append(NodeAction(
                     node_id, host, "env", f"{key}={value}",
                     _env_set(env_path, key, value),
@@ -178,15 +221,19 @@ def compute_diff(
                 node_id, host, "start", f"start {service}",
                 f"{cd} && {compose} up -d {shlex.quote(service)}",
             ))
-        # Running already, but options may have changed
+        # Running already. Recreate only where an option actually moved: a
+        # force-recreate is a full weight reload, 20 minutes for a 78 GiB model,
+        # and doing it on every apply is what made re-running setup.sh expensive.
         for service in sorted(want & have):
+            if node_env is not None and service not in restated:
+                continue
             change.actions.append(NodeAction(
                 node_id, host, "recreate", f"recreate {service}",
                 f"{cd} && {compose} up -d --force-recreate {shlex.quote(service)}",
             ))
 
     if local_env_path:
-        desired = _url_csvs(target, specs, nodes, stt_hosts)
+        desired = _url_csvs(target, specs, nodes, stt_hosts, known)
         actual = _read_env_keys(local_env_path, desired)
         change.local_env = {k: v for k, v in desired.items() if actual.get(k, "") != v}
 
