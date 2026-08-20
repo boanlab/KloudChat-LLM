@@ -18,8 +18,10 @@ when sizing a node or diagnosing an OOM.
 | `qwen3.6-35b` (Qwen3.6-35B-A3B) | NVFP4 | **21.4 GiB** (measured) | Chat and floor — vision, 262K context, agentic coding |
 | `glm-4.7-flash` (31.2B-A3B) | NVFP4 | **19.8 GiB** (measured) | Cheap-decode floor. Defined, not deployed: `qwen3.5-122b-a10b` took its card |
 
-- **NVFP4 only.** A card without FP4 support (RTX 4090) cannot host this lineup,
-  and there is no int4 build of 35B-A3B to substitute.
+- **The default lineup is NVFP4 only**, which needs compute capability 10.0. A
+  card without FP4 runs the AWQ int4 aliases instead — same served models,
+  different checkpoint directory — and `gpu_supports_quant` decides which by
+  capability rather than by card name.
 - Both weight figures are **measured** `safetensors` totals. Despite the `-NVFP4`
   name, compressed-tensors `config_groups` mixes 4-bit and 8-bit, which puts them
   5–6 GiB above a pure-FP4 calculation. **Do not re-derive them from parameter
