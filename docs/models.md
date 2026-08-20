@@ -5,15 +5,22 @@ Which models are registered where, and how requests are routed to them.
 > If you are bringing the stack up for the first time, start with the
 > [README](../README.md).
 
-## Catalogue: `lib.sh` is the source of truth
+## Where models are defined
 
-`scripts/lib.sh` holds the model setup.
+Two catalogues, with different jobs.
 
-| Variable | Role |
+`scheduler/models.yaml` — **local models**: what vLLM can serve, and everything
+placement needs (port, env prefix, context floor, priority). `VLLM_MODELS` in
+`.env` selects which of them are deployed.
+
+`scripts/lib.sh` — **commercial models** routed through OpenRouter, and the
+per-checkpoint download table `download-vllm-models.sh` uses.
+
+| Variable in `lib.sh` | Role |
 |---|---|
 | `OPENAI_MODELS` / `ANTHROPIC_MODELS` / `GOOGLE_MODELS` / `XAI_MODELS` / `PERPLEXITY_MODELS` | Frontier tier, all through OpenRouter — no direct native APIs |
 | `TENCENT_MODELS` / `DEEPSEEK_MODELS` / `ZAI_MODELS` / `XIAOMI_MODELS` / `MOONSHOTAI_MODELS` | Open-weight tier — 295B to 2.8T, far too large to self-host, which is exactly where renting beats owning |
-| `VLLM_MODELS` | Local vLLM models (chat and floor). What each demands of a card is in `VLLM_MODEL_QUANT` and `VLLM_MODEL_WEIGHT_GB` |
+| `VLLM_MODELS` | Checkpoint alias → HF repo, for downloading. What each demands of a card is in `VLLM_MODEL_QUANT` and `VLLM_MODEL_WEIGHT_GB` |
 | `OPENAI_EMBED_CATALOG` | OpenAI embeddings, the fallback when no local one is deployed |
 | `MODEL_PRICE_IN_PM` / `MODEL_PRICE_OUT_PM` | USD per 1M tokens, for LiteLLM spend tracking |
 
@@ -37,21 +44,19 @@ Which models are registered where, and how requests are routed to them.
 > emits is the live figure, fetched once per run.
 
 The tables in `lib.sh` are the **fallback**, for a run with no OpenRouter key or
-no network. They are not what a normal deployment bills against — a figure that
-only changes when somebody commits is wrong for however long nobody does, and an
-audit here found seven of eighteen adrift, one by 14×. Generation now prints how
-many it read and how many differed:
+no network. They are not what a normal deployment bills against: a figure that
+only changes when somebody commits rots silently. Generation prints how many it
+read and how many differed:
 
 ```
 [INFO] prices: 25 read from the catalogue, 1 differ from the declared fallback
 ```
 
 **`--check-prices`** compares the fallbacks against the catalogue and writes
-nothing. Its job changed with this: it no longer guards billing accuracy, it
-tells you when the fallbacks have rotted far enough to be worth refreshing. It
-covers chat, the local models' OpenRouter twins, image and audio rates, and
-reports a declared id that has left the catalogue as `GONE` — that one 404s on
-first call.
+nothing. It reports when the fallbacks have rotted far enough to be worth
+refreshing, covering chat, the local models' OpenRouter twins, and image and
+audio rates. A declared id that has left the catalogue is reported as `GONE` —
+that one 404s on first call.
 
 Per-clip models are the awkward case for both the live read and the check:
 OpenRouter leaves their `pricing` block empty and states the figure in the model
@@ -99,27 +104,32 @@ vLLM is the only local LLM backend, on two architectures:
 **Compose does not run the base image directly, and the pin is per node.**
 `install-vllm.sh` pulls the base, builds this repo's layer over it as
 `kloudchat-vllm:local`, and records `VLLM_IMAGE`, `VLLM_BASE_IMAGE` and
-`VLLM_BASE_DIGEST` in that node's `.env`. A floating `nightly` fails silently
-rather than loudly — the build that relocated vLLM's tool-parser registry left
-every container healthy and every tool call unparsed — so `VLLM_BASE_DIGEST` is
-what a rebuild should be pinned to.
+`VLLM_BASE_DIGEST` in that node's `.env`. Pin rebuilds to `VLLM_BASE_DIGEST`: a
+floating `nightly` fails silently — a moved tool-parser registry leaves every
+container healthy and every tool call unparsed.
 
-It used to rebuild the pytest layer **over the tag it had pulled**, which
-overwrites the tag with a local build. That is why the digest cannot simply be
-read off a running node: `RepoDigests` there reads back identical to the image
-`Id`, and `docker pull` cannot resolve it. Separating the two tags is what makes
-the recorded digest real.
+Base and derived are separate tags, which is what makes the recorded digest
+resolvable. Rebuilding the derived layer over the pulled tag would overwrite it
+with a local build, and a digest read back from that is an image id `docker pull`
+cannot resolve.
 
-| Model (alias) | Container | Port | Quant | Role |
-|---|---|---|---|---|
-| `local/qwen3.5-122b-a10b` | `vllm-qwen122b` | 8004 | NVFP4 | Top chat — 10B active, 128K here. Needs the card to itself |
-| `local/qwen3.6-35b` | `vllm-qwen35b` | 8001 | NVFP4 | Unified chat and floor — conversation, artifacts, vision, deep research, coding, titles, memory extraction |
-| `local/gemma-4-26b-a4b` | `vllm-gemma26b` | 8005 | NVFP4 | Second family — vision, tool calling, 256K. 4B active of 26B |
-| `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | Coding (Qwen3-Coder-Next-80B-A3B). Hybrid attention — 12 of 48 layers hold KV — so 12 KiB/token at 262K |
-| `local/qwen3-coder-30b` | `vllm-coder30b` | 8006 | FP8 | Coding. 48 KiB/token, the most KV-expensive model here. **Superseded by `qwen3-coder-next`**, kept in the catalogue for a card that cannot hold 75 GiB |
-| `local/qwen3.6-27b` | `vllm-qwen27b` | 8007 | NVFP4 | The one dense model — no routing, a different kind of answer |
-| `local/glm-4.7-flash` | `vllm-glmflash` | 8002 | NVFP4 | Cheap-decode floor (31.2B-A3B). **Defined, not deployed here** — a fourth chat model costs `qwen3.6-35b` half its context on two nodes |
-| `strict-local/<model>` | same backend as its `local/` twin | — | NVFP4 | Privacy-only alias; fails rather than leaving vLLM |
+The catalogue below is what vLLM *can* serve. `VLLM_MODELS` selects what is
+deployed, and `priority` in `models.yaml` ranks them when the cards cannot hold
+everything — the lowest-ranked model is delegated to OpenRouter rather than
+squeezed in.
+
+| Model (alias) | Container | Port | Quant | Priority | Role |
+|---|---|---|---|---|---|
+| `local/qwen3.6-35b` | `vllm-qwen35b` | 8001 | NVFP4 | 20 | Unified chat and floor — conversation, artifacts, vision, deep research, coding, titles, memory extraction |
+| `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | 15 | Coding (Qwen3-Coder-Next-80B-A3B). Hybrid attention — 12 of 48 layers hold KV — so 12 KiB/token at 262K |
+| `local/qwen3.5-122b-a10b` | `vllm-qwen122b` | 8004 | NVFP4 | 10 | Top chat — 10B active, 128K here. Needs the card to itself |
+| `local/bge-m3` | `vllm-bgem3` | 8003 | BF16 | 5 | Retrieval embeddings. Pooling runner |
+| `local/bge-reranker-v2-m3` | `vllm-rerank` | 8009 | BF16 | 0 | Retrieval reranking, second stage over vector search |
+| `local/gemma-4-26b-a4b` | `vllm-gemma26b` | 8005 | NVFP4 | 0 | Second family — vision, tool calling, 256K. 4B active of 26B |
+| `local/qwen3-coder-30b` | `vllm-coder30b` | 8006 | FP8 | 0 | Coding, smaller. 48 KiB/token. Superseded by `qwen3-coder-next` where 75 GiB fits |
+| `local/qwen3.6-27b` | `vllm-qwen27b` | 8007 | NVFP4 | 0 | The one dense model — no routing, a different kind of answer |
+| `local/glm-4.7-flash` | `vllm-glmflash` | 8002 | NVFP4 | 0 | Cheap-decode floor (31.2B-A3B) |
+| `strict-local/<model>` | same backend as its `local/` twin | — | — | — | Privacy-only alias; fails rather than leaving vLLM |
 
 **Why this split**
 
@@ -133,10 +143,8 @@ any of those roles: 10B active puts its decode at roughly a third the rate, and
 at 128K, against the 35B's several times that. Point volume at the 35B and choose
 the 122B when the answer is worth the wait.
 
-`glm-4.7-flash` stays defined in the catalogue but is not in `VLLM_MODELS`: the
-122B took its card, and a second 3B-active floor alongside the 35B earns nothing.
-Its `local/` alias is therefore not registered at all — see
-[Registration](#vllm-local).
+A model in the catalogue but not in `VLLM_MODELS` gets no `local/` alias at all;
+it is reachable under its OpenRouter slug — see [Registration](#vllm-local).
 
 **Quantisation**
 
@@ -238,7 +246,8 @@ What fits on which card is in the
 | `gemma-4-26b-a4b` | Any single NVFP4-capable GPU | Second family; shares a card |
 | `qwen3-coder-30b` | Any single GPU (FP8 — no FP4 needed) | Coding |
 | `qwen3.6-27b` | Any single NVFP4-capable GPU | Dense |
-| `glm-4.7-flash` | PRO 5000 and up | Cheap-decode floor (not deployed here) |
+| `qwen3-coder-next` | GB10 or PRO 6000, **alone on the card** | Coding (FP8, 75 GiB) |
+| `glm-4.7-flash` | PRO 5000 and up | Cheap-decode floor |
 
 **Roles**
 
@@ -246,28 +255,29 @@ What fits on which card is in the
   Artifacts, deep research and coding run here; `DEEP_RESEARCH_MODEL` points
   here, and the scheduler holds a 128K context floor on it for that reason. It
   also takes the high-volume internal calls — titles, memory extraction, query
-  rewriting — which `glm-4.7-flash` used to carry. Their call sites are named by
-  the UI (`KCHAT_TITLE_MODEL`).
+  rewriting — whose call sites the UI names (`KCHAT_TITLE_MODEL`).
 - **`qwen3.5-122b-a10b`** — chosen from the picker when the answer is worth the
   latency. Nothing is routed to it by default, and nothing should be: at 10B
   active it decodes roughly three times slower, and its KV pool admits an order
   of magnitude fewer concurrent requests.
+- **`qwen3-coder-next`** — coding, and a picker choice rather than a default
+  route. 75 GiB of FP8 weights, so it wants the card to itself; `priority: 15`
+  puts it ahead of the 122B when only one of the two fits.
 - **`qwen3-coder-30b`** and **`qwen3.6-27b`** — specialisations for a cluster
-  with cards to spare. Neither is routed to; both are picker choices. They fit
-  from three nodes up, and below that the planner delegates them rather than
-  taking context away from the 35B — check `scheduler plan` before adding them
-  to `VLLM_MODELS`.
+  with cards to spare. Neither is routed to; both are picker choices. Check
+  `scheduler plan` before adding them to `VLLM_MODELS`.
 - **`gemma-4-26b-a4b`** — the second opinion. Nothing routes here either; it
   exists because when a Qwen answer is wrong it tends to be wrong the same way
   twice, and a different lineage fails differently. 4B active, so it costs about
   what the 35B costs to run.
 
-  It carries `priority: 10` in `models.yaml` against the 35B's `20`, so where a
-  cluster cannot hold both, **the 35B keeps the card and this one is delegated**
-  — even though it is the larger model and coverage would otherwise seat it
-  first. Default chat, titles, memory extraction, deep research and the external
-  coding agents all land on the 35B; losing it degrades every path at once, while
-  losing the 122B removes a choice from the picker.
+**Ranking.** `priority` in `models.yaml` decides who keeps a card when they
+  cannot all have one: `qwen3.6-35b` (20), `qwen3-coder-next` (15),
+  `qwen3.5-122b-a10b` (10), then `bge-m3` (5) and everything else. Without it,
+  coverage seats the largest model first — a packing guard, not a judgement about
+  what the cluster needs. Default chat, titles, memory extraction, deep research
+  and the coding agents all land on the 35B, so losing it degrades every path at
+  once; losing a picker choice removes an option.
 - **Artifacts** — no separate model. The client produces code and document
   artifacts on the chat deployment and the server extracts them from the
   response.

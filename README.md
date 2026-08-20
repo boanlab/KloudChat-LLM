@@ -26,6 +26,9 @@ that one address in its admin screen. No backend address is compiled into the UI
 
 `/tools/*` requires no authentication — **the gateway port must only be open
 inside a private network**, because the code execution endpoint sits behind it.
+Each backing store (the two databases, MinIO, redis, valkey) sits on an internal
+network with only the service that owns it, so nothing else in the stack can
+reach it.
 Internal service keys (code execution, document fetching) are injected by the
 gateway, so the UI never learns them and caller-supplied credentials are ignored.
 Only `/litellm/*` passes the caller's key through, alongside `/v1/*` for

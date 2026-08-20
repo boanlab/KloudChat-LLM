@@ -3,9 +3,8 @@
 What fits on which GPU, and how much VRAM each model actually occupies. Read this
 when sizing a node or diagnosing an OOM.
 
-> This document describes the **current lineup** (`qwen3.5-122b-a10b`,
-> `qwen3.6-35b` and, defined but not deployed here, `glm-4.7-flash`). There is no
-> local media backend: images, audio and video pass through to OpenRouter.
+> Figures cover every model in `scheduler/models.yaml`, deployed or not. There is
+> no local media backend: images, audio and video pass through to OpenRouter.
 
 ## The lineup
 
@@ -66,7 +65,7 @@ state regardless of sequence length.
   overestimate. That trap makes the planner treat this model as the most
   KV-expensive thing in the cluster.
 
-**Measured on this cluster**, from vLLM's own `GPU KV cache size` line:
+**Measured**, from vLLM's own `GPU KV cache size` line:
 
 | Model | util | KV tokens | Concurrency |
 |---|---:|---:|---|

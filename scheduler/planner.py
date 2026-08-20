@@ -190,15 +190,12 @@ def _fit_sessions(spec: ModelSpec, node: NodeSpec, free: Sequence[int],
                   card_capacity: int) -> Optional[tuple[ModelSpec, list[int]]]:
     """The spec as it can actually be seated here, or None.
 
-    ``concurrent_sessions`` is a sizing assumption, not a capability: it says how
-    much KV to reserve so several conversations can run at once, and halving it
-    costs concurrency, not context or correctness. Treating it as inviolable is
-    what made a model either fit at its declared width or go to OpenRouter, with
-    nothing in between — so a card that could serve one conversation served none.
+    ``concurrent_sessions`` is a sizing assumption, not a capability: halving it
+    costs concurrency, not context or correctness, so it is narrowed to fit.
 
-    The context floor is left alone. That one *is* a capability claim: deep
-    research below 128K loses the context it accumulated, and a model quietly
-    seated under its floor is worse than one that is honestly absent.
+    The context floor is a capability claim and is left alone — deep research
+    below 128K loses what it accumulated, and a model quietly seated under its
+    floor is worse than one that is honestly absent.
     """
     sessions = max(1, spec.concurrent_sessions)
     while sessions >= 1:
@@ -224,13 +221,10 @@ def _assign_cards(spec: ModelSpec, node: NodeSpec, free: Sequence[int], ctx: int
                   card_capacity: int) -> Optional[list[int]]:
     """Which cards on this node can hold the model, or None.
 
-    Placement is per card, not per node. ``gpu_util`` is a fraction of one
-    device, so a node counted as a single byte pool would seat two models at 0.86
-    each and hand both of them the same card — the second dies at engine init
-    with the first one's memory already in it.
+    Per card, not per node: ``gpu_util`` is a fraction of one device, so a node
+    treated as a single byte pool would seat two models on the same card.
 
-    Emptiest card first, which spreads models the same way worst fit spreads them
-    across nodes and leaves the most room for a later context increase.
+    Emptiest card first, leaving the most room for a later context increase.
     """
     if not spec.runs_on(node.arch):
         return None
@@ -290,16 +284,13 @@ def plan(
 
     # ── 1. Coverage: one each at the context floor, by priority then size ──
     #
-    # Largest-first is a starvation guard: seat the small models first and a big
-    # one finds every node partly used. It says nothing about which model the
-    # cluster would rather keep, so a declared `priority` outranks it. Within a
-    # priority level the guard still applies.
+    # Largest-first within a priority level is a starvation guard: seat the small
+    # models first and a big one finds every node partly used.
     ordered = sorted(
         specs, key=lambda s: (s.priority, need_bytes(s, s.ctx_floor)), reverse=True
     )
     for spec in ordered:
-        # Each node is asked what it can seat, narrowing the session count where
-        # it has to. A node that can only take the model tighter still counts.
+        # Each node reports what it can seat, narrowing sessions where it must.
         holders = [n for n in nodes if _carries(n, spec)]
         seatable = {
             n.node_id: _fit_sessions(spec, n, free[n.node_id], card_capacity[n.node_id])
@@ -334,10 +325,7 @@ def plan(
     _restore_context(result, specs, by_id, free, card_capacity)
 
     # ── 3. Replication: fill what coverage left ───────────────────────────
-    #
-    # A card that coverage did not need is a card queueing requests for no
-    # reason, so the default is to use it. `replicas=1` is how a caller says
-    # "one of each and stop".
+    # `replicas=1` is how a caller asks for one of each and no more.
     if replicas is None or replicas > 1:
         _replicate(result, specs, nodes, free, card_capacity, replicas)
         # Replicas seat at the floor too — redistribute the remainder
@@ -354,13 +342,11 @@ def _worst_fit(
 ) -> NodeSpec:
     """The roomiest node, with near-ties resolved in favour of staying put.
 
-    Worst fit spreads models across nodes and leaves room for restoration, and it
-    still decides where a model goes when the nodes genuinely differ. Within
-    ``CAPACITY_TIE_BYTES`` it decides nothing, so two other things do, in order: a
-    node already running this model, then the node id. The first avoids a reload
-    and a window of paid OpenRouter fallback bought with noise; the second makes
-    the plan reproducible, which it was not — nodes arrive in probe-completion
-    order, so the same inputs did not produce the same plan twice.
+    Worst fit spreads models across nodes and leaves room for restoration. Within
+    ``CAPACITY_TIE_BYTES`` it decides nothing, so two tiebreaks apply in order: a
+    node already running this model, avoiding a reload and a window of paid
+    fallback; then the node id, which makes the plan reproducible — nodes arrive
+    in probe-completion order.
 
     Deliberately not a preference strong enough to survive a real capacity
     difference: a model that no longer fits where it sits has to move.
@@ -377,10 +363,10 @@ def _worst_fit(
 def _carries(node: NodeSpec, spec: ModelSpec) -> bool:
     """Whether the node holds this model's checkpoint.
 
-    ``checkpoints is None`` means the probe did not report them — the old
-    behaviour, where placement trusts that the weights are wherever it puts the
-    container. Docker does not refuse a bind mount of a missing path; it creates
-    an empty directory, and vLLM then restarts forever on a missing config.json.
+    ``checkpoints is None`` means the probe did not report them, and placement
+    does not filter. Docker creates a missing bind-mount path as an empty
+    directory rather than refusing it, so a model placed where its weights are
+    not restarts forever on a missing config.json.
     """
     return node.checkpoints is None or spec.dir in node.checkpoints
 
@@ -403,9 +389,8 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
             "— capacity is not the problem, the weights are not there"
         )
 
-    # From here the comparison is against nodes that could actually run it. A
-    # message quoting the free VRAM of a node without the checkpoint reads as
-    # "there is room" while naming the one place the model can never go.
+    # Compared against nodes that could actually run it: free VRAM on a node
+    # without the checkpoint is not room.
     tp = max(1, spec.tensor_parallel)
     wide_enough = [n for n in carrying if tp <= n.gpu_count]
     if not wide_enough:
@@ -510,11 +495,8 @@ def _replicate(
     grew = True
     while grew:
         grew = False
-        # Fewest instances first, then by declared priority. Without the
-        # priority tiebreak the second copy goes to whichever model the
-        # catalogue happens to list first, which is not a decision anyone made:
-        # spare capacity should deepen the model the cluster least wants to
-        # queue on, and that is the same ranking coverage already uses.
+        # Fewest instances first, then declared priority: spare capacity
+        # deepens the model the cluster least wants to queue on.
         for spec in sorted(eligible, key=lambda s: (counts[s.id], -s.priority)):
             if replicas is not None and counts[spec.id] >= replicas:
                 continue

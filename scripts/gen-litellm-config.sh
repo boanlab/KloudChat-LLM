@@ -344,14 +344,10 @@ emit_or_brain() {  # $1=or-slug  $2=in_pm  $3=out_pm
 }
 
 # Brain registration. The local/ prefix states where a request starts, not which
-# weights answer it: a local deployment that spills to OpenRouter under load or
-# on failure still starts local, so local/<m> is honest there. With no vLLM URL
-# nothing about the route is local, so the model registers under its own
-# OpenRouter slug rather than borrowing the name. That keeps one invariant worth
-# having: local/* is never kchat_data_boundary external.
-#
-# Consequence for a GPU-less install: surfaces that name local/<m> no longer
-# resolve, and must pick from the catalogue instead (docs/models.md).
+# weights answer it — a local deployment that spills to OpenRouter still starts
+# local. With no vLLM URL the model registers under its OpenRouter slug instead,
+# keeping the invariant that local/* is never kchat_data_boundary external. On a
+# GPU-less install, surfaces naming local/<m> must pick from the catalogue.
 emit_brain() {  # $1=local-model  $2=url_csv  $3=or-slug  $4=or_in_pm  $5=or_out_pm
   if [[ -n "$2" ]]; then
     emit_vllm_chat "$1" "$2"
@@ -365,11 +361,8 @@ emit_brain() {  # $1=local-model  $2=url_csv  $3=or-slug  $4=or_in_pm  $5=or_out
 
 # Registration order = local → openai → anthropic → google (by provider group)
 # Live prices overlaid onto the declared tables before anything is emitted. The
-# tables stay as the fallback for a run with no key or no network; they are not
-# the source of truth, because a figure that only changes when somebody commits
-# is wrong for however long nobody does. An audit found seven of eighteen adrift,
-# one by 14x, and a price that is wrong breaks no request — it only shows up in a
-# billing report that nobody believes.
+# tables are the fallback for a run with no key or no network, not the source of
+# truth: a wrong price breaks no request and surfaces only in a billing report.
 PRICE_REFRESH="$(or_refresh_prices || true)"
 if [[ -n "$PRICE_REFRESH" ]]; then
   read -r PRICED MOVED <<<"$PRICE_REFRESH"

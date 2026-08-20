@@ -98,7 +98,7 @@ services:
     image: valkey/valkey:8-alpine
     profiles: [tools]
     restart: always
-    # SearXNG worker shared state only; losing it on restart is harmless
+    # SearXNG worker shared state; losing it on restart is harmless
     command: [valkey-server, --save, '', --appendonly, 'no']
     tmpfs: [/data]
     networks: [searxng-data]
@@ -112,8 +112,7 @@ services:
     environment:
       GRANIAN_WORKERS: '4'
     volumes:
-      # :ro — a container-side write leaves the host file root-owned, after which
-      # gen-searxng-config.sh cannot update it
+      # :ro — a container-side write would leave the host file root-owned
       - ./services/searxng:/etc/searxng:ro
     tmpfs: [/var/cache/searxng]
     networks: [kloudchat, searxng-data]
@@ -171,9 +170,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      # Every other warm-up in this file has one. Without it the first probe can
-      # land before MinIO binds 9000 — one `curl: (7)` was enough to abort
-      # minio-init and code-interpreter on a full recreate.
+      # Warm-up window: a probe before MinIO binds 9000 must not count.
       start_period: 20s
     networks: [code-interpreter-data]
 
@@ -228,7 +225,7 @@ services:
       S3_BUCKET: ${CODE_INTERPRETER_MINIO_BUCKET:-code-interpreter}
       S3_REGION: us-east-1
       S3_SECURE: 'false'
-    # Isolated execution of user code; no other service gets these privileges
+    # Isolated execution of user code; the only service with these privileges
     cap_add: [SYS_ADMIN]
     security_opt:
       - apparmor:unconfined
@@ -264,7 +261,7 @@ services:
 
   # ── transcription ───────────────────────────────────────────────────
   # Front end for faster-whisper on the GPU nodes, routing by in-flight count.
-  # Profile-fenced: without a backend its healthcheck would still pass.
+  # Profile-fenced: its healthcheck passes even with no backend.
   whisper-shim:
     container_name: kloudchat-whisper-shim
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-whisper-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
@@ -274,11 +271,11 @@ services:
     restart: always
     environment:
       WHISPER_URLS: ${WHISPER_URLS:-}
-      # Headroom for transcribing long meeting recordings
+      # Headroom for long recordings
       TRANSCRIBE_TIMEOUT_SEC: ${TRANSCRIBE_TIMEOUT_SEC:-3600}
       LOG_LEVEL: INFO
     healthcheck:
-      # The shim's /health summarises backend state as "ok" or "degraded"
+      # /health summarises backend state as "ok" or "degraded"
       test: ["CMD", "python3", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:9000/health')); raise SystemExit(0 if d.get('status')=='ok' else 1)"]
       interval: 30s
       timeout: 5s
@@ -289,8 +286,7 @@ services:
     networks: [kloudchat]
 
   # ── retrieval index ─────────────────────────────────────────────────
-  # Vectors for RAG. Separate from litellm-db: LiteLLM's rows are the gateway's
-  # own state, these are a derived index KloudChat can rebuild.
+  # Vectors for RAG. Separate from litellm-db: a derived index, rebuildable.
   index-db:
     container_name: kloudchat-index-db
     image: pgvector/pgvector:pg16
@@ -322,24 +318,19 @@ services:
         condition: service_healthy
     environment:
       INDEX_DATABASE_URL: postgresql://${INDEX_DB_USER:-index}:${INDEX_DB_PASSWORD}@index-db:5432/index
-      # Embeddings go through the gateway by model name: which backend answers
-      # is LiteLLM's routing decision, not a second address to keep in step.
+      # Embeddings by model name: the backend is LiteLLM's routing decision.
       LITELLM_URL: ${INDEX_LITELLM_URL:-http://litellm:8000}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
-      # Preference order: local when placed, commercial otherwise. Neither is
-      # fatal — KloudChat falls back to lexical search.
+      # Preference order. Neither available: KloudChat falls back to lexical search.
       EMBED_MODELS: ${INDEX_EMBED_MODELS:-local/bge-m3,text-embedding-3-small}
-      # Second retrieval stage. Empty skips it and search falls back to vector
-      # order, which is what a deployment without the reranker deployed gets —
-      # the shim degrades rather than failing.
+      # Second retrieval stage. Empty skips it; search falls back to vector order.
       RERANK_MODEL: ${INDEX_RERANK_MODEL-local/bge-reranker-v2-m3}
       RERANK_CANDIDATES: ${INDEX_RERANK_CANDIDATES:-5}
       RERANK_MIN_SCORE: ${INDEX_RERANK_MIN_SCORE:-0.1}
       RERANK_RECALL_DISTANCE: ${INDEX_RERANK_RECALL_DISTANCE:-0.85}
       LOG_LEVEL: INFO
     healthcheck:
-      # "ok" means the database answers. Embeddings are reported separately:
-      # deletes keep working while the GPU node is down.
+      # "ok" = the database answers. Embeddings are reported separately.
       test: ["CMD", "python3", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8080/health')); raise SystemExit(0 if d.get('status')=='ok' else 1)"]
       interval: 30s
       timeout: 5s
@@ -352,11 +343,8 @@ networks:
   kloudchat:
     driver: bridge
 
-  # Backing stores. Each one is on a network with exactly the service that owns
-  # it, so a compromised container elsewhere on the service plane cannot reach
-  # the port at all — the password is the second lock, not the only one.
-  # internal: true also cuts these off from the outside world, which a database
-  # has no reason to originate traffic to.
+  # Backing stores, each with only the service that owns it. Unreachable from
+  # the rest of the stack; internal: true also denies them outbound traffic.
   litellm-data:
     driver: bridge
     internal: true

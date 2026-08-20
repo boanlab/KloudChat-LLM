@@ -14,9 +14,15 @@
 #   whisper         transcription — resident on the node rather than placed.
 #                   amd64 only: arm64 nodes skip it and delegate STT to OpenRouter
 #
-# Both models on one node is ~41 GiB of weights, so PRO5000 (48G) or larger.
+# Two chat models on one node is ~41 GiB of weights, so PRO5000 (48G) or larger.
 # NVFP4 weights need an FP4-capable card. The image defaults to arm64; amd64
 # nodes set VLLM_IMAGE.
+#
+# VLLM_<MODEL>_DEVICES: cards a container may use, written by the scheduler on
+# multi-card nodes so two models take two cards — gpu-memory-utilization is a
+# fraction of a device, not of the node. It is passed as NVIDIA_VISIBLE_DEVICES,
+# never CUDA_VISIBLE_DEVICES: the runtime variable has a safe "all", the CUDA one
+# has no such value and fails engine init on GB10.
 name: kloudchat-vllm
 
 services:
@@ -76,16 +82,6 @@ services:
       - "8001:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
-      # Cards this container may use. The scheduler writes VLLM_QWEN35B_DEVICES on a node
-      # with more than one card, so two models land on two cards instead of both
-      # claiming most of card 0 — gpu-memory-utilization is a fraction of a
-      # device, not of the node.
-      #
-      # NVIDIA_VISIBLE_DEVICES, not CUDA_VISIBLE_DEVICES: the container runtime
-      # variable has a safe "all", where the CUDA one has no way to say "every
-      # card" and an empty value means *no* card. It also does not work here —
-      # setting CUDA_VISIBLE_DEVICES=0 on GB10 fails engine init outright with
-      # cudaErrorNotPermitted, on a device that runs fine without it.
       NVIDIA_VISIBLE_DEVICES: ${VLLM_QWEN35B_DEVICES:-all}
     deploy:
       resources:
@@ -102,11 +98,8 @@ services:
       # Weight load, torch.compile and KV profiling on first start
       start_period: 600s
 
-  # Top chat model. Same architecture family and therefore the same parsers as
-  # vllm-qwen35b; what differs is the arithmetic — 78 GiB of weights on a 121 GiB
-  # card, so the KV pool is ~22 GiB and the context is pinned at 128K rather than
-  # the native 262K. 10B active parameters puts decode at roughly a third of the
-  # 35B's, which is why it is not the model internal calls are pointed at.
+  # Top chat model. Same family and parsers as vllm-qwen35b; 78 GiB of weights
+  # leaves ~22 GiB of KV, so the context is pinned at 128K, not the native 262K.
   vllm-qwen122b:
     container_name: vllm-qwen122b
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -136,15 +129,12 @@ services:
       - qwen3
       - --default-chat-template-kwargs
       - '{"enable_thinking": false}'
-      # 36 of the 48 layers are linear attention, and their per-sequence conv
-      # state is 21.4 MiB — 2.7 GiB at 128 sequences, out of a KV pool a third
-      # the size of the 35B's. Kept low deliberately; raising it buys queue depth
-      # the card cannot serve anyway.
+      # Linear-attention conv state is 21.4 MiB per sequence — 2.7 GiB at 128,
+      # out of a ~22 GiB pool. Kept low; more is queue depth the card cannot serve.
       - --max-num-seqs
       - "${VLLM_QWEN122B_MAX_NUM_SEQS:-32}"
-      # Cards to shard across, on this node. 78 GiB of weights does not fit a
-      # 96 GB card whole — at TP 2 each rank holds 39 GiB and the KV pool grows
-      # rather than shrinks. The scheduler writes this; 1 is a single card.
+      # Cards to shard across, written by the scheduler. 1 is a single card;
+      # a 96 GiB card needs 2, which the 78 GiB of weights do not fit whole.
       - --tensor-parallel-size
       - "${VLLM_QWEN122B_TP:-1}"
       - --trust-remote-code
@@ -154,16 +144,6 @@ services:
       - "8004:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
-      # Cards this container may use. The scheduler writes VLLM_QWEN122B_DEVICES on a node
-      # with more than one card, so two models land on two cards instead of both
-      # claiming most of card 0 — gpu-memory-utilization is a fraction of a
-      # device, not of the node.
-      #
-      # NVIDIA_VISIBLE_DEVICES, not CUDA_VISIBLE_DEVICES: the container runtime
-      # variable has a safe "all", where the CUDA one has no way to say "every
-      # card" and an empty value means *no* card. It also does not work here —
-      # setting CUDA_VISIBLE_DEVICES=0 on GB10 fails engine init outright with
-      # cudaErrorNotPermitted, on a device that runs fine without it.
       NVIDIA_VISIBLE_DEVICES: ${VLLM_QWEN122B_DEVICES:-all}
     deploy:
       resources:
@@ -224,23 +204,10 @@ services:
       - "8002:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
-      # Cards this container may use. The scheduler writes VLLM_GLMFLASH_DEVICES on a node
-      # with more than one card, so two models land on two cards instead of both
-      # claiming most of card 0 — gpu-memory-utilization is a fraction of a
-      # device, not of the node.
-      #
-      # NVIDIA_VISIBLE_DEVICES, not CUDA_VISIBLE_DEVICES: the container runtime
-      # variable has a safe "all", where the CUDA one has no way to say "every
-      # card" and an empty value means *no* card. It also does not work here —
-      # setting CUDA_VISIBLE_DEVICES=0 on GB10 fails engine init outright with
-      # cudaErrorNotPermitted, on a device that runs fine without it.
       NVIDIA_VISIBLE_DEVICES: ${VLLM_GLMFLASH_DEVICES:-all}
-      # MLA model, and the backend is a per-card choice: vLLM's TRITON_MLA decode
-      # kernel wants 101377 B of shared memory on GB10 against a 101376 B limit,
-      # one byte over, and engine init fails. install-vllm.sh writes the value for
-      # the card it is running on (lib.sh::mla_attention_backend). The default
-      # here is GB10's, kept only so a hand-driven node on that card still works;
-      # empty is valid and lets vLLM choose.
+      # MLA backend is a per-card choice — TRITON_MLA exceeds GB10's shared
+      # memory limit and fails engine init. install-vllm.sh writes the card's
+      # value (lib.sh::mla_attention_backend); empty lets vLLM choose.
       VLLM_ATTENTION_BACKEND: ${VLLM_GLMFLASH_ATTN_BACKEND-FLASHINFER_MLA}
     deploy:
       resources:
@@ -256,11 +223,9 @@ services:
       retries: 5
       start_period: 600s
 
-  # A second family in the lineup. Gemma 4 states tool calls in its own
-  # <|tool> form, which vLLM registers as the `gemma4` parser — without it the
-  # model falls back to ReAct text and the client cannot execute anything.
-  # Five layers in six are sliding-window (1024), so a 256K context costs far
-  # less KV than the layer count suggests: see docs/gpu-memory.md.
+  # A second family. Gemma 4's <|tool> form needs the `gemma4` parser; without
+  # it the model falls back to ReAct text and no client can execute anything.
+  # Five layers in six are sliding-window (1024), so 256K is cheap in KV.
   vllm-gemma26b:
     container_name: vllm-gemma26b
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -300,16 +265,6 @@ services:
       - "8005:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
-      # Cards this container may use. The scheduler writes VLLM_GEMMA26B_DEVICES on a node
-      # with more than one card, so two models land on two cards instead of both
-      # claiming most of card 0 — gpu-memory-utilization is a fraction of a
-      # device, not of the node.
-      #
-      # NVIDIA_VISIBLE_DEVICES, not CUDA_VISIBLE_DEVICES: the container runtime
-      # variable has a safe "all", where the CUDA one has no way to say "every
-      # card" and an empty value means *no* card. It also does not work here —
-      # setting CUDA_VISIBLE_DEVICES=0 on GB10 fails engine init outright with
-      # cudaErrorNotPermitted, on a device that runs fine without it.
       NVIDIA_VISIBLE_DEVICES: ${VLLM_GEMMA26B_DEVICES:-all}
     deploy:
       resources:
@@ -325,10 +280,9 @@ services:
       retries: 5
       start_period: 600s
 
-  # Coding. Qwen3-Coder states tool calls in its own XML dialect, which is what
-  # the `qwen3_coder` parser reads — `qwen3_xml` is a different format and
-  # silently produces no tool calls. No reasoning parser: this model does not
-  # think, and its chat template has no enable_thinking switch.
+  # Coding. Qwen3-Coder's XML tool dialect needs `qwen3_coder`; `qwen3_xml` is a
+  # different format and silently yields no tool calls. No thinking mode, so no
+  # reasoning parser.
   vllm-coder30b:
     container_name: vllm-coder30b
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -361,16 +315,6 @@ services:
       - "8006:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
-      # Cards this container may use. The scheduler writes VLLM_CODER30B_DEVICES on a node
-      # with more than one card, so two models land on two cards instead of both
-      # claiming most of card 0 — gpu-memory-utilization is a fraction of a
-      # device, not of the node.
-      #
-      # NVIDIA_VISIBLE_DEVICES, not CUDA_VISIBLE_DEVICES: the container runtime
-      # variable has a safe "all", where the CUDA one has no way to say "every
-      # card" and an empty value means *no* card. It also does not work here —
-      # setting CUDA_VISIBLE_DEVICES=0 on GB10 fails engine init outright with
-      # cudaErrorNotPermitted, on a device that runs fine without it.
       NVIDIA_VISIBLE_DEVICES: ${VLLM_CODER30B_DEVICES:-all}
     deploy:
       resources:
@@ -386,11 +330,8 @@ services:
       retries: 5
       start_period: 600s
 
-  # Coding, and the larger of the two coders. Same XML tool dialect as the 30B,
-  # so the same `qwen3_coder` parser — `qwen3_xml` is a different format and
-  # silently produces no tool calls. What differs is the attention: Qwen3-Next
-  # holds KV on 12 of its 48 layers and runs the rest linear, so the native 262K
-  # is affordable here in a way it is not on the 30B.
+  # Coding, the larger of the two. Same `qwen3_coder` dialect as the 30B; KV on
+  # 12 of 48 layers, the rest linear, which is what makes the native 262K fit.
   vllm-codernext:
     container_name: vllm-codernext
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -407,8 +348,7 @@ services:
       - "8000"
       - --max-model-len
       - "${VLLM_CODERNEXT_MAX_LEN:-262144}"
-      # 75 GiB of weights on a 121.6 GiB card. The rest is KV, and at 12 KiB per
-      # token the hybrid layout buys real depth with it.
+      # 75 GiB of weights on a 121.6 GiB card; the rest is KV at 12 KiB/token.
       - --gpu-memory-utilization
       - "${VLLM_CODERNEXT_GPU_UTIL:-0.85}"
       - --kv-cache-dtype
@@ -425,14 +365,9 @@ services:
       - "8008:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
-      # DeepGEMM off by default. This checkpoint is FP8 with 128x128 weight
-      # blocks, and on GB10 the DeepGEMM path rejects that scale-factor layout
-      # at engine init — `Assertion error (layout.hpp:60): Unknown SF
-      # transformation` — after five minutes of weight loading, then restarts
-      # and does it again. Set to 1 on hardware where the kernel takes it.
+      # DeepGEMM rejects this checkpoint's FP8 128x128 scale-factor layout on
+      # GB10, at engine init. Set to 1 where the kernel takes it.
       VLLM_USE_DEEP_GEMM: ${VLLM_CODERNEXT_DEEP_GEMM:-0}
-      # Cards this container may use — see vllm-qwen35b for why this is the
-      # runtime variable and not the CUDA one.
       NVIDIA_VISIBLE_DEVICES: ${VLLM_CODERNEXT_DEVICES:-all}
     deploy:
       resources:
@@ -448,9 +383,8 @@ services:
       retries: 5
       start_period: 600s
 
-  # The one dense model here. Same Qwen3.5 family plumbing as vllm-qwen35b, so
-  # the same parsers; what differs is that every parameter is active, which shows
-  # up as decode cost rather than as memory.
+  # The one dense model. Same family plumbing as vllm-qwen35b; every parameter
+  # active, which costs decode rather than memory.
   vllm-qwen27b:
     container_name: vllm-qwen27b
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -489,16 +423,6 @@ services:
       - "8007:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
-      # Cards this container may use. The scheduler writes VLLM_QWEN27B_DEVICES on a node
-      # with more than one card, so two models land on two cards instead of both
-      # claiming most of card 0 — gpu-memory-utilization is a fraction of a
-      # device, not of the node.
-      #
-      # NVIDIA_VISIBLE_DEVICES, not CUDA_VISIBLE_DEVICES: the container runtime
-      # variable has a safe "all", where the CUDA one has no way to say "every
-      # card" and an empty value means *no* card. It also does not work here —
-      # setting CUDA_VISIBLE_DEVICES=0 on GB10 fails engine init outright with
-      # cudaErrorNotPermitted, on a device that runs fine without it.
       NVIDIA_VISIBLE_DEVICES: ${VLLM_QWEN27B_DEVICES:-all}
     deploy:
       resources:
@@ -514,9 +438,8 @@ services:
       retries: 5
       start_period: 600s
 
-  # Retrieval reranking. Same pooling runner as the embedder, scoring
-  # (query, passage) pairs rather than embedding them one at a time — vLLM
-  # exposes it at /v1/rerank. ~2.2 GiB, so it shares a card.
+  # Retrieval reranking. Pooling runner scoring (query, passage) pairs. Exposed
+  # at /v1/rerank. ~2.2 GiB, so it shares a card.
   vllm-rerank:
     container_name: vllm-rerank
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -590,16 +513,6 @@ services:
       - "8003:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
-      # Cards this container may use. The scheduler writes VLLM_BGEM3_DEVICES on a node
-      # with more than one card, so two models land on two cards instead of both
-      # claiming most of card 0 — gpu-memory-utilization is a fraction of a
-      # device, not of the node.
-      #
-      # NVIDIA_VISIBLE_DEVICES, not CUDA_VISIBLE_DEVICES: the container runtime
-      # variable has a safe "all", where the CUDA one has no way to say "every
-      # card" and an empty value means *no* card. It also does not work here —
-      # setting CUDA_VISIBLE_DEVICES=0 on GB10 fails engine init outright with
-      # cudaErrorNotPermitted, on a device that runs fine without it.
       NVIDIA_VISIBLE_DEVICES: ${VLLM_BGEM3_DEVICES:-all}
     deploy:
       resources:
@@ -616,10 +529,9 @@ services:
       # No torch.compile or KV profiling to wait through.
       start_period: 120s
 
-  # Transcription backend, resident on the same card as vLLM and called by the
-  # stack's whisper-shim through WHISPER_URLS. amd64 only: aarch64 ctranslate2
-  # wheels are CPU-only, and the resulting empty WHISPER_URLS routes STT to
-  # OpenRouter.
+  # Transcription backend, resident on the vLLM card, called by whisper-shim
+  # through WHISPER_URLS. amd64 only — aarch64 ctranslate2 wheels are CPU-only,
+  # and an empty WHISPER_URLS routes STT to OpenRouter.
   whisper:
     container_name: whisper
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-whisper:${KLOUDCHAT_IMAGE_TAG:-latest}

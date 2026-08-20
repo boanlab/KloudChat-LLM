@@ -274,7 +274,8 @@ declare -A VLLM_MODELS=(
   [gemma-4-26b-a4b-awq]="cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit"
   [qwen3.6-27b-awq]="QuantTrio/Qwen3.6-27B-AWQ"
   [qwen3.6-35b-awq]="QuantTrio/Qwen3.6-35B-A3B-AWQ"
-  # Coding, and the one dense model. Both FP8/NVFP4 respectively.
+  # Coding. FP8, so a card without FP4 serves them.
+  [qwen3-coder-next]="Qwen/Qwen3-Coder-Next-FP8"
   [qwen3-coder-30b]="Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"
   [qwen3.6-27b]="Qwen/Qwen3.6-27B"
   # Retrieval embeddings. BF16 — at 2.2 GiB quantising buys nothing, and shifted
@@ -299,6 +300,7 @@ declare -A VLLM_MODEL_WEIGHT_GB=(
   [gemma-4-26b-a4b-awq]=17
   [qwen3.6-27b-awq]=22
   [qwen3.6-35b-awq]=26
+  [qwen3-coder-next]=75
   [qwen3-coder-30b]=33
   [qwen3.6-27b]=21
   [bge-m3]=3
@@ -313,6 +315,7 @@ declare -A VLLM_MODEL_QUANT=(
   [gemma-4-26b-a4b-awq]=awq
   [qwen3.6-27b-awq]=awq
   [qwen3.6-35b-awq]=awq
+  [qwen3-coder-next]=fp8
   [qwen3-coder-30b]=fp8
   [qwen3.6-27b]=nvfp4
   # BF16 — every card that can run the lineup can run this.
@@ -371,15 +374,11 @@ vllm_model_unservable_reason() {
 # that relocated the tool-parser registry leaves every container healthy and
 # every tool call quietly unparsed. Pin, and move the pin deliberately.
 #
-# Neither architecture is pinned by digest *here*, and one attempt to do so is
-# worth recording. The nodes' RepoDigests read back identical to their image Ids,
-# because install-vllm.sh used to rebuild the pytest layer over the tag it had
-# pulled — which overwrites the tag with a local build and destroys the
-# provenance. A digest read from that is an image id, not something a registry
-# can resolve, and `docker pull` refuses it.
+# Neither architecture is pinned by digest here: a digest read from a locally
+# rebuilt tag is an image id, which `docker pull` refuses.
 #
 # The pin is established per node at install time instead: base and derived are
-# now separate tags, so the base tag is a genuine pull and install-vllm.sh
+# separate tags, so the base tag is a genuine pull and install-vllm.sh
 # records the digest it resolved as VLLM_BASE_DIGEST. Hardcoding a digest nobody
 # has run would be a worse lie than an honest tag.
 VLLM_IMAGE_ARM64="vllm/vllm-openai:nightly-aarch64"
@@ -579,11 +578,8 @@ or_free_models() {
 # Declared prices against the live catalogue. Prints one line per mismatch and
 # returns 1 if any were found.
 #
-# This exists because seven of eighteen had drifted unnoticed, one of them by
-# 14x. Nothing breaks when a price is wrong — the model answers, the request
-# succeeds — so it is only ever caught by someone reading a billing report and
-# not believing it. The catalogue is the source of truth for what a call costs;
-# lib.sh is a copy, and copies rot.
+# Drift is silent: a wrong price still answers the request and surfaces only in
+# a billing report. The catalogue is the source of truth; these tables are a copy.
 or_price_drift() {
   has_openrouter || { echo "no OPENROUTER_API_KEY — nothing to check" >&2; return 0; }
   command -v jq &>/dev/null || { echo "jq is required" >&2; return 0; }
@@ -882,14 +878,10 @@ litellm_chat_models_csv() {
     for m in "${QWEN_MODELS[@]}";       do out+=("qwen/$m");       done
     for m in "${MINIMAX_MODELS[@]}";    do out+=("minimax/$m");    done
   fi
-  # Same shape as emit_brain, and it has to stay that way: a mismatch shows the
-  # agents in the picker while direct calls fail as model-not-allowed.
-  #
-  # A local alias exists only over a real vLLM deployment — that is what the
-  # local/ prefix claims, and the strict alias additionally advertises a privacy
-  # boundary the generated config would not create for an OpenRouter-only
-  # install. With no deployment the model is reachable under its OpenRouter
-  # slug, which is what emit_brain registers.
+  # Must match emit_brain's shape: a mismatch shows the agents in the picker
+  # while direct calls fail as model-not-allowed. A local alias exists only over
+  # a real vLLM deployment; without one the model is reachable under its
+  # OpenRouter slug.
   if [[ -n "$vllm_chat_url" ]]; then
     out+=("local/qwen3.6-35b" "strict-local/qwen3.6-35b")
   elif has_openrouter; then
@@ -1016,10 +1008,9 @@ csv_split() {
 
 # Push the repo to a remote, excluding runtime data (DB volumes, caches, logs).
 #
-# `.env` is excluded deliberately: `scheduler apply` writes per-node overrides
-# there, and syncing the orchestrator's copy over them restores local defaults —
-# which can put two models' gpu_util on one card. New nodes are seeded by
-# rsync_push_env_if_absent; after that the applier owns the file.
+# `.env` is excluded: `scheduler apply` writes per-node overrides there, and
+# overwriting them with the orchestrator's copy can put two models on one card.
+# New nodes are seeded by rsync_push_env_if_absent; the applier owns it after.
 rsync_push() {
   local host="$1"
   echo "  → rsync to ${host}:${KLOUDCHAT_REMOTE_DIR}/"
