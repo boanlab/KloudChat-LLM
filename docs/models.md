@@ -133,13 +133,8 @@ Its `local/` alias is therefore not registered at all — see
 **Quantisation**
 
 - Default is **NVFP4** (GB10 / RTX 5090 / PRO 5000 / PRO 6000).
-- **A card without FP4** cannot run the default lineup, and the catalogue carries
-  AWQ int4 aliases for it — `gemma-4-26b-a4b-awq`, `qwen3.6-27b-awq`,
-  `qwen3.6-35b-awq`, which execute from compute capability 7.5. Point the model's
-  `*_DIR` at one; the served entry does not change.
-- Those aliases are for **large** FP4-less cards. On 48 GiB they place at
-  128K–256K; on 24 GiB one of them places at its 32K floor and 0.92 of the card,
-  which is why 32 GiB usable is the floor and `manage-vllm.sh up` refuses below it
+- **RTX 4090** has no FP4 support and there is no int4 build of 35B-A3B to
+  substitute, so `manage-vllm.sh up` refuses on that card
   ([gpu-memory.md](gpu-memory.md)).
 
 **Parsers**

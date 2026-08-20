@@ -18,10 +18,8 @@ when sizing a node or diagnosing an OOM.
 | `qwen3.6-35b` (Qwen3.6-35B-A3B) | NVFP4 | **21.4 GiB** (measured) | Chat and floor — vision, 262K context, agentic coding |
 | `glm-4.7-flash` (31.2B-A3B) | NVFP4 | **19.8 GiB** (measured) | Cheap-decode floor. Defined, not deployed: `qwen3.5-122b-a10b` took its card |
 
-- **The default lineup is NVFP4 only**, which needs compute capability 10.0. A
-  card without FP4 runs the AWQ int4 aliases instead — same served models,
-  different checkpoint directory — and `gpu_supports_quant` decides which by
-  capability rather than by card name.
+- **NVFP4 only.** A card without FP4 support (RTX 4090) cannot host this lineup,
+  and there is no int4 build of 35B-A3B to substitute.
 - Both weight figures are **measured** `safetensors` totals. Despite the `-NVFP4`
   name, compressed-tensors `config_groups` mixes 4-bit and 8-bit, which puts them
   5–6 GiB above a pure-FP4 calculation. **Do not re-derive them from parameter
@@ -136,7 +134,7 @@ per-sequence state, so it is charged `POOLING_ACTIVATION_BYTES` (2 GiB) instead.
 
 | Node | VRAM | Chat | Floor | Notes |
 |---|---:|---|---|---|
-| RTX 4090 | 24 G | ✗ | ✗ | Below the 32 GiB floor. The int4 aliases execute here, but one places at its 32K floor and 0.92 of the card — see prerequisites |
+| RTX 4090 | 24 G | ✗ | ✗ | No FP4 — this lineup cannot run |
 | RTX 5090 | 32 G | ○ | △ | One or the other; both leaves almost no KV |
 | PRO 5000 | 48 G | ○ | ○ | ~41 GiB loaded, little KV headroom |
 | PRO 6000 | 96 G | ○ | ○ | ~50 GiB of KV after loading both |

@@ -331,25 +331,11 @@ VLLM_PREFERRED_MODELS=(qwen3.6-35b-nvfp4 glm-4.7-flash)
 
 # Why this node cannot serve $1. Prints a reason and returns 1, or returns 0
 # silently. Alias validity is the caller's check.
-#: Below this a card cannot serve anything in this catalogue usefully, whatever
-#: its compute capability says. Measured rather than assumed: on 24 GiB exactly
-#: one model places — gemma-4-26b-a4b-awq, at its 32K floor and 0.92 of the card,
-#: with no room to grow and nothing to share with. A 48 GiB FP4-less card takes
-#: the same int4 builds at 128K–256K, which is what those aliases are for.
-VLLM_MIN_USABLE_VRAM_GB=32
-
 vllm_model_unservable_reason() {
   local alias="$1" quant="${VLLM_MODEL_QUANT[$1]:-}" weight="${VLLM_MODEL_WEIGHT_GB[$1]:-0}"
   local vram; vram="$(gpu_usable_vram_gb)"
   if ! has_nvidia_gpu; then
     echo "no NVIDIA GPU on this node"; return 1
-  fi
-  # Size before capability: a 24 GiB card that passes the int4 gate still has
-  # nowhere to put a model, and "cannot execute these weights" would send someone
-  # looking for a different build rather than a different card.
-  if (( vram > 0 && vram < VLLM_MIN_USABLE_VRAM_GB )); then
-    echo "the card has ${vram}GiB usable; this catalogue needs ${VLLM_MIN_USABLE_VRAM_GB}GiB before anything places with room to run"
-    return 1
   fi
   if [[ -n "$quant" ]] && ! gpu_supports_quant "$quant"; then
     echo "$(get_gpu_name) cannot execute ${quant} weights (compute capability $(gpu_compute_cap))"
