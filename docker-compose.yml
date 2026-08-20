@@ -25,7 +25,7 @@ services:
       - ./services/gateway/Caddyfile:/etc/caddy/Caddyfile:ro
     environment:
       # Internal keys injected upstream; they never leave the gateway
-      SCRAPER_API_KEY: ${SCRAPER_API_KEY:-internal-shim-noauth}
+      SCRAPER_API_KEY: ${SCRAPER_API_KEY:?the document fetch shim key is required}
       CODE_INTERPRETER_API_KEY: ${CODE_INTERPRETER_API_KEY:?the code execution API key is required}
     healthcheck:
       test: [CMD, wget, -qO-, 'http://localhost:8080/health']
@@ -51,7 +51,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks: [kloudchat]
+    networks: [litellm-data]
 
   litellm:
     container_name: kloudchat-litellm
@@ -89,7 +89,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-    networks: [kloudchat]
+    networks: [kloudchat, litellm-data]
 
   # ── web search ──────────────────────────────────────────────────────
   valkey:
@@ -100,7 +100,7 @@ services:
     # SearXNG worker shared state only; losing it on restart is harmless
     command: [valkey-server, --save, '', --appendonly, 'no']
     tmpfs: [/data]
-    networks: [kloudchat]
+    networks: [searxng-data]
 
   searxng:
     container_name: kloudchat-searxng
@@ -115,7 +115,7 @@ services:
       # gen-searxng-config.sh cannot update it
       - ./services/searxng:/etc/searxng:ro
     tmpfs: [/var/cache/searxng]
-    networks: [kloudchat]
+    networks: [kloudchat, searxng-data]
 
   # ── document fetch ──────────────────────────────────────────────────
   crawl4ai-shim:
@@ -126,6 +126,7 @@ services:
     profiles: [tools]
     restart: always
     environment:
+      SCRAPER_API_KEY: ${SCRAPER_API_KEY:?}
       DEFAULT_TIMEOUT_MS: '30000'
       LOG_LEVEL: INFO
     healthcheck:
@@ -150,7 +151,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks: [kloudchat]
+    networks: [code-interpreter-data]
 
   code-interpreter-minio:
     container_name: kloudchat-ci-minio
@@ -168,7 +169,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks: [kloudchat]
+    networks: [code-interpreter-data]
 
   code-interpreter-minio-init:
     container_name: kloudchat-ci-minio-init
@@ -190,7 +191,7 @@ services:
         $${CODE_INTERPRETER_MINIO_USER} $${CODE_INTERPRETER_MINIO_PASSWORD};
         mc mb --ignore-existing myminio/$${CODE_INTERPRETER_MINIO_BUCKET};
         exit 0;
-    networks: [kloudchat]
+    networks: [code-interpreter-data]
 
   code-interpreter:
     container_name: kloudchat-code-interpreter
@@ -232,7 +233,7 @@ services:
       timeout: 15s
       retries: 3
       start_period: 30s
-    networks: [kloudchat]
+    networks: [kloudchat, code-interpreter-data]
 
   # ── deep research ───────────────────────────────────────────────────
   # MCP streamable-http. Models come from the LiteLLM on this network.
@@ -291,7 +292,7 @@ services:
     restart: always
     environment:
       POSTGRES_USER: ${INDEX_DB_USER:-index}
-      POSTGRES_PASSWORD: ${INDEX_DB_PASSWORD:-index}
+      POSTGRES_PASSWORD: ${INDEX_DB_PASSWORD:?the retrieval index database password is required}
       POSTGRES_DB: index
     volumes:
       - ./data/index/postgres:/var/lib/postgresql/data
@@ -300,7 +301,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks: [kloudchat]
+    networks: [index-data]
 
   index-shim:
     container_name: kloudchat-index-shim
@@ -313,7 +314,7 @@ services:
       index-db:
         condition: service_healthy
     environment:
-      INDEX_DATABASE_URL: postgresql://${INDEX_DB_USER:-index}:${INDEX_DB_PASSWORD:-index}@index-db:5432/index
+      INDEX_DATABASE_URL: postgresql://${INDEX_DB_USER:-index}:${INDEX_DB_PASSWORD}@index-db:5432/index
       # Embeddings go through the gateway by model name: which backend answers
       # is LiteLLM's routing decision, not a second address to keep in step.
       LITELLM_URL: ${INDEX_LITELLM_URL:-http://litellm:8000}
@@ -337,8 +338,27 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    networks: [kloudchat]
+    networks: [kloudchat, index-data]
 
 networks:
+  # The service plane: everything the gateway fronts, plus the gateway itself.
   kloudchat:
     driver: bridge
+
+  # Backing stores. Each one is on a network with exactly the service that owns
+  # it, so a compromised container elsewhere on the service plane cannot reach
+  # the port at all — the password is the second lock, not the only one.
+  # internal: true also cuts these off from the outside world, which a database
+  # has no reason to originate traffic to.
+  litellm-data:
+    driver: bridge
+    internal: true
+  index-data:
+    driver: bridge
+    internal: true
+  code-interpreter-data:
+    driver: bridge
+    internal: true
+  searxng-data:
+    driver: bridge
+    internal: true

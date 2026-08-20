@@ -64,6 +64,11 @@ USER_AGENT = os.environ.get(
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 KloudChat/1.0",
 )
 
+# The gateway injects this on every proxied request and it never leaves that hop.
+# Empty disables the check — the shim stays runnable on its own, which is how the
+# healthcheck and a local `docker run` reach it.
+API_KEY = os.environ.get("SCRAPER_API_KEY", "")
+
 crawler: AsyncWebCrawler | None = None
 
 
@@ -177,6 +182,9 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _handle(req: Request) -> JSONResponse:
+    if API_KEY and req.headers.get("authorization") != f"Bearer {API_KEY}":
+        return JSONResponse({"success": False, "error": "unauthorized"},
+                            status_code=401)
     try:
         payload = await req.json()
     except Exception as e:
