@@ -76,7 +76,7 @@ models:
   # and the native 262K costs a quarter of what the layer count suggests. FP8,
   # so a card without FP4 serves it too.
   - id: qwen3-coder-next
-    hf_repo: Qwen/Qwen3-Coder-Next
+    hf_repo: Qwen/Qwen3-Coder-Next-FP8
     openrouter: qwen/qwen3-coder-next
     dir: qwen3-coder-next
     env_prefix: VLLM_CODERNEXT
