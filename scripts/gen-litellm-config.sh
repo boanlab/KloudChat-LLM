@@ -393,6 +393,7 @@ SECTION=$(
   emit_brain "glm-4.7-flash" "$(env_get VLLM_GLMFLASH_URL)"   "z-ai/glm-4.7-flash" "$(or_price z-ai/glm-4.7-flash in)" "$(or_price z-ai/glm-4.7-flash out)"
   emit_brain "qwen3.5-122b-a10b" "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b" "$(or_price qwen/qwen3.5-122b-a10b in)" "$(or_price qwen/qwen3.5-122b-a10b out)"
   emit_brain "gemma-4-26b-a4b" "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it" "$(or_price google/gemma-4-26b-a4b-it in)" "$(or_price google/gemma-4-26b-a4b-it out)"
+  emit_brain "qwen3-coder-next" "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next" "$(or_price qwen/qwen3-coder-next in)" "$(or_price qwen/qwen3-coder-next out)"
   emit_brain "qwen3-coder-30b" "$(env_get VLLM_CODER30B_URL)" "qwen/qwen3-coder-30b-a3b-instruct" "$(or_price qwen/qwen3-coder-30b-a3b-instruct in)" "$(or_price qwen/qwen3-coder-30b-a3b-instruct out)"
   emit_brain "qwen3.6-27b" "$(env_get VLLM_QWEN27B_URL)" "qwen/qwen3.6-27b" "$(or_price qwen/qwen3.6-27b in)" "$(or_price qwen/qwen3.6-27b out)"
   # Embeddings for RAG. Local when placed; the OpenAI catalogue below is the
