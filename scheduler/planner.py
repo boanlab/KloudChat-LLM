@@ -300,11 +300,12 @@ def plan(
     for spec in ordered:
         # Each node is asked what it can seat, narrowing the session count where
         # it has to. A node that can only take the model tighter still counts.
+        holders = [n for n in nodes if _carries(n, spec)]
         seatable = {
             n.node_id: _fit_sessions(spec, n, free[n.node_id], card_capacity[n.node_id])
-            for n in nodes
+            for n in holders
         }
-        candidates = [n for n in nodes if seatable[n.node_id] is not None]
+        candidates = [n for n in holders if seatable[n.node_id] is not None]
         if not candidates:
             result.delegations.append(
                 Delegation(spec.id, _why_not(spec, nodes, free, card_capacity))
@@ -373,6 +374,17 @@ def _worst_fit(
     return sorted(home or tied, key=lambda n: n.node_id)[0]
 
 
+def _carries(node: NodeSpec, spec: ModelSpec) -> bool:
+    """Whether the node holds this model's checkpoint.
+
+    ``checkpoints is None`` means the probe did not report them — the old
+    behaviour, where placement trusts that the weights are wherever it puts the
+    container. Docker does not refuse a bind mount of a missing path; it creates
+    an empty directory, and vLLM then restarts forever on a missing config.json.
+    """
+    return node.checkpoints is None or spec.dir in node.checkpoints
+
+
 def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[int]],
              card_capacity: dict[str, int]) -> str:
     """Delegation reason, separating "no capacity" from "cannot serve".
@@ -384,10 +396,20 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
         arches = ", ".join(spec.arches) or "(unrestricted)"
         return f"no architecture in this cluster can serve it (supported: {arches})"
 
+    carrying = [n for n in servable if _carries(n, spec)]
+    if not carrying:
+        return (
+            f"no node carries the checkpoint {spec.dir!r} under VLLM_MODELS_ROOT "
+            "— capacity is not the problem, the weights are not there"
+        )
+
+    # From here the comparison is against nodes that could actually run it. A
+    # message quoting the free VRAM of a node without the checkpoint reads as
+    # "there is room" while naming the one place the model can never go.
     tp = max(1, spec.tensor_parallel)
-    wide_enough = [n for n in servable if tp <= n.gpu_count]
+    wide_enough = [n for n in carrying if tp <= n.gpu_count]
     if not wide_enough:
-        most = max((n.gpu_count for n in servable), default=0)
+        most = max((n.gpu_count for n in carrying), default=0)
         return (
             f"needs {tp} cards on one node for tensor parallelism, "
             f"and the widest node has {most}"
@@ -500,7 +522,8 @@ def _replicate(
             seatable = {
                 n.node_id: _fit_sessions(spec, n, free[n.node_id],
                                           card_capacity[n.node_id])
-                for n in nodes if n.node_id not in used
+                for n in nodes
+                if n.node_id not in used and _carries(n, spec)
             }
             candidates = [n for n in nodes if seatable.get(n.node_id) is not None]
             if not candidates:
