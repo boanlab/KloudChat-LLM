@@ -83,6 +83,8 @@ To publish to a different registry, change the namespace and use
 | `VLLM_<MODEL>_MAX_BATCHED_TOKENS` | `16384` | 16384 or more is required for the vision mm-budget |
 | `VLLM_<MODEL>_MAX_NUM_SEQS` | `128` | CUDA-graph capture limit for hybrid models |
 | `VLLM_GLMFLASH_ATTN_BACKEND` | `FLASHINFER_MLA` | Avoids the GB10 shared-memory limit |
+| `VLLM_CODERNEXT_DEEP_GEMM` | `0` | DeepGEMM rejects this checkpoint's FP8 scale-factor layout on GB10. `1` where the kernel takes it |
+| `VLLM_BASE_IMAGE` / `VLLM_BASE_DIGEST` | (empty) | Upstream image and the digest it resolved to, recorded by `install-vllm.sh`. Pin rebuilds to the digest |
 
 Where the defaults come from, and how they relate to the placement step, is in
 [GPU memory](gpu-memory.md#tuning-knobs).

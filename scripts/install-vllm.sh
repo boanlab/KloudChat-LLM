@@ -71,10 +71,8 @@ else
 fi
 
 hdr "2. vLLM image"
-# Base and derived are separate tags. They used to share one — the pytest layer
-# was rebuilt over the pulled tag — which made a pulled image and a locally built
-# one indistinguishable, and meant the base could not be pinned by digest at all
-# (`docker build -t repo@sha256:...` is not a thing).
+# Base and derived are separate tags: sharing one overwrites the pulled tag with
+# a local build, which destroys the provenance the digest pin depends on.
 VLLM_BASE_IMAGE="${IMAGE_OVERRIDE:-${VLLM_BASE_IMAGE:-$(vllm_default_image)}}"
 [[ -n "$VLLM_BASE_IMAGE" ]] || { err "could not determine the vLLM base image — pass --image or set VLLM_BASE_IMAGE"; exit 1; }
 VLLM_IMAGE="kloudchat-vllm:local"
