@@ -103,6 +103,8 @@ answer, and a good one — 39 GiB of weights per rank leaves room for the native
 TP 4 does not quarter the KV cache — it shards by head and this model has two, so
 the per-card KV is the same as at TP 2. What the extra cards buy is weights.
 
+| `bge-reranker-v2-m3` | BF16 | **2.1 GiB** (measured) | Retrieval reranking — pooling, shares a card |
+
 **Pooling models hold no KV.** An embedding model does one forward pass per
 input and keeps nothing between tokens, so `planner.kv_bytes` returns 0 for it
 and the charge is weights plus activation. Sizing it as a chat model would

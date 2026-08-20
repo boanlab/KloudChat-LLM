@@ -115,6 +115,18 @@ models:
     port: 8007
     ctx_floor: 32768
 
+  # Retrieval reranking. Second stage over what the vector search returns:
+  # embeddings compare a question to a passage in one shared space, a reranker
+  # reads the pair together, which is why a small one beats a much larger
+  # embedding model on the same shelf. Pooling, so it holds no KV either.
+  - id: bge-reranker-v2-m3
+    hf_repo: BAAI/bge-reranker-v2-m3
+    env_prefix: VLLM_RERANK
+    port: 8009
+    runner: pooling
+    # Query and passage share the window, so it needs more than a chunk alone.
+    ctx_floor: 8192
+
   # Retrieval embeddings. A pooling runner: no tool parser, no reasoning parser,
   # no KV cache to size. No `openrouter:` twin — OpenRouter serves no embedding
   # models, and the fallback is OpenAI, wired in gen-litellm-config.sh.

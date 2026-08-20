@@ -157,8 +157,20 @@ def _probe_whisper(host: str) -> bool:
     return rc == 0
 
 
+#: What an unrecognised NVIDIA card is called. lib.sh::detect_gpu_class says
+#: this, and the two have to agree: gpu_class is compared against per-class
+#: tables on both sides, and a Python-side value of "nvidia a100-sxm4-80gb"
+#: matches no entry that a shell-side value of "nvidia-other" would.
+UNKNOWN_GPU_CLASS: str = "nvidia-other"
+
+
 def _classify_gpu_name(name: str) -> str:
-    """Marketing name to class token, sharing lib.sh's vocabulary."""
+    """Marketing name to class token, sharing lib.sh's vocabulary.
+
+    Returning the raw marketing name for anything unrecognised was not sharing
+    it: the docstring claimed a shared vocabulary while the two sides disagreed
+    on every card outside the list.
+    """
     name = (name or "").lower()
     if "gb10" in name:
         return "gb10"
@@ -170,7 +182,8 @@ def _classify_gpu_name(name: str) -> str:
         return "rtx5090"
     if "4090" in name:
         return "rtx4090"
-    return name.strip() or "unknown"
+    # An empty probe is not the same as a card we could not name.
+    return UNKNOWN_GPU_CLASS if name.strip() else "unknown"
 
 
 #: Reads GPU memory per compute process and labels each with the container it
