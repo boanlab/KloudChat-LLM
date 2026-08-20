@@ -13,6 +13,7 @@ when sizing a node or diagnosing an OOM.
 |---|---|---:|---|
 | `qwen3.5-122b-a10b` (Qwen3.5-122B-A10B) | NVFP4 | **77.8 GiB** (measured) | Top chat — vision, 128K here, 10B active |
 | `gemma-4-26b-a4b` (Gemma-4-26B-A4B) | NVFP4 | **15.3 GiB** (measured) | Second family — vision, tools, 256K, 4B active |
+| `qwen3-coder-next` (Qwen3-Coder-Next-80B-A3B) | FP8 | **~75 GiB** (on disk) | Coding. Hybrid attention, 262K. Wants the card to itself |
 | `qwen3-coder-30b` (Qwen3-Coder-30B-A3B) | FP8 | **33.0 GiB** (measured) | Coding. FP8, so it runs without FP4 support |
 | `qwen3.6-27b` (Qwen3.6-27B) | NVFP4 | **20.4 GiB** (measured) | The one dense model |
 | `qwen3.6-35b` (Qwen3.6-35B-A3B) | NVFP4 | **21.4 GiB** (measured) | Chat and floor — vision, 262K context, agentic coding |
@@ -40,6 +41,7 @@ state regardless of sequence length.
 |---|---:|---:|---:|
 | `qwen3.5-122b-a10b` | **12 KiB** | 1.5 GiB | — (128K here) |
 | `gemma-4-26b-a4b` | 20 KiB + 100 MiB/session | 2.5 GiB | 5.0 GiB |
+| `qwen3-coder-next` (hybrid) | **12 KiB** | 1.5 GiB | 3.0 GiB |
 | `qwen3-coder-30b` | **48 KiB** | 6.0 GiB | 12.0 GiB |
 | `qwen3.6-27b` | 32 KiB | 4.0 GiB | 8.0 GiB |
 | `qwen3.6-35b` | **10 KiB** | 1.2 GiB | 2.5 GiB |

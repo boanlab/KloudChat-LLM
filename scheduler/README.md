@@ -44,8 +44,10 @@ else is read from the checkpoint's `config.json` and its size on disk.
 2. **Restoration** — the remaining capacity is divided among the models on that
    node, raising contexts toward their targets. The placement furthest from its
    target goes first, so one model cannot take everything.
-3. **Replication** — only when `--replicas N` is given, and only after every
-   model has one instance.
+3. **Replication** — capacity coverage did not need is filled with extra
+   instances, deepening models in declared priority order, and only after every
+   model has one. `--replicas N` caps the count per model; `--replicas 1` turns
+   replication off.
 
 A model that finds no seat is delegated to OpenRouter with the reason attached.
 Insufficient capacity and unsupported architecture are reported separately —

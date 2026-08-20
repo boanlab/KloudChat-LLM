@@ -70,6 +70,21 @@ models:
     # that can hold only one of the two should hold the workhorse.
     priority: 10
 
+
+  # Coding. 80B total against 3B active, and hybrid attention — 12 of its 48
+  # layers hold KV, the rest are linear — so 12 KiB/token against the 30B's 48,
+  # and the native 262K costs a quarter of what the layer count suggests. FP8,
+  # so a card without FP4 serves it too.
+  - id: qwen3-coder-next
+    hf_repo: Qwen/Qwen3-Coder-Next
+    openrouter: qwen/qwen3-coder-next
+    dir: qwen3-coder-next
+    env_prefix: VLLM_CODERNEXT
+    port: 8008
+    # Second claim on a card, ahead of the 122B. Coding is the workload this
+    # cluster queues on; the 122B is a picker choice, so losing it removes an
+    # option rather than a capability.
+    priority: 15
   - id: glm-4.7-flash
     hf_repo: zai-org/GLM-4.7-Flash
     openrouter: z-ai/glm-4.7-flash
