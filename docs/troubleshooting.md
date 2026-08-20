@@ -153,12 +153,18 @@ docker logs kloudchat-deep-research --tail 50
 | Placed but still failing | LDR's accumulated input exceeds the serving context. Reduce `LDR_SEARCH_ITERATIONS` or the result size, or serve chat on a node with a larger context |
 | Needs a larger context | Serve chat on a node with a higher `max-model-len` (256K). No separate alias is needed — plain `local/qwen3.6-35b` routes to that node's context |
 
-## RAG (file_search) inactive
+## file_search returns nothing
 
-**This is expected — RAG is not implemented.** Nothing in the app calls
-`/embeddings`, so no embedding model is deployed and `file_search` returning
-nothing is by design rather than misconfiguration. See
-[models.md](models.md#rag-embeddings).
+Retrieval is opt-in. Without the `index` profile KloudChat falls back to the
+lexical search it already has, so empty results are a configuration answer before
+they are a fault. See [models.md](models.md#retrieval) for the two stages.
+
+| Cause | Action |
+|---|---|
+| `index` not in `COMPOSE_PROFILES` | Add it and re-run `setup.sh up` — `index-db` and `index-shim` do not start otherwise |
+| No embedding deployment | `INDEX_EMBED_MODELS` is tried in order: `local/bge-m3` needs a vLLM placement, `text-embedding-3-small` needs an OpenAI key. `GET /tools/index/health` reports whether embeddings answer |
+| Collection never indexed | The index is derived and starts empty — KloudChat fills it through `PUT /tools/index/documents`. Losing the volume costs a re-index, not a document |
+| Results arrive but are weak | The reranker may be missing; the search response carries `"reranked": true\|false`. Without it search falls back to vector order |
 
 ## Diagnostic helpers
 

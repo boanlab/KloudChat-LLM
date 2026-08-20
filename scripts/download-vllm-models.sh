@@ -11,6 +11,10 @@
 #   qwen3.6-35b-nvfp4  unsloth/Qwen3.6-35B-A3B-NVFP4          21 GB (chat: vision + 262K + coding)
 #   qwen3.6-35b        Qwen/Qwen3.6-35B-A3B                   35 GB (fp8 — older engines)
 #   glm-4.7-flash      unsloth/GLM-4.7-Flash-NVFP4            20 GB (cheap-decode floor, A3B)
+#   qwen3.5-122b-a10b  Qwen/Qwen3.5-122B-A10B-NVFP4           78 GB (top chat — needs the card to itself)
+#   gemma-4-26b-a4b    google/gemma-4-26B-A4B-it              16 GB (second family — vision, tools)
+#   qwen3-coder-30b    Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8  33 GB (coding; FP8, so no FP4 needed)
+#   qwen3.6-27b        Qwen/Qwen3.6-27B                       21 GB (the one dense model)
 #
 # Special:
 #   recommended       what this card can serve and fit together (same as no args)
@@ -112,11 +116,40 @@ pull_one() {
   fi
   # hf_xet: Xet-backed repos refuse plain HTTP downloads ("file too large").
   # Legacy repos still use HTTP with it installed.
+  #
+  # One pattern per flag: `hf download` takes a single value for --exclude, and
+  # the extra patterns are read as positional arguments, which mean "download
+  # only these files". Written as one flag with a list it fetched nothing at all
+  # and said "Downloaded" while doing it.
+  #
+  # Alternative serialisations are skipped. A repo may ship the same weights four
+  # ways — safetensors, a flax msgpack, a pickled .bin, an fp32 copy — and vLLM
+  # reads exactly one of them: whisper-large-v3 is 24.7 GB whole and 3.1 GB as
+  # the shards that get loaded. Downloading the rest costs disk and, worse,
+  # inflates what the scheduler measures the model to weigh.
   HF_TOKEN="$HF_TOKEN" \
   HF_HUB_DOWNLOAD_TIMEOUT=180 \
   uv tool run --from "huggingface_hub[hf_xet]" hf download \
-    "$repo" --local-dir "$dest" --max-workers 4
-  ok "received $(du -sh "$dest" | cut -f1)"
+    "$repo" --local-dir "$dest" --max-workers 4 \
+    --exclude "*.msgpack" --exclude "*.h5" --exclude "*.ot" --exclude "*.tflite" \
+    --exclude "*fp32*" --exclude "*.pth" --exclude "*.gguf" --exclude "ggml*" \
+    --exclude "coreml/*" --exclude "openvino/*" --exclude "onnx/*"
+  # .bin only when there is no safetensors alternative: some repos ship only it.
+  if compgen -G "$dest/*.safetensors" >/dev/null; then
+    rm -f "$dest"/*.bin "$dest"/pytorch_model*.bin 2>/dev/null || true
+  fi
+  # `|| true`: with no safetensors the glob does not expand, du exits non-zero,
+  # and under `set -e` a bare assignment from a failed substitution aborts the
+  # script — silently, right after saying "Downloaded".
+  local loadable
+  loadable="$(du -cb "$dest"/*.safetensors 2>/dev/null | tail -1 | cut -f1 || true)"
+  if [[ "${loadable:-0}" =~ ^[0-9]+$ ]] && (( loadable > 0 )); then
+    ok "received $(du -sh "$dest" | cut -f1), $(awk -v b="$loadable" 'BEGIN{printf "%.1fGB", b/1024/1024/1024}') of it safetensors"
+  else
+    # Older repos ship pytorch_model.bin and nothing else; the whole directory is
+    # what gets loaded, which is also what measure_weight_bytes falls back to.
+    ok "received $(du -sh "$dest" | cut -f1)"
+  fi
 }
 
 if (( ${#TARGETS[@]} == 0 )) && (( WANT_WHISPER == 0 )); then

@@ -2,9 +2,14 @@
 # backends from LiteLLM's side (VLLM_*_URL in .env), placed and started by the
 # scheduler over SSH.
 #
-#   vllm-qwen35b    unified chat — Qwen3.6-35B-A3B (vision, 262K ctx, agentic coding)
+#   vllm-qwen122b   top chat — Qwen3.5-122B-A10B (vision, 128K ctx here, 78 GiB)
+#   vllm-qwen35b    unified chat and floor — Qwen3.6-35B-A3B (vision, 262K ctx)
 #   vllm-glmflash   cheap-decode floor — GLM-4.7-Flash 31.2B-A3B
+#   vllm-gemma26b   second family — Gemma-4-26B-A4B (vision, tool calling)
+#   vllm-coder30b   coding — Qwen3-Coder-30B-A3B (FP8, 48 KiB/token KV)
+#   vllm-qwen27b    the one dense model — Qwen3.6-27B
 #   vllm-bgem3      retrieval embeddings — BAAI/bge-m3, pooling runner (~2 GiB)
+#   vllm-rerank     retrieval reranking — BAAI/bge-reranker-v2-m3 (~2.2 GiB)
 #   whisper         transcription — resident on the node rather than placed.
 #                   amd64 only: arm64 nodes skip it and delegate STT to OpenRouter
 #
@@ -16,12 +21,14 @@ name: kloudchat-vllm
 services:
   vllm-qwen35b:
     container_name: vllm-qwen35b
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-aarch64}
-    # Every vLLM service shares one image, so the build stanza lives here only
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
+    # Every vLLM service shares one image, so the build stanza lives here only.
+    # BASE_IMAGE is the upstream image; VLLM_IMAGE is what this repo builds on top
+    # of it. install-vllm.sh normally does this build and records both in .env.
     build:
       context: ./services/vllm
       args:
-        BASE_IMAGE: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-aarch64}
+        BASE_IMAGE: ${VLLM_BASE_IMAGE:-vllm/vllm-openai:nightly-aarch64}
     restart: unless-stopped
     ipc: host
     # List form: a YAML flow scalar would eat the quotes in the JSON arguments
@@ -58,6 +65,8 @@ services:
       # profiling OOMs.
       - --max-num-seqs
       - "${VLLM_QWEN35B_MAX_NUM_SEQS:-128}"
+      - --tensor-parallel-size
+      - "${VLLM_QWEN35B_TP:-1}"
       - --trust-remote-code
       # No --enforce-eager: CUDA graphs off costs 4x decode throughput
     volumes:
@@ -66,6 +75,13 @@ services:
       - "8001:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
+      # Cards this container may use. The scheduler writes VLLM_QWEN35B_DEVICES on a
+      # node with more than one card, so two models land on two cards instead of
+      # both claiming most of card 0 — gpu-memory-utilization is a fraction of a
+      # device, not of the node. The default suits the single-card case; a
+      # hand-driven multi-card node should set it, and under-uses the box if it
+      # does not, which beats an OOM at engine init.
+      CUDA_VISIBLE_DEVICES: ${VLLM_QWEN35B_DEVICES:-0}
     deploy:
       resources:
         reservations:
@@ -81,11 +97,85 @@ services:
       # Weight load, torch.compile and KV profiling on first start
       start_period: 600s
 
+  # Top chat model. Same architecture family and therefore the same parsers as
+  # vllm-qwen35b; what differs is the arithmetic — 78 GiB of weights on a 121 GiB
+  # card, so the KV pool is ~22 GiB and the context is pinned at 128K rather than
+  # the native 262K. 10B active parameters puts decode at roughly a third of the
+  # 35B's, which is why it is not the model internal calls are pointed at.
+  vllm-qwen122b:
+    container_name: vllm-qwen122b
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
+    restart: unless-stopped
+    ipc: host
+    command:
+      - --model
+      - /model
+      - --served-model-name
+      - local/qwen3.5-122b-a10b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "${VLLM_QWEN122B_MAX_LEN:-131072}"
+      - --gpu-memory-utilization
+      - "${VLLM_QWEN122B_GPU_UTIL:-0.85}"
+      - --kv-cache-dtype
+      - fp8
+      - --max-num-batched-tokens
+      - "${VLLM_QWEN122B_MAX_BATCHED_TOKENS:-16384}"
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_xml
+      - --reasoning-parser
+      - qwen3
+      - --default-chat-template-kwargs
+      - '{"enable_thinking": false}'
+      # 36 of the 48 layers are linear attention, and their per-sequence conv
+      # state is 21.4 MiB — 2.7 GiB at 128 sequences, out of a KV pool a third
+      # the size of the 35B's. Kept low deliberately; raising it buys queue depth
+      # the card cannot serve anyway.
+      - --max-num-seqs
+      - "${VLLM_QWEN122B_MAX_NUM_SEQS:-32}"
+      # Cards to shard across, on this node. 78 GiB of weights does not fit a
+      # 96 GB card whole — at TP 2 each rank holds 39 GiB and the KV pool grows
+      # rather than shrinks. The scheduler writes this; 1 is a single card.
+      - --tensor-parallel-size
+      - "${VLLM_QWEN122B_TP:-1}"
+      - --trust-remote-code
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_QWEN122B_DIR:-qwen3.5-122b-a10b}:/model:ro
+    ports:
+      - "8004:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      # Cards this container may use. The scheduler writes VLLM_QWEN122B_DEVICES on a
+      # node with more than one card, so two models land on two cards instead of
+      # both claiming most of card 0 — gpu-memory-utilization is a fraction of a
+      # device, not of the node. The default suits the single-card case; a
+      # hand-driven multi-card node should set it, and under-uses the box if it
+      # does not, which beats an OOM at engine init.
+      CUDA_VISIBLE_DEVICES: ${VLLM_QWEN122B_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      # 78 GiB of weights to read off disk before torch.compile even starts.
+      start_period: 1200s
+
   # Title generation, memory extraction, query rewriting, default chat. 3B active
   # parameters, so this call volume does not tie up the larger model.
   vllm-glmflash:
     container_name: vllm-glmflash
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-aarch64}
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     restart: unless-stopped
     ipc: host
     command:
@@ -116,6 +206,8 @@ services:
       # reasoning and returns empty content
       - --default-chat-template-kwargs
       - '{"enable_thinking": false}'
+      - --tensor-parallel-size
+      - "${VLLM_GLMFLASH_TP:-1}"
       - --trust-remote-code
     volumes:
       - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_GLMFLASH_DIR:-glm-4.7-flash}:/model:ro
@@ -123,10 +215,20 @@ services:
       - "8002:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
-      # MLA model. The default TRITON_MLA decode kernel exceeds GB10's
-      # shared-memory limit (101376 B) and fails engine init. Per-card
-      # alternatives: CUTLASS_MLA, FLASHMLA, FLASH_ATTN_MLA.
-      VLLM_ATTENTION_BACKEND: ${VLLM_GLMFLASH_ATTN_BACKEND:-FLASHINFER_MLA}
+      # Cards this container may use. The scheduler writes VLLM_GLMFLASH_DEVICES on a
+      # node with more than one card, so two models land on two cards instead of
+      # both claiming most of card 0 — gpu-memory-utilization is a fraction of a
+      # device, not of the node. The default suits the single-card case; a
+      # hand-driven multi-card node should set it, and under-uses the box if it
+      # does not, which beats an OOM at engine init.
+      CUDA_VISIBLE_DEVICES: ${VLLM_GLMFLASH_DEVICES:-0}
+      # MLA model, and the backend is a per-card choice: vLLM's TRITON_MLA decode
+      # kernel wants 101377 B of shared memory on GB10 against a 101376 B limit,
+      # one byte over, and engine init fails. install-vllm.sh writes the value for
+      # the card it is running on (lib.sh::mla_attention_backend). The default
+      # here is GB10's, kept only so a hand-driven node on that card still works;
+      # empty is valid and lets vLLM choose.
+      VLLM_ATTENTION_BACKEND: ${VLLM_GLMFLASH_ATTN_BACKEND-FLASHINFER_MLA}
     deploy:
       resources:
         reservations:
@@ -141,11 +243,240 @@ services:
       retries: 5
       start_period: 600s
 
+  # A second family in the lineup. Gemma 4 states tool calls in its own
+  # <|tool> form, which vLLM registers as the `gemma4` parser — without it the
+  # model falls back to ReAct text and the client cannot execute anything.
+  # Five layers in six are sliding-window (1024), so a 256K context costs far
+  # less KV than the layer count suggests: see docs/gpu-memory.md.
+  vllm-gemma26b:
+    container_name: vllm-gemma26b
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
+    restart: unless-stopped
+    ipc: host
+    command:
+      - --model
+      - /model
+      - --served-model-name
+      - local/gemma-4-26b-a4b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "${VLLM_GEMMA26B_MAX_LEN:-262144}"
+      - --gpu-memory-utilization
+      - "${VLLM_GEMMA26B_GPU_UTIL:-0.45}"
+      - --kv-cache-dtype
+      - fp8
+      # Vision model, so the mm-budget floor applies here too
+      - --max-num-batched-tokens
+      - "${VLLM_GEMMA26B_MAX_BATCHED_TOKENS:-16384}"
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - gemma4
+      - --reasoning-parser
+      - gemma4
+      - --default-chat-template-kwargs
+      - '{"enable_thinking": false}'
+      - --tensor-parallel-size
+      - "${VLLM_GEMMA26B_TP:-1}"
+      - --trust-remote-code
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_GEMMA26B_DIR:-gemma-4-26b}:/model:ro
+    ports:
+      - "8005:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      # Cards this container may use. The scheduler writes VLLM_GEMMA26B_DEVICES on a
+      # node with more than one card, so two models land on two cards instead of
+      # both claiming most of card 0 — gpu-memory-utilization is a fraction of a
+      # device, not of the node. The default suits the single-card case; a
+      # hand-driven multi-card node should set it, and under-uses the box if it
+      # does not, which beats an OOM at engine init.
+      CUDA_VISIBLE_DEVICES: ${VLLM_GEMMA26B_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+
+  # Coding. Qwen3-Coder states tool calls in its own XML dialect, which is what
+  # the `qwen3_coder` parser reads — `qwen3_xml` is a different format and
+  # silently produces no tool calls. No reasoning parser: this model does not
+  # think, and its chat template has no enable_thinking switch.
+  vllm-coder30b:
+    container_name: vllm-coder30b
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
+    restart: unless-stopped
+    ipc: host
+    command:
+      - --model
+      - /model
+      - --served-model-name
+      - local/qwen3-coder-30b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "${VLLM_CODER30B_MAX_LEN:-131072}"
+      - --gpu-memory-utilization
+      - "${VLLM_CODER30B_GPU_UTIL:-0.60}"
+      - --kv-cache-dtype
+      - fp8
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --tensor-parallel-size
+      - "${VLLM_CODER30B_TP:-1}"
+      - --trust-remote-code
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_CODER30B_DIR:-qwen3-coder-30b}:/model:ro
+    ports:
+      - "8006:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      # Cards this container may use. The scheduler writes VLLM_CODER30B_DEVICES on a
+      # node with more than one card, so two models land on two cards instead of
+      # both claiming most of card 0 — gpu-memory-utilization is a fraction of a
+      # device, not of the node. The default suits the single-card case; a
+      # hand-driven multi-card node should set it, and under-uses the box if it
+      # does not, which beats an OOM at engine init.
+      CUDA_VISIBLE_DEVICES: ${VLLM_CODER30B_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+
+  # The one dense model here. Same Qwen3.5 family plumbing as vllm-qwen35b, so
+  # the same parsers; what differs is that every parameter is active, which shows
+  # up as decode cost rather than as memory.
+  vllm-qwen27b:
+    container_name: vllm-qwen27b
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
+    restart: unless-stopped
+    ipc: host
+    command:
+      - --model
+      - /model
+      - --served-model-name
+      - local/qwen3.6-27b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "${VLLM_QWEN27B_MAX_LEN:-131072}"
+      - --gpu-memory-utilization
+      - "${VLLM_QWEN27B_GPU_UTIL:-0.45}"
+      - --kv-cache-dtype
+      - fp8
+      - --max-num-batched-tokens
+      - "${VLLM_QWEN27B_MAX_BATCHED_TOKENS:-16384}"
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_xml
+      - --reasoning-parser
+      - qwen3
+      - --default-chat-template-kwargs
+      - '{"enable_thinking": false}'
+      - --tensor-parallel-size
+      - "${VLLM_QWEN27B_TP:-1}"
+      - --trust-remote-code
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_QWEN27B_DIR:-qwen3.6-27b}:/model:ro
+    ports:
+      - "8007:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      # Cards this container may use. The scheduler writes VLLM_QWEN27B_DEVICES on a
+      # node with more than one card, so two models land on two cards instead of
+      # both claiming most of card 0 — gpu-memory-utilization is a fraction of a
+      # device, not of the node. The default suits the single-card case; a
+      # hand-driven multi-card node should set it, and under-uses the box if it
+      # does not, which beats an OOM at engine init.
+      CUDA_VISIBLE_DEVICES: ${VLLM_QWEN27B_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+
+  # Retrieval reranking. Same pooling runner as the embedder, scoring
+  # (query, passage) pairs rather than embedding them one at a time — vLLM
+  # exposes it at /v1/rerank. ~2.2 GiB, so it shares a card.
+  vllm-rerank:
+    container_name: vllm-rerank
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
+    restart: unless-stopped
+    ipc: host
+    command:
+      - --model
+      - /model
+      - --served-model-name
+      - local/bge-reranker-v2-m3
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --runner
+      - pooling
+      # Query and passage share the window; 8194 is what the checkpoint declares.
+      - --max-model-len
+      - "${VLLM_RERANK_MAX_LEN:-8192}"
+      - --gpu-memory-utilization
+      - "${VLLM_RERANK_GPU_UTIL:-0.06}"
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_RERANK_DIR:-bge-reranker-v2-m3}:/model:ro
+    ports:
+      - "8009:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      CUDA_VISIBLE_DEVICES: ${VLLM_RERANK_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
   # Retrieval embeddings. A pooling runner: no tool parser, no reasoning parser,
   # no chat-template kwargs, no KV cache. ~2 GiB, so it shares a card.
   vllm-bgem3:
     container_name: vllm-bgem3
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-aarch64}
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     restart: unless-stopped
     ipc: host
     command:
@@ -172,6 +503,13 @@ services:
       - "8003:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
+      # Cards this container may use. The scheduler writes VLLM_BGEM3_DEVICES on a
+      # node with more than one card, so two models land on two cards instead of
+      # both claiming most of card 0 — gpu-memory-utilization is a fraction of a
+      # device, not of the node. The default suits the single-card case; a
+      # hand-driven multi-card node should set it, and under-uses the box if it
+      # does not, which beats an OOM at engine init.
+      CUDA_VISIBLE_DEVICES: ${VLLM_BGEM3_DEVICES:-0}
     deploy:
       resources:
         reservations:

@@ -24,6 +24,11 @@ from scheduler.types import GB, NodeSpec
 #: OS share on a unified-memory node, excluded from GPU capacity.
 _UNIFIED_RESERVE_BYTES: int = 12 * GB
 
+#: Containers this stack owns, for telling our GPU memory from anyone else's.
+#: Mirrors applier.MANAGED_SERVICE_PREFIX.
+MANAGED_PREFIX: str = "vllm-"
+WHISPER_CONTAINER: str = "whisper"
+
 #: Transcription backend port. amd64 only — the probe never answers on arm64.
 WHISPER_PORT: int = 9000
 
@@ -123,6 +128,22 @@ def _probe_vllm(host: str, container: str, port: int) -> RunningWorkload:
     return RunningWorkload(container, blocks, bsz, rml, rgu)
 
 
+def read_env(host: str, path: str) -> dict[str, str]:
+    """A node's .env as a mapping. Unreachable or missing reads empty, which
+    makes the caller treat every option as changed — the safe direction."""
+    code, out, _ = _ssh(host, f"cat {path} 2>/dev/null || true")
+    if code != 0:
+        return {}
+    values: dict[str, str] = {}
+    for raw in out.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip()
+    return values
+
+
 def _probe_running_containers(host: str) -> set[str]:
     rc, out, _ = _ssh(host, 'docker ps --format "{{.Names}}"')
     if rc != 0:
@@ -136,8 +157,20 @@ def _probe_whisper(host: str) -> bool:
     return rc == 0
 
 
+#: What an unrecognised NVIDIA card is called. lib.sh::detect_gpu_class says
+#: this, and the two have to agree: gpu_class is compared against per-class
+#: tables on both sides, and a Python-side value of "nvidia a100-sxm4-80gb"
+#: matches no entry that a shell-side value of "nvidia-other" would.
+UNKNOWN_GPU_CLASS: str = "nvidia-other"
+
+
 def _classify_gpu_name(name: str) -> str:
-    """Marketing name to class token, sharing lib.sh's vocabulary."""
+    """Marketing name to class token, sharing lib.sh's vocabulary.
+
+    Returning the raw marketing name for anything unrecognised was not sharing
+    it: the docstring claimed a shared vocabulary while the two sides disagreed
+    on every card outside the list.
+    """
     name = (name or "").lower()
     if "gb10" in name:
         return "gb10"
@@ -149,7 +182,52 @@ def _classify_gpu_name(name: str) -> str:
         return "rtx5090"
     if "4090" in name:
         return "rtx4090"
-    return name.strip() or "unknown"
+    # An empty probe is not the same as a card we could not name.
+    return UNKNOWN_GPU_CLASS if name.strip() else "unknown"
+
+
+#: Reads GPU memory per compute process and labels each with the container it
+#: belongs to, or "-" for one on the host. One `docker ps` for the whole set.
+_VRAM_BY_OWNER = r"""
+map=$(docker ps --no-trunc --format '{{.ID}} {{.Names}}' 2>/dev/null)
+nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null |
+while IFS=, read -r pid mem; do
+  pid=$(echo "$pid" | tr -d ' '); mem=$(echo "$mem" | tr -d ' ')
+  [ -n "$pid" ] || continue
+  cid=$(sed -n 's|.*docker-\([0-9a-f]*\)\.scope.*|\1|p' "/proc/$pid/cgroup" 2>/dev/null | head -1)
+  name=$(echo "$map" | awk -v c="$cid" 'c != "" && $1 == c {print $2; exit}')
+  echo "${name:--} ${mem}"
+done
+"""
+
+
+def _probe_vram_by_owner(host: str, managed: frozenset) -> tuple[int, int]:
+    """(foreign bytes, our bytes) of GPU memory currently held.
+
+    vLLM's ``--gpu-memory-utilization`` is a fraction of the card's *total* but
+    the memory has to be *free*, so a card with something else already on it —
+    a desktop session, somebody's notebook, another stack — has less to give than
+    its size suggests. Guessing that with a fixed reserve works until it does
+    not; this measures it.
+
+    Our own containers are counted separately and deliberately not treated as
+    foreign: the planner decides a target state, and what our containers hold
+    today is memory the plan is free to reassign.
+    """
+    code, out, _ = _ssh(host, _VRAM_BY_OWNER, timeout=10)
+    if code != 0 or not out.strip():
+        return 0, 0
+    foreign = ours = 0
+    for line in out.strip().splitlines():
+        parts = line.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            continue
+        name, mib = parts[0], int(parts[1])
+        if name in managed:
+            ours += mib * 1024 * 1024
+        else:
+            foreign += mib * 1024 * 1024
+    return foreign, ours
 
 
 def _probe_gpu_class(host: str) -> str:
@@ -176,24 +254,33 @@ def _probe_gpu_count(host: str) -> int:
     return 1
 
 
-def _probe_total_vram(host: str) -> tuple[int, bool]:
-    """(bytes, is_unified).
+def _probe_card_sizes(host: str) -> tuple[tuple[int, ...], bool]:
+    """(bytes per card, is_unified).
+
+    Every card, not just the first. A node used to be sized as "the first card,
+    times how many there are", which is right only where they match — and a box
+    with a 4090 beside a 5090 was then handed a capacity neither card has.
 
     A capacity from nvidia-smi is discrete VRAM. GB10 reports [N/A] and falls
     through to /proc/meminfo, and that fall-through is what unified memory is.
     """
-    rc, out, _ = _ssh(host, "nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1")
-    if rc == 0 and out.strip().isdigit():
-        return int(out.strip()) * 1024 * 1024, False   # MiB → B
+    rc, out, _ = _ssh(host, "nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null")
+    if rc == 0:
+        sizes = tuple(
+            int(line.strip()) * 1024 * 1024            # MiB → B
+            for line in out.splitlines() if line.strip().isdigit()
+        )
+        if sizes:
+            return sizes, False
     rc, out, _ = _ssh(host, "awk '/^MemTotal:/ {print $2}' /proc/meminfo")
     if rc == 0 and out.strip().isdigit():
-        return int(out.strip()) * 1024, True           # kB → B
-    return 0, False
+        return (int(out.strip()) * 1024,), True        # kB → B
+    return (), False
 
 
 def probe_node(
     node_id: str, host: str, *,
-    reserved_bytes: int = 8 * GB,
+    reserved_bytes: Optional[int] = None,
     services: Optional[Mapping[str, int]] = None,
     retries: int = 1,
 ) -> NodeProbe:
@@ -215,7 +302,7 @@ def probe_node(
 
 def _probe_node_once(
     node_id: str, host: str, *,
-    reserved_bytes: int = 8 * GB,
+    reserved_bytes: Optional[int] = None,
     services: Optional[Mapping[str, int]] = None,
 ) -> NodeProbe:
     errors: list[str] = []
@@ -224,9 +311,17 @@ def _probe_node_once(
         # Nothing placed yet is indistinguishable here — not evidence of a down node
         errors.append("docker ps returned nothing")
 
-    total_vram, unified = _probe_total_vram(host)
+    card_sizes, unified = _probe_card_sizes(host)
     gpu_class = _probe_gpu_class(host)
     gpu_count = _probe_gpu_count(host)
+    if card_sizes and len(card_sizes) != gpu_count and not unified:
+        # nvidia-smi answered for a different set than -L listed. Trust the sizes
+        # it actually reported rather than multiplying one of them out.
+        gpu_count = len(card_sizes)
+    # The smallest card, because a model is placed on one card and every card
+    # has to be able to hold what the planner promises. A mixed box is sized by
+    # its weakest device, not by its average.
+    total_vram = min(card_sizes) if card_sizes else 0
     arch = _probe_arch(host)
     whisper_up = _probe_whisper(host)
     alive = bool(running) or total_vram > 0
@@ -239,6 +334,20 @@ def _probe_node_once(
 
     # Unified memory shares system RAM — the full capacity would claim the OS share
     usable = max(0, total_vram - _UNIFIED_RESERVE_BYTES) if unified and total_vram else None
+    if card_sizes and len(set(card_sizes)) > 1:
+        errors.append(
+            "mixed card sizes ("
+            + ", ".join(f"{s / GB:.0f}G" for s in card_sizes)
+            + f") — sized by the smallest, so {sum(card_sizes) / GB:.0f}G of "
+            "capacity is not all usable"
+        )
+
+    # Anything on the card that is not ours. Our own containers are excluded on
+    # purpose: the plan is free to reassign what they hold.
+    managed = frozenset(
+        c for c in running if c.startswith(MANAGED_PREFIX) or c == WHISPER_CONTAINER
+    )
+    foreign, _ours = _probe_vram_by_owner(host, managed)
 
     spec = NodeSpec(
         node_id=node_id,
@@ -248,6 +357,7 @@ def _probe_node_once(
         reserved_bytes=reserved_bytes,
         usable_vram_bytes=usable,
         gpu_count=gpu_count,
+        foreign_vram_bytes=foreign,
         arch=arch,
     )
     return NodeProbe(
