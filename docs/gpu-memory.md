@@ -136,7 +136,7 @@ per-sequence state, so it is charged `POOLING_ACTIVATION_BYTES` (2 GiB) instead.
 
 | Node | VRAM | Chat | Floor | Notes |
 |---|---:|---|---|---|
-| RTX 4090 | 24 G | ✗ | ✗ | No FP4 — this lineup cannot run |
+| RTX 4090 | 24 G | ✗ | ✗ | Below the 32 GiB floor. The int4 aliases execute here, but one places at its 32K floor and 0.92 of the card — see prerequisites |
 | RTX 5090 | 32 G | ○ | △ | One or the other; both leaves almost no KV |
 | PRO 5000 | 48 G | ○ | ○ | ~41 GiB loaded, little KV headroom |
 | PRO 6000 | 96 G | ○ | ○ | ~50 GiB of KV after loading both |
