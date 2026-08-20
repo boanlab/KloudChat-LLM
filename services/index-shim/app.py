@@ -57,22 +57,19 @@ RERANK_MODEL = os.getenv("RERANK_MODEL", "local/bge-reranker-v2-m3").strip()
 #: never close.
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "5"))
 #: Reranked passages below this are dropped. The two stages cut on different
-#: scales and only one of them should decide: cosine distance is the coarse
-#: recall filter that decides what the reranker gets to look at, and the
-#: reranker's own score decides the answer. Applying the tuned cosine cut first
-#: meant the reranker only ever saw passages that had already passed, which is
-#: the opposite of what it is for — marginal candidates are what it is good at.
+#: scales: cosine distance is the coarse recall filter deciding what the reranker
+#: sees, the reranker's score decides the answer. Marginal candidates are what
+#: the reranker is for, so the recall filter must stay loose.
 #:
-#: Measured against a four-passage shelf, as the distance cut below was:
+#: Measured reranker scores against a four-passage shelf:
 #:
 #:   question the shelf answers      0.73 – 0.94
 #:   loosely related, no answer      0.0005 – 0.025
 #:   topic not on the shelf at all   <= 0.0002
 #:
-#: 0.1 sits in the empty band between the first two, which is a far easier place
-#: to stand than the 0.42 the cosine cut had to thread between 0.31 and 0.55.
-#: "Loosely related" is dropped on purpose: a retrieval layer that always answers
-#: teaches the model that the shelf is relevant when it is not.
+#: 0.1 sits in the empty band between the first two. "Loosely related" is dropped
+#: deliberately: a retrieval layer that always answers teaches the model that the
+#: shelf is relevant when it is not.
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.1"))
 #: Cosine cut used while reranking is on. Deliberately loose: it exists to bound
 #: how much the reranker reads, not to decide relevance.
@@ -268,12 +265,9 @@ class Query(BaseModel):
     limit: int = Field(default=4, ge=1, le=20)
     #: Passages further than this in cosine distance are dropped.
     #:
-    #: Measured, not guessed. Against bge-m3 a question the shelf answers scores
-    #: 0.50–0.55 similarity and one it does not scores 0.31–0.32, so the cut sits
-    #: between them at 0.42 similarity — 0.58 distance. Left at the intuitive
-    #: 0.75, "점심 메뉴 추천" came back with two passages about incident response,
-    #: which is the failure that matters: a retrieval layer that always answers
-    #: teaches the model that the shelf is relevant when it is not.
+    #: Measured against bge-m3: a question the shelf answers scores 0.50–0.55
+    #: similarity, one it does not scores 0.31–0.32. The cut sits between them at
+    #: 0.42 similarity — 0.58 distance.
     max_distance: float = Field(default=0.58, ge=0.0, le=2.0)
 
 
