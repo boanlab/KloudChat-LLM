@@ -357,6 +357,20 @@ def test_a_roomy_card_is_not_narrowed():
     assert not result.notes
 
 
+def test_gpu_class_names_agree_with_the_shell_side():
+    """gpu_class is looked up in per-class tables on both sides. Returning the raw
+    marketing name for an unrecognised card matched nothing the shell would have
+    matched, while the docstring said the vocabulary was shared."""
+    from scheduler import inventory
+
+    assert inventory._classify_gpu_name("NVIDIA GB10") == "gb10"
+    assert inventory._classify_gpu_name("NVIDIA RTX PRO 6000 Blackwell") == "pro6000"
+    # lib.sh::detect_gpu_class answers "nvidia-other" for anything it cannot name
+    assert inventory._classify_gpu_name("NVIDIA A100-SXM4-80GB") == "nvidia-other"
+    # A failed probe is a different thing from a card we could not name
+    assert inventory._classify_gpu_name("") == "unknown"
+
+
 def test_a_mixed_box_is_sized_by_its_smallest_card():
     """A model runs on one card, so every card has to hold what the planner
     promised. "First card times how many" handed a 4090-plus-5090 box a capacity

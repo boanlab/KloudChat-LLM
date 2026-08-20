@@ -86,17 +86,22 @@ vLLM is the only local LLM backend, on two architectures:
 
 - **amd64** — discrete cards (RTX 5090 / PRO 5000 / PRO 6000), base image
   `vllm/vllm-openai:cu129-nightly`.
-- **arm64** — GB10 with 128 GB of unified memory, base image pinned by digest in
-  `lib.sh::VLLM_IMAGE_ARM64`.
+- **arm64** — GB10 with 128 GB of unified memory, base image
+  `vllm/vllm-openai:nightly-aarch64`.
 
-**The base is pinned, and compose does not run it directly.** `install-vllm.sh`
-pulls the base, builds this repo's layer over it as `kloudchat-vllm:local`, and
-records `VLLM_IMAGE`, `VLLM_BASE_IMAGE` and `VLLM_BASE_DIGEST` in the node's
-`.env`. A floating `nightly` fails silently rather than loudly: the build that
-relocated vLLM's tool-parser registry left every container healthy and every tool
-call unparsed. amd64 is still on a tag because no node of that architecture has
-been probed here — pin it from the digest `install-vllm.sh` prints on first
-install.
+**Compose does not run the base image directly, and the pin is per node.**
+`install-vllm.sh` pulls the base, builds this repo's layer over it as
+`kloudchat-vllm:local`, and records `VLLM_IMAGE`, `VLLM_BASE_IMAGE` and
+`VLLM_BASE_DIGEST` in that node's `.env`. A floating `nightly` fails silently
+rather than loudly — the build that relocated vLLM's tool-parser registry left
+every container healthy and every tool call unparsed — so `VLLM_BASE_DIGEST` is
+what a rebuild should be pinned to.
+
+It used to rebuild the pytest layer **over the tag it had pulled**, which
+overwrites the tag with a local build. That is why the digest cannot simply be
+read off a running node: `RepoDigests` there reads back identical to the image
+`Id`, and `docker pull` cannot resolve it. Separating the two tags is what makes
+the recorded digest real.
 
 | Model (alias) | Container | Port | Quant | Role |
 |---|---|---|---|---|
@@ -437,12 +442,34 @@ Per-tool paths are in [tools.md](tools.md).
 ships its whole schema on every turn, and model selection accuracy degrades well
 before twenty of them. Watch that number when adding connectors.
 
-## RAG embeddings
+## Retrieval
 
-**Not implemented.** Nothing in the app calls `/embeddings` and there is no
-retrieval path, so `file_search` returning nothing is expected rather than
-misconfiguration. An embedding deployment would receive no traffic.
+Two stages, both local, both through the gateway.
 
-Adding one takes three pieces: an entry in `scheduler/models.yaml`, a service in
-`docker-compose.vllm.yml`, and an embedding deployment in
-`gen-litellm-config.sh`.
+| Stage | Model | Job |
+|---|---|---|
+| Recall | `local/bge-m3` (`mode: embedding`) | Nearest passages by cosine distance in pgvector |
+| Precision | `local/bge-reranker-v2-m3` (`mode: rerank`) | Reads each (query, passage) pair and scores it |
+
+An embedding compares question and passage in one shared space; a reranker reads
+the pair together. That is why 2.2 GiB of reranker separates a relevant passage
+from an irrelevant one far more sharply than a much larger embedding model does,
+and it is the cheapest quality left on the table for a retrieval layer.
+
+`index-shim` over-fetches `limit × RERANK_CANDIDATES` from pgvector, reranks, and
+keeps the top `limit`. **The cuts belong to different stages**: cosine distance
+is loosened to a recall bound (`RERANK_RECALL_DISTANCE`) while reranking, because
+precision is now the second stage's job. Applying the tuned cosine cut first was
+the obvious arrangement and the wrong one — the reranker then only ever saw
+passages that had already passed, and marginal candidates are exactly what it is
+good at.
+
+Both stages degrade rather than fail. No reranker deployed, or one that cannot be
+reached, and search falls back to vector order and the cut that stage was tuned
+for — the response says which happened (`"reranked": true|false`). No embedding
+deployment and an OpenAI key registers `text-embedding-3-small` as the fallback;
+with neither, KloudChat falls back to lexical retrieval.
+
+Adding a stage takes three pieces: an entry in `scheduler/models.yaml`, a service
+in `docker-compose.vllm.yml`, and an `emit_vllm_embed` / `emit_vllm_rerank` call
+in `gen-litellm-config.sh`.

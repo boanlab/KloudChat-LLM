@@ -321,6 +321,13 @@ services:
       # Preference order: local when placed, commercial otherwise. Neither is
       # fatal — KloudChat falls back to lexical search.
       EMBED_MODELS: ${INDEX_EMBED_MODELS:-local/bge-m3,text-embedding-3-small}
+      # Second retrieval stage. Empty skips it and search falls back to vector
+      # order, which is what a deployment without the reranker deployed gets —
+      # the shim degrades rather than failing.
+      RERANK_MODEL: ${INDEX_RERANK_MODEL-local/bge-reranker-v2-m3}
+      RERANK_CANDIDATES: ${INDEX_RERANK_CANDIDATES:-5}
+      RERANK_MIN_SCORE: ${INDEX_RERANK_MIN_SCORE:-0.1}
+      RERANK_RECALL_DISTANCE: ${INDEX_RERANK_RECALL_DISTANCE:-0.85}
       LOG_LEVEL: INFO
     healthcheck:
       # "ok" means the database answers. Embeddings are reported separately:

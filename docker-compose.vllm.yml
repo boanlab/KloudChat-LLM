@@ -9,6 +9,7 @@
 #   vllm-coder30b   coding — Qwen3-Coder-30B-A3B (FP8, 48 KiB/token KV)
 #   vllm-qwen27b    the one dense model — Qwen3.6-27B
 #   vllm-bgem3      retrieval embeddings — BAAI/bge-m3, pooling runner (~2 GiB)
+#   vllm-rerank     retrieval reranking — BAAI/bge-reranker-v2-m3 (~2.2 GiB)
 #   whisper         transcription — resident on the node rather than placed.
 #                   amd64 only: arm64 nodes skip it and delegate STT to OpenRouter
 #
@@ -425,6 +426,51 @@ services:
       timeout: 5s
       retries: 5
       start_period: 600s
+
+  # Retrieval reranking. Same pooling runner as the embedder, scoring
+  # (query, passage) pairs rather than embedding them one at a time — vLLM
+  # exposes it at /v1/rerank. ~2.2 GiB, so it shares a card.
+  vllm-rerank:
+    container_name: vllm-rerank
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
+    restart: unless-stopped
+    ipc: host
+    command:
+      - --model
+      - /model
+      - --served-model-name
+      - local/bge-reranker-v2-m3
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --runner
+      - pooling
+      # Query and passage share the window; 8194 is what the checkpoint declares.
+      - --max-model-len
+      - "${VLLM_RERANK_MAX_LEN:-8192}"
+      - --gpu-memory-utilization
+      - "${VLLM_RERANK_GPU_UTIL:-0.06}"
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_RERANK_DIR:-bge-reranker-v2-m3}:/model:ro
+    ports:
+      - "8009:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      CUDA_VISIBLE_DEVICES: ${VLLM_RERANK_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
 
   # Retrieval embeddings. A pooling runner: no tool parser, no reasoning parser,
   # no chat-template kwargs, no KV cache. ~2 GiB, so it shares a card.

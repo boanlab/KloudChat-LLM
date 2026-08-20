@@ -280,6 +280,8 @@ declare -A VLLM_MODELS=(
   # Retrieval embeddings. BF16 — at 2.2 GiB quantising buys nothing, and shifted
   # numerics mean a rebuilt index.
   [bge-m3]="BAAI/bge-m3"
+  # Retrieval reranking, second stage over what the embeddings return.
+  [bge-reranker-v2-m3]="BAAI/bge-reranker-v2-m3"
 )
 : "${VLLM_MODELS_ROOT:=/var/lib/vllm/models}"
 
@@ -300,6 +302,7 @@ declare -A VLLM_MODEL_WEIGHT_GB=(
   [qwen3-coder-30b]=33
   [qwen3.6-27b]=21
   [bge-m3]=3
+  [bge-reranker-v2-m3]=3
 )
 declare -A VLLM_MODEL_QUANT=(
   [qwen3.6-35b-nvfp4]=nvfp4
@@ -314,6 +317,7 @@ declare -A VLLM_MODEL_QUANT=(
   [qwen3.6-27b]=nvfp4
   # BF16 — every card that can run the lineup can run this.
   [bge-m3]=bf16
+  [bge-reranker-v2-m3]=bf16
 )
 # Runtime headroom on top of the weights: activation buffers plus enough KV to
 # admit one request. A card that fits only the weights cannot start the engine.
@@ -353,14 +357,18 @@ vllm_model_unservable_reason() {
 # that relocated the tool-parser registry leaves every container healthy and
 # every tool call quietly unparsed. Pin, and move the pin deliberately.
 #
-# Verified on GB10 (arm64): vLLM 0.26.1rc1.dev528+gf8d03e774, the build serving
-# qwen3.5-122b-a10b, qwen3.6-35b and gemma-4-26b-a4b with the qwen3_xml,
-# qwen3_coder and gemma4 parsers.
-VLLM_IMAGE_ARM64="vllm/vllm-openai@sha256:21979940c029dd75e89646846fde7701013f9456ad5d8711918e404fbd9ddea8"
-# amd64 has not been pinned here: no node of that architecture has been probed,
-# and a digest nobody has run is a worse lie than an honest tag. Pin it the same
-# way after the first amd64 install — `install-vllm.sh` prints the digest it
-# resolved, and `VLLM_IMAGE` in .env overrides this for a node.
+# Neither architecture is pinned by digest *here*, and one attempt to do so is
+# worth recording. The nodes' RepoDigests read back identical to their image Ids,
+# because install-vllm.sh used to rebuild the pytest layer over the tag it had
+# pulled — which overwrites the tag with a local build and destroys the
+# provenance. A digest read from that is an image id, not something a registry
+# can resolve, and `docker pull` refuses it.
+#
+# The pin is established per node at install time instead: base and derived are
+# now separate tags, so the base tag is a genuine pull and install-vllm.sh
+# records the digest it resolved as VLLM_BASE_DIGEST. Hardcoding a digest nobody
+# has run would be a worse lie than an honest tag.
+VLLM_IMAGE_ARM64="vllm/vllm-openai:nightly-aarch64"
 VLLM_IMAGE_AMD64="vllm/vllm-openai:cu129-nightly"
 
 vllm_default_image() {

@@ -215,6 +215,31 @@ emit_vllm_embed() {
   done <<< "$urls"
 }
 
+# Local reranker. Second stage over what the vector search returns: an embedding
+# compares question and passage in one shared space, a reranker reads the pair
+# together, which is why 2.2 GiB of it beats a much larger embedding model on the
+# same shelf. LiteLLM proxies /v1/rerank to vLLM through its hosted_vllm rerank
+# path, so index-shim keeps talking to one gateway.
+emit_vllm_rerank() {
+  local m="$1" url_csv="$2" urls
+  [[ -n "$url_csv" ]] || return 0
+  urls="$(__vllm_resolved_urls "local/${m}" "$url_csv")"
+  while IFS= read -r url; do
+    [[ -n "$url" ]] || continue
+    echo "  - model_name: local/${m}"
+    echo "    litellm_params:"
+    echo "      model: hosted_vllm/local/${m}"
+    echo "      api_base: ${url%/}/v1"
+    echo "    model_info:"
+    # Like `embedding`, `rerank` is not a surface KloudChat's picker maps, which
+    # is what keeps it out of the model list.
+    echo "      mode: rerank"
+    echo "      input_cost_per_token: 0.0000000000"
+    echo "      output_cost_per_token: 0.0000000000"
+    emit_kchat_boundary self_hosted false false
+  done <<< "$urls"
+}
+
 emit_openai_embed() {
   local m="$1" in_pm
   [[ -n "$(env_get OPENAI_API_KEY)" ]] || return 0
@@ -356,6 +381,7 @@ SECTION=$(
   # fallback, and with neither there is no /embeddings route and retrieval
   # falls back to lexical matching in KloudChat.
   emit_vllm_embed "bge-m3" "$(env_get VLLM_BGEM3_URL)"
+  emit_vllm_rerank "bge-reranker-v2-m3" "$(env_get VLLM_RERANK_URL)"
   # STT twin — registered whenever no local whisper is deployed, matching the
   # scheduler's delegation. Its absence is what hides the microphone.
   [[ -z "$(env_get WHISPER_URLS)" ]] && emit_or_stt "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" 0.10 0.30
