@@ -84,11 +84,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # An image is named in four places: the compose file that deploys it,
-      # BUILD_TABLE in build-push-images.sh, the publish workflow's catalogue,
-      # and the dropdown a manual publish picks from. Every one of those pairs
-      # has drifted at least once, and none of them fails loudly when it does —
-      # an image simply stops being built, or cannot be selected.
+      # An image is named in four places: the compose file, BUILD_TABLE in
+      # build-push-images.sh, the publish workflow's catalogue, and its manual
+      # dropdown. Drift is silent — an image stops being built, or cannot be
+      # selected.
       - name: Compare the lists
         run: |
           python3 - <<'EOF'

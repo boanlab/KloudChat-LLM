@@ -276,12 +276,10 @@ def _probe_gpu_count(host: str) -> int:
 def _probe_card_sizes(host: str) -> tuple[tuple[int, ...], bool]:
     """(bytes per card, is_unified).
 
-    Every card, not just the first. A node used to be sized as "the first card,
-    times how many there are", which is right only where they match — and a box
-    with a 4090 beside a 5090 was then handed a capacity neither card has.
+    Every card, not the first times the count: mixed cards in one box differ.
 
     A capacity from nvidia-smi is discrete VRAM. GB10 reports [N/A] and falls
-    through to /proc/meminfo, and that fall-through is what unified memory is.
+    through to /proc/meminfo, which is the unified-memory case.
     """
     rc, out, _ = _ssh(host, "nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null")
     if rc == 0:
