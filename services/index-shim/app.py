@@ -43,6 +43,39 @@ LITELLM_KEY = os.getenv("LITELLM_MASTER_KEY", "")
 #: In order of preference. The first that answers is used, and its name is stored
 #: on every row so a later change can be re-indexed incrementally instead of
 #: silently mixing two vector spaces.
+#: Reranker, empty to skip the second stage. A vector search compares question
+#: and passage in one shared space; a reranker reads the pair together, which is
+#: why 2.2 GiB of it separates a relevant passage from an irrelevant one far more
+#: sharply than cosine distance does — the gap the `max_distance` note below had
+#: to be tuned by hand.
+RERANK_MODEL = os.getenv("RERANK_MODEL", "local/bge-reranker-v2-m3").strip()
+#: Candidates pulled from pgvector per requested passage before reranking. The
+#: reranker can only reorder what the vector stage returned, so this is the recall
+#: it gets to work with; past a point it costs latency for passages that were
+#: never close.
+RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "5"))
+#: Reranked passages below this are dropped. The two stages cut on different
+#: scales and only one of them should decide: cosine distance is the coarse
+#: recall filter that decides what the reranker gets to look at, and the
+#: reranker's own score decides the answer. Applying the tuned cosine cut first
+#: meant the reranker only ever saw passages that had already passed, which is
+#: the opposite of what it is for — marginal candidates are what it is good at.
+#:
+#: Measured against a four-passage shelf, as the distance cut below was:
+#:
+#:   question the shelf answers      0.73 – 0.94
+#:   loosely related, no answer      0.0005 – 0.025
+#:   topic not on the shelf at all   <= 0.0002
+#:
+#: 0.1 sits in the empty band between the first two, which is a far easier place
+#: to stand than the 0.42 the cosine cut had to thread between 0.31 and 0.55.
+#: "Loosely related" is dropped on purpose: a retrieval layer that always answers
+#: teaches the model that the shelf is relevant when it is not.
+RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.1"))
+#: Cosine cut used while reranking is on. Deliberately loose: it exists to bound
+#: how much the reranker reads, not to decide relevance.
+RERANK_RECALL_DISTANCE = float(os.getenv("RERANK_RECALL_DISTANCE", "0.85"))
+
 EMBED_MODELS = [
     m.strip() for m in os.getenv("EMBED_MODELS", "local/bge-m3,text-embedding-3-small").split(",")
     if m.strip()
@@ -319,6 +352,46 @@ async def put_document(doc: Document) -> dict[str, Any]:
     return {"chunks": len(pieces), "model": model}
 
 
+async def _rerank(query: str, passages: list[dict]) -> Optional[list[dict]]:
+    """Passages reordered by the reranker, or None if it could not be used.
+
+    None rather than an exception on purpose: retrieval that silently degrades to
+    vector order is worse than no reranking, but a shelf that stops answering
+    because its second stage is down is worse still.
+    """
+    if not RERANK_MODEL or len(passages) < 2:
+        return None
+    headers = {"Authorization": f"Bearer {LITELLM_KEY}"} if LITELLM_KEY else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+            r = await client.post(
+                f"{LITELLM_URL.rstrip('/')}/v1/rerank",
+                json={
+                    "model": RERANK_MODEL,
+                    "query": query,
+                    "documents": [p["text"] for p in passages],
+                },
+                headers=headers,
+            )
+            r.raise_for_status()
+            results = r.json().get("results") or []
+    except Exception as exc:  # noqa: BLE001 — any failure falls back to vector order
+        log.warning("rerank unavailable, falling back to vector order: %s", exc)
+        return None
+
+    ordered: list[dict] = []
+    for item in sorted(results, key=lambda x: -float(x.get("relevance_score", 0.0))):
+        idx = int(item.get("index", -1))
+        score = float(item.get("relevance_score", 0.0))
+        if 0 <= idx < len(passages) and score >= RERANK_MIN_SCORE:
+            # The reranker's score replaces the cosine one. They are not the same
+            # quantity and blending them would mean nothing.
+            ordered.append({**passages[idx], "score": round(score, 4)})
+    # An empty list is an answer — nothing on the shelf was relevant — so it is
+    # returned rather than falling back to vector order, which would answer anyway.
+    return ordered
+
+
 @app.post("/search")
 async def search(q: Query) -> dict[str, Any]:
     """Nearest passages inside one collection.
@@ -346,8 +419,15 @@ async def search(q: Query) -> dict[str, Any]:
             q.collection,
             literal,
             model,
-            q.limit,
+            # Over-fetch so the reranker has something to choose between. It can
+            # only reorder what this stage returned, so asking for exactly `limit`
+            # would make the second stage decorative.
+            q.limit * RERANK_CANDIDATES if RERANK_MODEL else q.limit,
         )
+    # While reranking, the cosine cut is loosened to a recall bound. Precision is
+    # the reranker's job, and the tuned 0.58 was chosen for a stage that has to
+    # decide alone.
+    cut = RERANK_RECALL_DISTANCE if RERANK_MODEL else q.max_distance
     passages = [
         {
             "document": r["doc_name"],
@@ -359,9 +439,17 @@ async def search(q: Query) -> dict[str, Any]:
             "score": round(max(0.0, 1.0 - float(r["distance"])), 4),
         }
         for r in rows
-        if float(r["distance"]) <= q.max_distance
+        if float(r["distance"]) <= cut
     ]
-    return {"passages": passages, "model": model}
+    reranked = await _rerank(q.query, passages)
+    if reranked is None:
+        # No reranker, or it could not be reached. Fall back to vector order and
+        # to the cut that stage was tuned for.
+        passages = [p for p in passages if p["score"] >= 1.0 - q.max_distance]
+    else:
+        passages = reranked
+    return {"passages": passages[: q.limit], "model": model,
+            "reranked": reranked is not None}
 
 
 @app.delete("/documents/{doc_id}")

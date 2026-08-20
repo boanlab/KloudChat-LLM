@@ -61,6 +61,16 @@ class ModelSpec:
     or_twin: Optional[ORTwin]
     #: Architectures that can serve it. Empty means all.
     arches: tuple[str, ...] = ()
+    #: Placement order, highest first. Coverage otherwise seats the largest model
+    #: first, which is a packing guard and not a statement of what matters: it
+    #: only keeps a big model from being starved by the small ones ahead of it.
+    #: Declare this where the cluster cannot hold everything and the operator —
+    #: not the weight table — should decide which model keeps a card.
+    priority: int = 0
+    #: Cards to shard this model across on one node (``--tensor-parallel-size``).
+    #: 1 is a whole model per card. Above 1 the model claims that many cards
+    #: outright: vLLM is given them, and nothing else may be packed onto them.
+    tensor_parallel: int = 1
     #: vLLM runner. "generate" is autoregressive; "pooling" is an embedding or
     #: reranking model, which decodes nothing and holds no KV cache — see
     #: `planner.kv_bytes`.
@@ -137,6 +147,8 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
             entry.get("concurrent_sessions") or DEFAULT_CONCURRENT_SESSIONS
         ),
         or_twin=twin,
+        priority=int(entry.get("priority") or 0),
+        tensor_parallel=max(1, int(entry.get("tensor_parallel") or 1)),
         arches=tuple(entry.get("arches") or ()),
         runner=str(entry.get("runner") or "generate"),
         ctx_target_override=int(entry["ctx_target"]) if entry.get("ctx_target") else None,

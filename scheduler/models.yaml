@@ -21,14 +21,111 @@ models:
     dir: qwen3.6-35b-nvfp4
     # .env key prefix — VLLM_QWEN35B_{URL,MAX_LEN,GPU_UTIL}
     env_prefix: VLLM_QWEN35B
+    # Every entry declares its port. The derived default is this list's index,
+    # so inserting a model silently renumbered the ones below it and the applier
+    # then published URLs pointing at another model's container.
+    port: 8001
     # Deep research loses accumulated context below 128K, so this floor is set
     # above the derived default of a quarter of native.
     ctx_floor: 131072
+    # First claim on a card, ahead of the larger qwen3.5-122b-a10b. Everything
+    # routed by default lands here — default chat, titles, memory extraction,
+    # deep research, the external coding agents — so losing it degrades every
+    # path at once. The 122B is a picker choice: losing it removes an option.
+    priority: 20
+
+  # Top chat model. 10B active against the 35B's 3B, so it is the quality end of
+  # the lineup and not a floor: decode costs roughly 3x per token.
+  - id: qwen3.5-122b-a10b
+    hf_repo: Qwen/Qwen3.5-122B-A10B-NVFP4
+    openrouter: qwen/qwen3.5-122b-a10b
+    dir: qwen3.5-122b-a10b
+    env_prefix: VLLM_QWEN122B
+    # Fixed rather than sequential: this entry is not the fourth service on a
+    # node, and a shifted index would publish the wrong port in the URL.
+    port: 8004
+    # 128K, not the native 262K. 78 GiB of weights leaves ~22 GiB of KV on a
+    # GB10, and at 12 KiB/token the choice is depth or concurrency — see
+    # docs/gpu-memory.md.
+    ctx_target: 131072
+    ctx_floor: 131072
+    # The card serves nothing else, so size the KV pool for real concurrency
+    # instead of leaving 15 GiB of it unclaimed at the default of 4.
+    concurrent_sessions: 12
+    # Cards to shard across on one node. Left at 1 because the GB10s have one
+    # card each and 121.6 GiB is enough to hold this whole; a declared 2 there
+    # would make it unplaceable. On a 96 GB card it is the other way round — the
+    # weights alone do not fit, and TP 2 both rescues it and buys back the native
+    # 256K context (~68 GiB per card at 12 sessions). Set it when the target
+    # host has the cards:
+    #
+    #   tensor_parallel: 2
+    #
+    # A sharded model takes those cards outright, so a two-card host serves this
+    # or qwen3.6-35b, not both.
+    tensor_parallel: 1
+    # Second claim, behind qwen3.6-35b and ahead of everything else. Being the
+    # largest model, coverage would seat it first on size alone — which is the
+    # packing guard talking, not a judgement about what the cluster needs. A card
+    # that can hold only one of the two should hold the workhorse.
+    priority: 10
 
   - id: glm-4.7-flash
     hf_repo: zai-org/GLM-4.7-Flash
     openrouter: z-ai/glm-4.7-flash
     env_prefix: VLLM_GLMFLASH
+    port: 8002
+
+  # A different family entirely, and that is the point of it being here: when a
+  # Qwen answer is wrong it tends to be wrong the same way twice. 4B active out
+  # of 26B, so decode is in the same class as the 35B.
+  - id: gemma-4-26b-a4b
+    hf_repo: google/gemma-4-26B-A4B-it
+    openrouter: google/gemma-4-26b-a4b-it
+    dir: gemma-4-26b
+    env_prefix: VLLM_GEMMA26B
+    port: 8005
+    # Below the derived quarter-of-native (64K). This is the alternative to reach
+    # for when the main model answers badly, not a long-context workhorse, so a
+    # floor that keeps it off the cluster entirely is the wrong trade. Restoration
+    # grows it wherever there is room.
+    ctx_floor: 32768
+
+  # Coding. The 35B handles code well enough that this is a specialisation, not a
+  # necessity — worth a card only once the cluster has one to spare. FP8, so it
+  # runs on a card without FP4 as well.
+  - id: qwen3-coder-30b
+    hf_repo: Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
+    openrouter: qwen/qwen3-coder-30b-a3b-instruct
+    dir: qwen3-coder-30b
+    env_prefix: VLLM_CODER30B
+    port: 8006
+    # 48 full-attention layers at 48 KiB/token — the most KV-expensive model in
+    # the lineup. A quarter of native would cost more than the weights do.
+    ctx_floor: 32768
+
+  # Dense, where everything else here is MoE. 27B dense against the 35B's 3B active,
+  # so it is slower per token but does not route — a different kind of answer,
+  # which is the only reason to spend a slot on it.
+  - id: qwen3.6-27b
+    hf_repo: Qwen/Qwen3.6-27B
+    openrouter: qwen/qwen3.6-27b
+    dir: qwen3.6-27b
+    env_prefix: VLLM_QWEN27B
+    port: 8007
+    ctx_floor: 32768
+
+  # Retrieval reranking. Second stage over what the vector search returns:
+  # embeddings compare a question to a passage in one shared space, a reranker
+  # reads the pair together, which is why a small one beats a much larger
+  # embedding model on the same shelf. Pooling, so it holds no KV either.
+  - id: bge-reranker-v2-m3
+    hf_repo: BAAI/bge-reranker-v2-m3
+    env_prefix: VLLM_RERANK
+    port: 8009
+    runner: pooling
+    # Query and passage share the window, so it needs more than a chunk alone.
+    ctx_floor: 8192
 
   # Retrieval embeddings. A pooling runner: no tool parser, no reasoning parser,
   # no KV cache to size. No `openrouter:` twin — OpenRouter serves no embedding
@@ -36,7 +133,17 @@ models:
   - id: bge-m3
     hf_repo: BAAI/bge-m3
     env_prefix: VLLM_BGEM3
+    port: 8003
     runner: pooling
+    # Above the optional chat models, below the two that need a card to
+    # themselves. It is 6 GiB and it is the whole retrieval path — OpenRouter
+    # serves no embedding model, so delegating this one does not move it
+    # elsewhere, it turns /tools/index into lexical matching. Seated last by
+    # size, an optional model added to a full cluster pushed it out.
+    #
+    # Not higher: priority is contention order, and 6 GiB seated on the node the
+    # 122B needs costs a card to save a rounding error.
+    priority: 5
     # Native context: one chunk at a time, so the usual floor buys nothing.
     ctx_floor: 8192
 
@@ -51,9 +158,13 @@ models:
 #   ctx_target     max_position_embeddings from config.json
 #   ctx_floor      ctx_target / 4, never below 32768
 #   service        env_prefix lowercased    service name in docker-compose.vllm.yml
-#   port           sequential from 8001
+#   port           sequential from 8001 — but declared on every entry above:
+#                  the derived value shifts when a model is inserted
 #   served_name    local/<id>               the name LiteLLM exposes
 #   arches         all of them              declare only when an architecture cannot serve it
 #   runner         generate                 "pooling" for embedding/reranking models
+#   tensor_parallel 1                       cards to shard across on one node
+#   priority       0                        placement order, highest first; ties
+#                  fall back to largest-first
 #
 # The ctx_floor on qwen3.6-35b above is an example of such an override.

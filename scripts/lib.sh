@@ -84,6 +84,14 @@ assert_regen_writable() {
 
 has_nvidia_gpu() { command -v nvidia-smi &>/dev/null && nvidia-smi -L &>/dev/null; }
 
+# ~/.local/bin on PATH. uv and the HuggingFace CLI install there, and a
+# non-interactive ssh — which is how the scheduler and setup.sh reach a node —
+# gets a PATH without it. The tool is present, the script says it is missing.
+case ":${PATH}:" in
+  *":${HOME}/.local/bin:"*) ;;
+  *) [[ -d "${HOME}/.local/bin" ]] && PATH="${HOME}/.local/bin:${PATH}" && export PATH ;;
+esac
+
 has_gb10() {
   has_nvidia_gpu || return 1
   nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | grep -q 'GB10'
@@ -148,9 +156,12 @@ gpu_supports_quant() {
     esac
   fi
   case "$quant" in
-    nvfp4) need=10.0 ;;
-    fp8)   need=8.9 ;;
-    *)     need=8.0 ;;
+    nvfp4)     need=10.0 ;;
+    fp8)       need=8.9 ;;
+    # int4 kernels reach back furthest, which is the whole reason these builds
+    # are in the catalogue: they are what a pre-Blackwell card can run.
+    awq|gptq)  need=7.5 ;;
+    *)         need=8.0 ;;
   esac
   awk -v c="$cap" -v n="$need" 'BEGIN { exit !(c + 0 >= n + 0) }'
 }
@@ -163,18 +174,29 @@ gpu_supports_quant() {
 #
 # Ids and prices must be verified against https://openrouter.ai/api/v1/models.
 # An id taken from prose rather than the catalogue 404s on first call.
-OPENAI_MODELS=(gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5-nano)
-ANTHROPIC_MODELS=(claude-opus-5 claude-sonnet-5 claude-haiku-4.5)
-GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.6-flash gemini-3.1-flash-lite)
-XAI_MODELS=(grok-4.5)
-PERPLEXITY_MODELS=(sonar)
+# Ordered flagship → cheapest within each provider: the picker shows them in
+# this order and the first entry is what a user lands on.
+OPENAI_MODELS=(gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5-nano gpt-5.3-codex)
+ANTHROPIC_MODELS=(claude-fable-5 claude-opus-5 claude-sonnet-5 claude-haiku-4.5)
+GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.7-flash gemini-3.1-flash-lite)
+XAI_MODELS=(grok-4.6)
+# sonar is the cheap lookup; sonar-pro searches harder and costs 3x/15x for it.
+# Neither replaces the stack's own deep-research service, which drives a local
+# model over SearXNG rather than paying per search.
+PERPLEXITY_MODELS=(sonar sonar-pro)
 # Open-weight tier, 295B to 2.8T. Display name equals the OpenRouter id, so the
 # picker and the route cannot drift apart.
 TENCENT_MODELS=(hy3)
 DEEPSEEK_MODELS=(deepseek-v4-pro deepseek-v4-flash)
-ZAI_MODELS=(glm-5.2)
+ZAI_MODELS=(glm-5.3)
 XIAOMI_MODELS=(mimo-v2.5)
 MOONSHOTAI_MODELS=(kimi-k3)
+# Qwen's hosted tier, distinct from the qwen3.x checkpoints served locally: a 1M
+# context these cards cannot hold, and qwen3.7-flash at $0.03/$0.13 is the
+# cheapest usable model in the whole catalogue — the one to reach for when the
+# work is bulk rather than hard.
+QWEN_MODELS=(qwen3.8-max qwen3.7-flash qwen3-coder-plus)
+MINIMAX_MODELS=(minimax-m3)
 
 # Image generation, cheapest first: the picker defaults to the first entry and
 # the price spread is a hundredfold. Prices are per `image_output` token, and one
@@ -194,18 +216,30 @@ declare -A MODEL_IMAGE_OUT_COST=(
 # Audio generation through chat/completions. Both require a streaming request.
 # gpt-audio is speech billed per token; lyria is music billed per clip.
 OR_AUDIO_MODELS=(
+  openai/gpt-audio-mini
   openai/gpt-audio
   google/lyria-3-clip-preview
 )
+# Audio tokens, not text: a speech model's traffic is overwhelmingly audio, and
+# OpenRouter prices the two separately ($2.50/$10 per 1M text against $32/$64 for
+# gpt-audio). Billing the audio rate slightly over-charges the text portion,
+# which is the safe direction for a budget.
 declare -A MODEL_AUDIO_OUT_PM=(
-  [openai/gpt-audio]=80.00
+  [openai/gpt-audio-mini]=2.40
+  [openai/gpt-audio]=64.00
   [google/lyria-3-clip-preview]=0.00
 )
 declare -A MODEL_AUDIO_IN_PM=(
-  [openai/gpt-audio]=40.00
+  [openai/gpt-audio-mini]=0.60
+  [openai/gpt-audio]=32.00
   [google/lyria-3-clip-preview]=0.00
 )
 # Per-clip billing, which is why the per-token figures above are zero.
+#
+# The catalogue reports an empty `pricing` block for lyria and states the figure
+# in the model's own description instead — "30 second duration clips are priced
+# at $0.04 per clip". That is OpenRouter's own text, so it is a source, not a
+# guess; `or_price_drift` reads it from there.
 declare -A MODEL_AUDIO_PER_CALL=(
   [google/lyria-3-clip-preview]=0.04
 )
@@ -228,9 +262,26 @@ declare -A VLLM_MODELS=(
   # there with a packed/unpacked shape mismatch.
   [qwen3.6-35b]="Qwen/Qwen3.6-35B-A3B"
   [glm-4.7-flash]="unsloth/GLM-4.7-Flash-NVFP4"
+  # Top chat model: 10B active, 78 GiB of NVFP4 weights. Needs a card to itself.
+  [qwen3.5-122b-a10b]="Qwen/Qwen3.5-122B-A10B-NVFP4"
+  # A second family. 4B active out of 26B, so it decodes like the small MoEs.
+  [gemma-4-26b-a4b]="google/gemma-4-26B-A4B-it"
+  # AWQ int4 for cards without FP4. NVFP4 needs Blackwell (cc >= 10.0) and FP8
+  # needs Ada/Hopper (cc >= 8.9), which leaves an RTX 4090 — and every Ampere
+  # card — able to run nothing in this lineup. AWQ runs on cc >= 7.5.
+  # Point the model's *_DIR at one of these on such a node; the served entry in
+  # models.yaml is unchanged, only the checkpoint behind it.
+  [gemma-4-26b-a4b-awq]="cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit"
+  [qwen3.6-27b-awq]="QuantTrio/Qwen3.6-27B-AWQ"
+  [qwen3.6-35b-awq]="QuantTrio/Qwen3.6-35B-A3B-AWQ"
+  # Coding, and the one dense model. Both FP8/NVFP4 respectively.
+  [qwen3-coder-30b]="Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"
+  [qwen3.6-27b]="Qwen/Qwen3.6-27B"
   # Retrieval embeddings. BF16 — at 2.2 GiB quantising buys nothing, and shifted
   # numerics mean a rebuilt index.
   [bge-m3]="BAAI/bge-m3"
+  # Retrieval reranking, second stage over what the embeddings return.
+  [bge-reranker-v2-m3]="BAAI/bge-reranker-v2-m3"
 )
 : "${VLLM_MODELS_ROOT:=/var/lib/vllm/models}"
 
@@ -243,14 +294,30 @@ declare -A VLLM_MODEL_WEIGHT_GB=(
   [qwen3.6-35b-nvfp4]=21
   [qwen3.6-35b]=35
   [glm-4.7-flash]=20
+  [qwen3.5-122b-a10b]=78
+  [gemma-4-26b-a4b]=16
+  [gemma-4-26b-a4b-awq]=17
+  [qwen3.6-27b-awq]=22
+  [qwen3.6-35b-awq]=26
+  [qwen3-coder-30b]=33
+  [qwen3.6-27b]=21
   [bge-m3]=3
+  [bge-reranker-v2-m3]=3
 )
 declare -A VLLM_MODEL_QUANT=(
   [qwen3.6-35b-nvfp4]=nvfp4
   [qwen3.6-35b]=fp8
   [glm-4.7-flash]=nvfp4
+  [qwen3.5-122b-a10b]=nvfp4
+  [gemma-4-26b-a4b]=nvfp4
+  [gemma-4-26b-a4b-awq]=awq
+  [qwen3.6-27b-awq]=awq
+  [qwen3.6-35b-awq]=awq
+  [qwen3-coder-30b]=fp8
+  [qwen3.6-27b]=nvfp4
   # BF16 — every card that can run the lineup can run this.
   [bge-m3]=bf16
+  [bge-reranker-v2-m3]=bf16
 )
 # Runtime headroom on top of the weights: activation buffers plus enough KV to
 # admit one request. A card that fits only the weights cannot start the engine.
@@ -258,6 +325,8 @@ VLLM_RUNTIME_HEADROOM_GB=6
 
 # Fill order for the recommended set. The fp8 build is excluded: a fallback for
 # older engines, requested by name.
+# The 122B is not in the recommended set: at 78 GiB it displaces everything else
+# on the card, so putting it on a node is a decision, not a default.
 VLLM_PREFERRED_MODELS=(qwen3.6-35b-nvfp4 glm-4.7-flash)
 
 # Why this node cannot serve $1. Prints a reason and returns 1, or returns 0
@@ -282,12 +351,55 @@ vllm_model_unservable_reason() {
 
 # vLLM image per architecture. Nightly builds, for the hybrid GDN and MoE
 # architectures the stable tags lag behind.
+# Base image per architecture, pinned by digest where one has been verified.
+#
+# `nightly` is a moving target and the failure it produces is silent: a nightly
+# that relocated the tool-parser registry leaves every container healthy and
+# every tool call quietly unparsed. Pin, and move the pin deliberately.
+#
+# Neither architecture is pinned by digest *here*, and one attempt to do so is
+# worth recording. The nodes' RepoDigests read back identical to their image Ids,
+# because install-vllm.sh used to rebuild the pytest layer over the tag it had
+# pulled — which overwrites the tag with a local build and destroys the
+# provenance. A digest read from that is an image id, not something a registry
+# can resolve, and `docker pull` refuses it.
+#
+# The pin is established per node at install time instead: base and derived are
+# now separate tags, so the base tag is a genuine pull and install-vllm.sh
+# records the digest it resolved as VLLM_BASE_DIGEST. Hardcoding a digest nobody
+# has run would be a worse lie than an honest tag.
+VLLM_IMAGE_ARM64="vllm/vllm-openai:nightly-aarch64"
+VLLM_IMAGE_AMD64="vllm/vllm-openai:cu129-nightly"
+
 vllm_default_image() {
   case "$(detect_arch)" in
-    arm64) echo "vllm/vllm-openai:nightly-aarch64" ;;
-    amd64) echo "vllm/vllm-openai:cu129-nightly" ;;
+    arm64) echo "$VLLM_IMAGE_ARM64" ;;
+    amd64) echo "$VLLM_IMAGE_AMD64" ;;
     *)     echo "" ;;
   esac
+}
+
+# vLLM attention backend for an MLA model, by card. There is no portable
+# default: TRITON_MLA is vLLM's, and on GB10 (sm_121) its decode kernel needs
+# 101377 B of shared memory against a 101376 B limit — one byte over, and engine
+# init fails. The alternatives are not interchangeable either, so the choice is
+# per card rather than one value with a comment listing the others.
+#
+# Empty means "let vLLM decide", which is right for a card nobody has tried:
+# guessing a backend it cannot run turns a working default into a failed start.
+mla_attention_backend() {
+  case "${1:-$(detect_gpu_class)}" in
+    gb10)               echo "FLASHINFER_MLA" ;;   # verified on this cluster
+    pro6000|pro5000|rtx5090)
+                        echo "CUTLASS_MLA" ;;      # Blackwell datacentre/consumer
+    rtx4090)            echo "TRITON_MLA" ;;       # Ada: no CUTLASS MLA path
+    *)                  echo "" ;;
+  esac
+}
+
+# Registry digest of a local image, empty when it has none (a locally built tag).
+image_base_digest() {
+  docker image inspect "$1" --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' 2>/dev/null
 }
 
 # Unit prices for LiteLLM spend tracking (USD per 1M tokens). Local models are
@@ -297,24 +409,32 @@ vllm_default_image() {
 # These drive user credit deduction. Verify against
 # `curl https://openrouter.ai/api/v1/models`, never a blog post.
 declare -A MODEL_PRICE_IN_PM=(
-  [gpt-5.6-sol]=5        [gpt-5.6-terra]=1      [gpt-5.6-luna]=0.10    [gpt-5-nano]=0.05
-  [claude-opus-5]=5      [claude-sonnet-5]=2    [claude-haiku-4.5]=1
-  [gemini-3.1-pro-preview]=2   [gemini-3.6-flash]=1.50   [gemini-3.1-flash-lite]=0.25
-  [grok-4.5]=2           [sonar]=1.00
-  [hy3]=0.132            [deepseek-v4-pro]=0.435   [deepseek-v4-flash]=0.14
-  [glm-5.2]=0.07         [mimo-v2.5]=0.14          [kimi-k3]=3.00
+  [gpt-5.6-sol]=2.50     [gpt-5.6-terra]=2      [gpt-5.6-luna]=0.20    [gpt-5-nano]=0.05
+  [gpt-5.3-codex]=1.75
+  [claude-fable-5]=10    [claude-opus-5]=5      [claude-sonnet-5]=2    [claude-haiku-4.5]=1
+  [gemini-3.1-pro-preview]=2   [gemini-3.7-flash]=0.375  [gemini-3.1-flash-lite]=0.25
+  [grok-4.6]=2           [sonar]=1.00              [sonar-pro]=3.00
+  [hy3]=0.132            [deepseek-v4-pro]=1.44    [deepseek-v4-flash]=0.083
+  [glm-5.3]=1.40         [mimo-v2.5]=0.14          [kimi-k3]=3.00
+  [qwen3.8-max]=2.00     [qwen3.7-flash]=0.03      [qwen3-coder-plus]=0.65
+  [minimax-m3]=0.30
   # Local models are free. Their twins are priced in gen-litellm-config.sh.
-  [qwen3.6-35b]=0    [glm-4.7-flash]=0
+  [qwen3.6-35b]=0    [glm-4.7-flash]=0    [qwen3.5-122b-a10b]=0    [gemma-4-26b-a4b]=0
+  [qwen3-coder-30b]=0 [qwen3.6-27b]=0
   [text-embedding-3-small]=0.02
 )
 declare -A MODEL_PRICE_OUT_PM=(
-  [gpt-5.6-sol]=30       [gpt-5.6-terra]=6      [gpt-5.6-luna]=0.60    [gpt-5-nano]=0.40
-  [claude-opus-5]=25     [claude-sonnet-5]=10   [claude-haiku-4.5]=5
-  [gemini-3.1-pro-preview]=12  [gemini-3.6-flash]=7.50   [gemini-3.1-flash-lite]=1.50
-  [grok-4.5]=6           [sonar]=1.00
-  [hy3]=0.528            [deepseek-v4-pro]=0.87    [deepseek-v4-flash]=0.28
-  [glm-5.2]=0.22         [mimo-v2.5]=0.28          [kimi-k3]=15.00
-  [qwen3.6-35b]=0    [glm-4.7-flash]=0
+  [gpt-5.6-sol]=15       [gpt-5.6-terra]=12     [gpt-5.6-luna]=1.20    [gpt-5-nano]=0.40
+  [gpt-5.3-codex]=14.00
+  [claude-fable-5]=50    [claude-opus-5]=25     [claude-sonnet-5]=10   [claude-haiku-4.5]=5
+  [gemini-3.1-pro-preview]=12  [gemini-3.7-flash]=1.875  [gemini-3.1-flash-lite]=1.50
+  [grok-4.6]=6           [sonar]=1.00              [sonar-pro]=15.00
+  [hy3]=0.528            [deepseek-v4-pro]=2.88    [deepseek-v4-flash]=0.165
+  [glm-5.3]=4.40         [mimo-v2.5]=0.28          [kimi-k3]=15.00
+  [qwen3.8-max]=6.00     [qwen3.7-flash]=0.13      [qwen3-coder-plus]=3.25
+  [minimax-m3]=1.20
+  [qwen3.6-35b]=0    [glm-4.7-flash]=0    [qwen3.5-122b-a10b]=0    [gemma-4-26b-a4b]=0
+  [qwen3-coder-30b]=0 [qwen3.6-27b]=0
 )
 
 per_token_cost() { awk -v v="$1" 'BEGIN { printf "%.10f", v/1000000 }'; }
@@ -343,6 +463,93 @@ or_free_models() {
         | select(.id | endswith(":free"))
         | select(.id | test("guard|safety|safeguard|moderation") | not)
         | .id' 2>/dev/null | sort
+}
+
+# Declared prices against the live catalogue. Prints one line per mismatch and
+# returns 1 if any were found.
+#
+# This exists because seven of eighteen had drifted unnoticed, one of them by
+# 14x. Nothing breaks when a price is wrong — the model answers, the request
+# succeeds — so it is only ever caught by someone reading a billing report and
+# not believing it. The catalogue is the source of truth for what a call costs;
+# lib.sh is a copy, and copies rot.
+or_price_drift() {
+  has_openrouter || { echo "no OPENROUTER_API_KEY — nothing to check" >&2; return 0; }
+  command -v jq &>/dev/null || { echo "jq is required" >&2; return 0; }
+  local key; key="$(env_get OPENROUTER_API_KEY)"
+  local live; live="$(curl -sf --max-time 20 https://openrouter.ai/api/v1/models \
+                       -H "Authorization: Bearer ${key}" 2>/dev/null)" || {
+    echo "could not reach the OpenRouter catalogue" >&2; return 0; }
+
+  local drift=0 slug m prov declared_in declared_out actual
+  for prov in openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI \
+              perplexity:PERPLEXITY tencent:TENCENT deepseek:DEEPSEEK z-ai:ZAI \
+              xiaomi:XIAOMI moonshotai:MOONSHOTAI qwen:QWEN minimax:MINIMAX; do
+    local disp="${prov%%:*}" var="${prov##*:}_MODELS[@]"
+    for m in "${!var}"; do
+      slug="${disp}/${m}"
+      declared_in="${MODEL_PRICE_IN_PM[$m]:-}"
+      declared_out="${MODEL_PRICE_OUT_PM[$m]:-}"
+      actual="$(jq -r --arg s "$slug" '
+        .data[] | select(.id == $s)
+        | "\((.pricing.prompt // "0" | tonumber) * 1000000)\t\((.pricing.completion // "0" | tonumber) * 1000000)"
+      ' <<<"$live" 2>/dev/null | head -1)"
+      if [[ -z "$actual" ]]; then
+        echo "GONE      ${slug} — declared but not in the catalogue; it will 404 on first call"
+        drift=1; continue
+      fi
+      local ain="${actual%%$'\t'*}" aout="${actual##*$'\t'}"
+      if ! awk -v a="$ain" -v b="$declared_in" -v c="$aout" -v e="$declared_out" \
+              'BEGIN { exit !(a-b < 0.0005 && b-a < 0.0005 && c-e < 0.0005 && e-c < 0.0005) }'; then
+        printf 'DRIFT     %-40s declared %s/%s  actual %s/%s\n' \
+               "$slug" "$declared_in" "$declared_out" "$ain" "$aout"
+        drift=1
+      fi
+    done
+  done
+  # Image and audio are priced on different keys — image_output per image token,
+  # audio/audio_output per audio token — and the gpt-audio entry was wrong on
+  # both when this check was written. Same comparison, different fields.
+  local id declared actual_out actual_in
+  for id in "${OR_IMAGE_MODELS[@]}"; do
+    declared="${MODEL_IMAGE_OUT_COST[$id]:-}"
+    actual_out="$(jq -r --arg s "$id" '.data[] | select(.id == $s) | .pricing.image_output // empty' <<<"$live" | head -1)"
+    if [[ -z "$actual_out" ]]; then
+      echo "GONE      ${id} — image model not in the catalogue"; drift=1
+    elif ! awk -v a="$actual_out" -v b="$declared" 'BEGIN { d=a-b; if (d<0) d=-d; exit !(d < 1e-9) }'; then
+      printf 'DRIFT     %-40s image_output declared %s  actual %s\n' "$id" "$declared" "$actual_out"
+      drift=1
+    fi
+  done
+  for id in "${OR_AUDIO_MODELS[@]}"; do
+    # Per-clip models carry their price in prose rather than in `pricing`
+    if [[ -n "${MODEL_AUDIO_PER_CALL[$id]:-}" ]]; then
+      declared="${MODEL_AUDIO_PER_CALL[$id]}"
+      actual_out="$(jq -r --arg s "$id" '.data[] | select(.id == $s) | .description' <<<"$live" \
+                    | grep -oE '\$[0-9]+\.?[0-9]* per clip' | head -1 | tr -d '$' | sed 's/ per clip//')"
+      if [[ -z "$actual_out" ]]; then
+        echo "UNCHECKED ${id} — per-clip price is not stated in the catalogue"
+      elif ! awk -v a="$actual_out" -v b="$declared" 'BEGIN { d=a-b; if (d<0) d=-d; exit !(d < 1e-9) }'; then
+        printf 'DRIFT     %-40s per clip declared %s  actual %s\n' "$id" "$declared" "$actual_out"
+        drift=1
+      fi
+      continue
+    fi
+    declared="${MODEL_AUDIO_IN_PM[$id]:-}"
+    actual_in="$(jq -r --arg s "$id" '.data[] | select(.id == $s) | ((.pricing.audio // "0" | tonumber) * 1000000)' <<<"$live" | head -1)"
+    if ! awk -v a="$actual_in" -v b="$declared" 'BEGIN { d=a-b; if (d<0) d=-d; exit !(d < 0.0005) }'; then
+      printf 'DRIFT     %-40s audio-in declared %s  actual %s\n' "$id" "$declared" "$actual_in"
+      drift=1
+    fi
+    declared="${MODEL_AUDIO_OUT_PM[$id]:-}"
+    actual_out="$(jq -r --arg s "$id" '.data[] | select(.id == $s) | ((.pricing.audio_output // "0" | tonumber) * 1000000)' <<<"$live" | head -1)"
+    if ! awk -v a="$actual_out" -v b="$declared" 'BEGIN { d=a-b; if (d<0) d=-d; exit !(d < 0.0005) }'; then
+      printf 'DRIFT     %-40s audio-out declared %s  actual %s\n' "$id" "$declared" "$actual_out"
+      drift=1
+    fi
+  done
+
+  (( drift )) && return 1 || { echo "every declared price matches the catalogue"; return 0; }
 }
 
 # Output: "<URL>\t<served-model-name>" per line, from the URL csv the caller passes.
@@ -522,6 +729,10 @@ vllm_wait_until_ready() {
 litellm_chat_models_csv() {
   local vllm_chat_url; vllm_chat_url="$(env_get VLLM_QWEN35B_URL 2>/dev/null || true)"
   local vllm_fast_url; vllm_fast_url="$(env_get VLLM_GLMFLASH_URL 2>/dev/null || true)"
+  local vllm_big_url; vllm_big_url="$(env_get VLLM_QWEN122B_URL 2>/dev/null || true)"
+  local vllm_gemma_url; vllm_gemma_url="$(env_get VLLM_GEMMA26B_URL 2>/dev/null || true)"
+  local vllm_coder_url; vllm_coder_url="$(env_get VLLM_CODER30B_URL 2>/dev/null || true)"
+  local vllm_dense_url; vllm_dense_url="$(env_get VLLM_QWEN27B_URL 2>/dev/null || true)"
   local out=() m
   if has_openrouter; then
     for m in "${OPENAI_MODELS[@]}";     do out+=("openai/$m");     done
@@ -530,18 +741,53 @@ litellm_chat_models_csv() {
     for m in "${DEEPSEEK_MODELS[@]}";   do out+=("deepseek/$m");   done
     for m in "${XAI_MODELS[@]}";        do out+=("x-ai/$m");       done
     for m in "${PERPLEXITY_MODELS[@]}"; do out+=("perplexity/$m"); done
-    for m in "${META_MODELS[@]}";       do out+=("meta/$m");       done
+    # Open-weight tier. Registered by the generator, so a team whose allowlist
+    # omits them gets model-not-allowed on models the install already pays for.
+    for m in "${TENCENT_MODELS[@]}";    do out+=("tencent/$m");    done
+    for m in "${ZAI_MODELS[@]}";        do out+=("z-ai/$m");       done
+    for m in "${XIAOMI_MODELS[@]}";     do out+=("xiaomi/$m");     done
+    for m in "${MOONSHOTAI_MODELS[@]}"; do out+=("moonshotai/$m"); done
     for m in "${QWEN_MODELS[@]}";       do out+=("qwen/$m");       done
+    for m in "${MINIMAX_MODELS[@]}";    do out+=("minimax/$m");    done
   fi
-  # Same condition as emit_brain (local URL or OR key): a mismatch shows the
+  # Same shape as emit_brain, and it has to stay that way: a mismatch shows the
   # agents in the picker while direct calls fail as model-not-allowed.
-  { [[ -n "$vllm_chat_url" ]] || has_openrouter; } && out+=("local/qwen3.6-35b")
-  { [[ -n "$vllm_fast_url" ]] || has_openrouter; } && out+=("local/glm-4.7-flash")
-  # strict-local aliases exist only over a real vLLM deployment. Including them
-  # for OpenRouter-only installations would advertise a privacy boundary that
-  # the generated LiteLLM config intentionally does not create.
-  [[ -n "$vllm_chat_url" ]] && out+=("strict-local/qwen3.6-35b")
-  [[ -n "$vllm_fast_url" ]] && out+=("strict-local/glm-4.7-flash")
+  #
+  # A local alias exists only over a real vLLM deployment — that is what the
+  # local/ prefix claims, and the strict alias additionally advertises a privacy
+  # boundary the generated config would not create for an OpenRouter-only
+  # install. With no deployment the model is reachable under its OpenRouter
+  # slug, which is what emit_brain registers.
+  if [[ -n "$vllm_chat_url" ]]; then
+    out+=("local/qwen3.6-35b" "strict-local/qwen3.6-35b")
+  elif has_openrouter; then
+    out+=("qwen/qwen3.6-35b-a3b")
+  fi
+  if [[ -n "$vllm_fast_url" ]]; then
+    out+=("local/glm-4.7-flash" "strict-local/glm-4.7-flash")
+  elif has_openrouter; then
+    out+=("z-ai/glm-4.7-flash")
+  fi
+  if [[ -n "$vllm_big_url" ]]; then
+    out+=("local/qwen3.5-122b-a10b" "strict-local/qwen3.5-122b-a10b")
+  elif has_openrouter; then
+    out+=("qwen/qwen3.5-122b-a10b")
+  fi
+  if [[ -n "$vllm_gemma_url" ]]; then
+    out+=("local/gemma-4-26b-a4b" "strict-local/gemma-4-26b-a4b")
+  elif has_openrouter; then
+    out+=("google/gemma-4-26b-a4b-it")
+  fi
+  if [[ -n "$vllm_coder_url" ]]; then
+    out+=("local/qwen3-coder-30b" "strict-local/qwen3-coder-30b")
+  elif has_openrouter; then
+    out+=("qwen/qwen3-coder-30b-a3b-instruct")
+  fi
+  if [[ -n "$vllm_dense_url" ]]; then
+    out+=("local/qwen3.6-27b" "strict-local/qwen3.6-27b")
+  elif has_openrouter; then
+    out+=("qwen/qwen3.6-27b")
+  fi
   if has_openrouter; then
     for m in "${OPENAI_EMBED_CATALOG[@]}"; do out+=("$m"); done
   fi
