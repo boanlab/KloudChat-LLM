@@ -190,10 +190,12 @@ def compute_diff(
             if p.tp > 1 or (here or {}).get(tp_key) not in (None, "", "1"):
                 options.append((tp_key, str(p.tp)))
 
-            # Which cards this container may see. Only written for a node with
-            # more than one, where it is the difference between two models on two
-            # cards and two models fighting over card 0; a single-card node is
-            # told nothing and keeps compose's "every GPU".
+            # Which cards this container may see, as NVIDIA_VISIBLE_DEVICES.
+            # Only written for a node with more than one, where it is the
+            # difference between two models on two cards and two models fighting
+            # over card 0; a single-card node is told nothing and keeps compose's
+            # "all". Not CUDA_VISIBLE_DEVICES — that one fails engine init on
+            # GB10 with cudaErrorNotPermitted even when it names the only card.
             dev_key = f"{spec.env_prefix}_DEVICES"
             devices = ",".join(str(d) for d in p.devices)
             node = next((n for n in nodes if n.node_id == node_id), None)

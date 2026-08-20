@@ -150,9 +150,11 @@ per-sequence state, so it is charged `POOLING_ACTIVATION_BYTES` (2 GiB) instead.
   `lib.sh::UNIFIED_RESERVE_GB` — these two must move together).
 - **A node with more than one card is packed per card.** `gpu_util` is a fraction
   of one device, so the scheduler assigns device ordinals and writes them as
-  `{env_prefix}_DEVICES`, which compose passes as `CUDA_VISIBLE_DEVICES`. Driving
-  such a node by hand without setting it confines every model to card 0 — safe,
-  but it uses a fraction of the box.
+  `{env_prefix}_DEVICES`, which compose passes as **`NVIDIA_VISIBLE_DEVICES`**.
+  Not `CUDA_VISIBLE_DEVICES`: that one has no value meaning "every card" — empty
+  means *none* — so a compose default cannot leave it alone, and on GB10 setting
+  it fails engine init with `cudaErrorNotPermitted` even when it names the only
+  card the node has. A node the scheduler has not pinned gets `all`.
 - **`gpu_util` is a fraction of the total, and vLLM needs that much to be
   *free*.** Utilisation figures summing below 1.0 are not sufficient: an earlier
   container plus page cache can still leave too little, which is what the 12 GiB
