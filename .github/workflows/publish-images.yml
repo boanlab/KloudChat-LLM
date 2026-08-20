@@ -21,7 +21,7 @@ on:
         description: "Image to publish"
         type: choice
         default: all
-        options: [all, crawl4ai-shim, whisper-shim, code-interpreter, deep-research, whisper]
+        options: [all, crawl4ai-shim, whisper-shim, code-interpreter, deep-research, index-shim, whisper]
       tag:
         description: "Tag to publish under"
         required: false
