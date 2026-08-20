@@ -123,7 +123,14 @@ def _probe(hosts: dict[str, str], specs) -> list:
     if not hosts:
         print("NODES_VLLM is empty — there is nothing to probe", file=sys.stderr)
         return []
-    return inventory.probe_cluster(hosts, services=_services(specs))
+    return inventory.probe_cluster(
+        hosts,
+        services=_services(specs),
+        # So placement can tell "this node has no room" from "this node does not
+        # have the weights" — the second is not a capacity problem and no
+        # amount of VRAM fixes it.
+        models_root=_env("VLLM_MODELS_ROOT", "/var/lib/vllm/models"),
+    )
 
 
 # ── commands ────────────────────────────────────────────────────────────

@@ -105,6 +105,14 @@ class NodeSpec:
     foreign_vram_bytes: int = 0
     #: "amd64" | "arm64" | "" on probe failure. Gates what the node can serve.
     arch: str = ""
+    #: Checkpoint directory names present under VLLM_MODELS_ROOT. None means the
+    #: probe did not report them and placement must not filter on it; a set is
+    #: authoritative. A bind mount of a missing path is created empty by Docker
+    #: rather than refused, so a model placed where its weights are not is a
+    #: container that restarts forever with "Invalid repository ID or local
+    #: directory specified: '/model'" — the one failure the planner can see
+    #: coming and the node cannot report.
+    checkpoints: Optional[frozenset[str]] = None
 
     @property
     def effective_reserve_bytes(self) -> int:
