@@ -285,3 +285,31 @@ def test_config_example_disables_prompt_and_response_storage() -> None:
     config = yaml.safe_load((ROOT / "services/litellm/config.yaml.example").read_text())
 
     assert config["general_settings"]["store_prompts_in_spend_logs"] is False
+
+
+def test_every_chat_model_in_the_catalogue_is_registered() -> None:
+    """models.yaml decides what can be served; this script decides what is routed.
+
+    They are two lists of the same models, and nothing fails loudly when they
+    drift: `qwen3-coder-next` was placed on a node, came up healthy, and was
+    simply absent from the gateway — no error anywhere, just a model nobody
+    could reach. Pooling models are routed by their own emitters and are not
+    part of this list.
+    """
+    catalogue = yaml.safe_load((ROOT / "scheduler" / "models.yaml").read_text())
+    generator = GENERATOR.read_text()
+
+    for entry in catalogue["models"]:
+        if (entry.get("runner") or "generate") != "generate":
+            continue
+        model_id = entry["id"]
+        assert f'emit_brain "{model_id}"' in generator, (
+            f"{model_id} is in the catalogue but gen-litellm-config.sh never "
+            "registers it — it would deploy and be unreachable"
+        )
+        twin = entry.get("openrouter")
+        if twin:
+            assert twin in generator, (
+                f"{model_id} declares the OpenRouter twin {twin}, which the "
+                "generator does not name — its fallback would be wrong"
+            )
