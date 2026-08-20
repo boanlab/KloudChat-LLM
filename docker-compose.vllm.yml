@@ -425,6 +425,12 @@ services:
       - "8008:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
+      # DeepGEMM off by default. This checkpoint is FP8 with 128x128 weight
+      # blocks, and on GB10 the DeepGEMM path rejects that scale-factor layout
+      # at engine init — `Assertion error (layout.hpp:60): Unknown SF
+      # transformation` — after five minutes of weight loading, then restarts
+      # and does it again. Set to 1 on hardware where the kernel takes it.
+      VLLM_USE_DEEP_GEMM: ${VLLM_CODERNEXT_DEEP_GEMM:-0}
       # Cards this container may use — see vllm-qwen35b for why this is the
       # runtime variable and not the CUDA one.
       NVIDIA_VISIBLE_DEVICES: ${VLLM_CODERNEXT_DEVICES:-all}
