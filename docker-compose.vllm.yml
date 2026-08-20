@@ -7,6 +7,7 @@
 #   vllm-glmflash   cheap-decode floor — GLM-4.7-Flash 31.2B-A3B
 #   vllm-gemma26b   second family — Gemma-4-26B-A4B (vision, tool calling)
 #   vllm-coder30b   coding — Qwen3-Coder-30B-A3B (FP8, 48 KiB/token KV)
+#   vllm-codernext  coding — Qwen3-Coder-Next-80B (FP8, hybrid attention)
 #   vllm-qwen27b    the one dense model — Qwen3.6-27B
 #   vllm-bgem3      retrieval embeddings — BAAI/bge-m3, pooling runner (~2 GiB)
 #   vllm-rerank     retrieval reranking — BAAI/bge-reranker-v2-m3 (~2.2 GiB)
@@ -371,6 +372,62 @@ services:
       # setting CUDA_VISIBLE_DEVICES=0 on GB10 fails engine init outright with
       # cudaErrorNotPermitted, on a device that runs fine without it.
       NVIDIA_VISIBLE_DEVICES: ${VLLM_CODER30B_DEVICES:-all}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+
+  # Coding, and the larger of the two coders. Same XML tool dialect as the 30B,
+  # so the same `qwen3_coder` parser — `qwen3_xml` is a different format and
+  # silently produces no tool calls. What differs is the attention: Qwen3-Next
+  # holds KV on 12 of its 48 layers and runs the rest linear, so the native 262K
+  # is affordable here in a way it is not on the 30B.
+  vllm-codernext:
+    container_name: vllm-codernext
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
+    restart: unless-stopped
+    ipc: host
+    command:
+      - --model
+      - /model
+      - --served-model-name
+      - local/qwen3-coder-next
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "${VLLM_CODERNEXT_MAX_LEN:-262144}"
+      # 75 GiB of weights on a 121.6 GiB card. The rest is KV, and at 12 KiB per
+      # token the hybrid layout buys real depth with it.
+      - --gpu-memory-utilization
+      - "${VLLM_CODERNEXT_GPU_UTIL:-0.85}"
+      - --kv-cache-dtype
+      - fp8
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --tensor-parallel-size
+      - "${VLLM_CODERNEXT_TP:-1}"
+      - --trust-remote-code
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_CODERNEXT_DIR:-qwen3-coder-next}:/model:ro
+    ports:
+      - "8008:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      # Cards this container may use — see vllm-qwen35b for why this is the
+      # runtime variable and not the CUDA one.
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_CODERNEXT_DEVICES:-all}
     deploy:
       resources:
         reservations:

@@ -173,7 +173,7 @@ def _build_plan(args):
     result = planner.plan(
         bound, nodes,
         reserved=_reservations(probes),
-        replicas=max(1, args.replicas),
+        replicas=args.replicas,
         deployed=_deployed(probes, bound),
     )
     for model_id, reason in failed:
@@ -281,8 +281,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--hosts", help="SSH target CSV (default: NODES_VLLM in .env)")
         p.add_argument("--models", help="model id CSV (default: VLLM_MODELS in .env)")
-        p.add_argument("--replicas", type=int, default=1,
-                       help="maximum instances per model (default 1, no replication)")
+        p.add_argument("--replicas", type=int, default=None,
+                       help="cap instances per model (default: fill spare "
+                            "capacity by priority; 1 disables replication)")
         if name == "apply":
             p.add_argument("-y", "--yes", action="store_true", help="apply without confirmation")
         p.set_defaults(func=handler)

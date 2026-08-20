@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 from scheduler import applier, planner, registry
@@ -24,12 +25,14 @@ def _meta(**kw) -> ModelMetadata:
 
 
 def _spec(model_id: str, *, weight: int, ctx_floor: int = 0,
-          native: int = 131072, arches=(), **kw) -> registry.ModelSpec:
+          native: int = 131072, arches=(), priority: int = 0,
+          **kw) -> registry.ModelSpec:
     spec = registry.ModelSpec(
         id=model_id, hf_repo=f"org/{model_id}", dir=model_id,
         service=f"vllm-{model_id}", port=8001,
         env_prefix=f"VLLM_{model_id.upper()}", served_name=f"local/{model_id}",
         ctx_floor=ctx_floor, concurrent_sessions=1, or_twin=None, arches=arches,
+        priority=priority,
     )
     return spec.bind(_meta(weight_bytes=weight, **kw), native)
 
@@ -112,24 +115,60 @@ def test_fp8_kv_halves_bf16():
 
 
 def test_every_model_placed_before_any_replica():
-    """A spare node does not get a second copy of the same model: coverage first."""
+    """Coverage first: nothing gets a second copy while another model has none.
+
+    Replication fills what is left, but never at the cost of a model that is not
+    running anywhere — the model with no instance is the one that has to queue.
+    """
     specs = [_spec("a", weight=20 * GB), _spec("b", weight=20 * GB)]
     result = planner.plan(specs, [_node("n1", 96), _node("n2", 96)])
-    placed = [p.model_id for p in result.placements]
-    assert sorted(placed) == ["a", "b"], placed
+    counts = Counter(p.model_id for p in result.placements)
+    assert set(counts) == {"a", "b"}, counts
+    assert max(counts.values()) - min(counts.values()) <= 1, counts
     assert not result.delegations
 
 
-def test_replicas_only_when_requested():
+def test_spare_capacity_is_filled_unless_capped():
+    """A card coverage did not need queues requests for nothing, so it is used."""
     specs = [_spec("a", weight=20 * GB), _spec("b", weight=20 * GB)]
     nodes = [_node("n1", 96), _node("n2", 96), _node("n3", 96)]
 
-    once = planner.plan(specs, nodes)
-    assert len(once.placements) == 2
+    once = planner.plan(specs, nodes, replicas=1)
+    assert len(once.placements) == 2, "replicas=1 is how a caller turns it off"
 
-    twice = planner.plan(specs, nodes, replicas=2)
-    ids = [p.model_id for p in twice.placements]
+    filled = planner.plan(specs, nodes)
+    assert len(filled.placements) > 2, "the default should use what is left"
+
+    capped = planner.plan(specs, nodes, replicas=2)
+    ids = [p.model_id for p in capped.placements]
     assert ids.count("a") == 2 and ids.count("b") == 2, ids
+    assert len(capped.placements) < len(filled.placements)
+
+
+def test_replicas_deepen_in_priority_order():
+    """Spare capacity goes to the highest-ranked model first, then down the list.
+
+    Nodes are sized to hold exactly one of these, so the question is only which
+    model the spare node gets. Without the priority tiebreak it goes to whichever
+    the catalogue lists first, which is not a decision anyone made.
+    """
+    def specs():  # plan() binds to the specs, so build them fresh per call
+        return [
+            _spec("third", weight=20 * GB, priority=1),
+            _spec("first", weight=20 * GB, priority=3),
+            _spec("second", weight=20 * GB, priority=2),
+        ]
+
+    four = [_node(f"n{i}", 32) for i in range(1, 5)]
+    ids = [p.model_id for p in planner.plan(specs(), four, replicas=2).placements]
+    assert ids.count("first") == 2, ids
+    assert ids.count("second") == 1 and ids.count("third") == 1, ids
+
+    # One more node: the second copy of "second" follows; "third" still waits.
+    five = four + [_node("n5", 32)]
+    ids = [p.model_id for p in planner.plan(specs(), five, replicas=2).placements]
+    assert ids.count("first") == 2 and ids.count("second") == 2, ids
+    assert ids.count("third") == 1, ids
 
 
 def test_context_restored_above_floor():
