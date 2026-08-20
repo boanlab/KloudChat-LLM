@@ -37,9 +37,11 @@ def _spec(model_id: str, *, weight: int, ctx_floor: int = 0,
     return spec.bind(_meta(weight_bytes=weight, **kw), native)
 
 
-def _node(node_id: str, gib: int, arch: str = "amd64") -> NodeSpec:
+def _node(node_id: str, gib: int, arch: str = "amd64",
+          checkpoints=None) -> NodeSpec:
     return NodeSpec(node_id=node_id, hostname=f"user@{node_id}",
-                    gpu_class="pro6000", total_vram_bytes=gib * GB, arch=arch)
+                    gpu_class="pro6000", total_vram_bytes=gib * GB, arch=arch,
+                    checkpoints=checkpoints)
 
 
 # ── memory arithmetic ───────────────────────────────────────────────────
@@ -169,6 +171,62 @@ def test_replicas_deepen_in_priority_order():
     ids = [p.model_id for p in planner.plan(specs(), five, replicas=2).placements]
     assert ids.count("first") == 2 and ids.count("second") == 2, ids
     assert ids.count("third") == 1, ids
+
+
+def test_a_model_is_not_placed_where_its_weights_are_not():
+    """Docker creates the missing bind-mount path empty, so vLLM restarts forever.
+
+    No node carries the checkpoint, so the model is delegated — and the reason
+    says weights, not VRAM, because no VRAM upgrade would fix it.
+    """
+    spec = _spec("a", weight=20 * GB)
+    nodes = [_node("n1", 96, checkpoints=frozenset({"something-else"}))]
+    result = planner.plan([spec], nodes)
+    assert not result.placements
+    assert len(result.delegations) == 1
+    reason = result.delegations[0].reason
+    assert "checkpoint" in reason and "'a'" in reason, reason
+
+
+def test_the_capacity_reason_only_counts_nodes_that_could_run_it():
+    """A roomy node without the checkpoint is not room.
+
+    Quoting its free VRAM reads as "there is space" while naming the one place
+    the model can never go, which sends the reader looking for a packing bug.
+    """
+    spec = _spec("a", weight=20 * GB)
+    nodes = [
+        _node("roomy", 96, checkpoints=frozenset({"something-else"})),
+        _node("carrier", 4, checkpoints=frozenset({"a"})),
+    ]
+    result = planner.plan([spec], nodes)
+    assert not result.placements
+    reason = result.delegations[0].reason
+    assert "88" not in reason, f"quotes the roomy node it cannot use: {reason}"
+
+
+def test_replicas_only_land_on_nodes_that_carry_the_checkpoint():
+    """Filling spare capacity must not seat a copy onto weights that are absent.
+
+    Two nodes with room, one of them without the checkpoint: the replica has
+    nowhere to go and the model stays at one instance.
+    """
+    spec = _spec("a", weight=20 * GB)
+    nodes = [
+        _node("has", 96, checkpoints=frozenset({"a"})),
+        _node("lacks", 96, checkpoints=frozenset({"something-else"})),
+    ]
+    result = planner.plan([spec], nodes)
+    assert {p.node_id for p in result.placements} == {"has"}
+    assert len(result.placements) >= 1
+    assert all(p.node_id == "has" for p in result.placements), result.placements
+
+
+def test_unreported_checkpoints_do_not_filter_anything():
+    """`checkpoints=None` is "the probe did not say", not "the node has nothing"."""
+    spec = _spec("a", weight=20 * GB)
+    result = planner.plan([spec], [_node("n1", 96)])
+    assert [p.node_id for p in result.placements] == ["n1"]
 
 
 def test_context_restored_above_floor():

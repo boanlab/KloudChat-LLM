@@ -14,6 +14,7 @@ A node where every step fails still yields a NodeSpec with zero capacity and
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -151,6 +152,24 @@ def _probe_running_containers(host: str) -> set[str]:
     return {line.strip() for line in out.splitlines() if line.strip()}
 
 
+def _probe_checkpoints(host: str, models_root: str) -> Optional[frozenset[str]]:
+    """Checkpoint directories on the node, or None if the root cannot be read.
+
+    A directory that holds no config.json is not a checkpoint — it is what
+    Docker leaves behind after bind-mounting a path that was never there, and
+    treating it as present is how a model gets placed onto weights that do not
+    exist.
+    """
+    rc, out, _ = _ssh(
+        host,
+        f"for d in {shlex.quote(models_root)}/*/; do "
+        '[ -f "$d/config.json" ] && basename "$d"; done',
+    )
+    if rc != 0:
+        return None
+    return frozenset(line.strip() for line in out.splitlines() if line.strip())
+
+
 def _probe_whisper(host: str) -> bool:
     """Transcription backend liveness. Drives capacity reservation, not placement."""
     rc, _, _ = _ssh(host, f"curl -fsS -o /dev/null http://localhost:{WHISPER_PORT}/health")
@@ -282,6 +301,7 @@ def probe_node(
     node_id: str, host: str, *,
     reserved_bytes: Optional[int] = None,
     services: Optional[Mapping[str, int]] = None,
+    models_root: Optional[str] = None,
     retries: int = 1,
 ) -> NodeProbe:
     """Probe a node, retrying ``retries`` times while it looks dead.
@@ -291,12 +311,19 @@ def probe_node(
 
     Args:
         services: compose service name to port, for identifying running vLLMs.
+        models_root: VLLM_MODELS_ROOT on the node. Given, the probe reports which
+            checkpoints are there and placement can avoid the nodes that lack
+            one; omitted, that check is skipped rather than guessed at.
     """
-    probe = _probe_node_once(node_id, host, reserved_bytes=reserved_bytes, services=services)
+    once = lambda: _probe_node_once(  # noqa: E731 — three call sites, one shape
+        node_id, host, reserved_bytes=reserved_bytes, services=services,
+        models_root=models_root,
+    )
+    probe = once()
     attempts = max(0, retries)
     while not probe.alive and attempts > 0:
         attempts -= 1
-        probe = _probe_node_once(node_id, host, reserved_bytes=reserved_bytes, services=services)
+        probe = once()
     return probe
 
 
@@ -304,6 +331,7 @@ def _probe_node_once(
     node_id: str, host: str, *,
     reserved_bytes: Optional[int] = None,
     services: Optional[Mapping[str, int]] = None,
+    models_root: Optional[str] = None,
 ) -> NodeProbe:
     errors: list[str] = []
     running = _probe_running_containers(host)
@@ -359,6 +387,9 @@ def _probe_node_once(
         gpu_count=gpu_count,
         foreign_vram_bytes=foreign,
         arch=arch,
+        checkpoints=(
+            _probe_checkpoints(host, models_root) if models_root else None
+        ),
     )
     return NodeProbe(
         spec=spec,

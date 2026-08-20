@@ -49,9 +49,15 @@ else is read from the checkpoint's `config.json` and its size on disk.
    model has one. `--replicas N` caps the count per model; `--replicas 1` turns
    replication off.
 
+Only nodes that carry the model's checkpoint are candidates in any of the three.
+Docker does not refuse a bind mount of a path that is not there — it creates the
+directory empty — so a model placed where its weights are not is a container that
+restarts forever on a missing `config.json`, which is why the probe reports what
+each node holds.
+
 A model that finds no seat is delegated to OpenRouter with the reason attached.
-Insufficient capacity and unsupported architecture are reported separately —
-more VRAM does not fix the latter.
+Insufficient capacity, absent weights, and unsupported architecture are reported
+separately — more VRAM does not fix the last two.
 
 ## Sizing
 
