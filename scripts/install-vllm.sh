@@ -19,7 +19,7 @@
 #
 # Flags:
 #   --reinstall       re-pull the image (also reinstalls the transcription backend)
-#   --image <tag>     one-off override, same as VLLM_IMAGE
+#   --image <tag>     one-off override of the base image, same as VLLM_BASE_IMAGE
 #   --no-whisper      skip the transcription backend
 set -euo pipefail
 
@@ -71,29 +71,53 @@ else
 fi
 
 hdr "2. vLLM image"
-VLLM_IMAGE="${IMAGE_OVERRIDE:-${VLLM_IMAGE:-$(vllm_default_image)}}"
-[[ -n "$VLLM_IMAGE" ]] || { err "could not determine VLLM_IMAGE — pass --image or set the environment variable"; exit 1; }
-echo "  image: $VLLM_IMAGE"
+# Base and derived are separate tags. They used to share one — the pytest layer
+# was rebuilt over the pulled tag — which made a pulled image and a locally built
+# one indistinguishable, and meant the base could not be pinned by digest at all
+# (`docker build -t repo@sha256:...` is not a thing).
+VLLM_BASE_IMAGE="${IMAGE_OVERRIDE:-${VLLM_BASE_IMAGE:-$(vllm_default_image)}}"
+[[ -n "$VLLM_BASE_IMAGE" ]] || { err "could not determine the vLLM base image — pass --image or set VLLM_BASE_IMAGE"; exit 1; }
+VLLM_IMAGE="kloudchat-vllm:local"
+echo "  base:    $VLLM_BASE_IMAGE"
+echo "  derived: $VLLM_IMAGE"
 
-if (( REINSTALL )) || ! docker image inspect "$VLLM_IMAGE" &>/dev/null; then
+if (( REINSTALL )) || ! docker image inspect "$VLLM_BASE_IMAGE" &>/dev/null; then
   echo "  → pull (~10 GB)"
-  docker pull "$VLLM_IMAGE"
+  docker pull "$VLLM_BASE_IMAGE"
 fi
 
-# pytest layer over the base image, rebuilt under the same tag so compose's
-# `image: ${VLLM_IMAGE}` still resolves. Context is services/vllm for its patches/.
-echo "  → rebuilding through services/vllm/Dockerfile (pytest layer)"
+# The digest the tag actually resolved to. Recorded so a rebuild on another node,
+# or after the tag moves, is reproducible rather than "whatever nightly is today"
+# — a moving base once relocated the tool-parser registry, which leaves every
+# container healthy and every tool call silently unparsed.
+BASE_DIGEST="$(image_base_digest "$VLLM_BASE_IMAGE")"
+[[ -n "$BASE_DIGEST" ]] && echo "  digest:  $BASE_DIGEST"
+
+# pytest layer over the base. Context is services/vllm for its patches/.
+echo "  → building services/vllm/Dockerfile (pytest layer) onto the base"
 docker build --quiet \
-  --build-arg "BASE_IMAGE=$VLLM_IMAGE" \
+  --build-arg "BASE_IMAGE=$VLLM_BASE_IMAGE" \
   -t "$VLLM_IMAGE" \
   "${PROJECT_DIR}/services/vllm" >/dev/null
 
 ok "image ready: $(docker image inspect "$VLLM_IMAGE" --format '{{.Size}}' | awk '{printf "%.1fGB",$1/1024/1024/1024}')"
 
-# Resolved image recorded in .env for docker-compose.vllm.yml. The compose
-# default is the arm64 image, which on an amd64 card dies with "Failed to infer
-# device type". A no-op on arm64, where the value already matches.
+# Recorded in .env for docker-compose.vllm.yml. VLLM_IMAGE is what compose runs;
+# the base and its digest are recorded so the build can be reproduced.
 env_set VLLM_IMAGE "$VLLM_IMAGE"
+env_set VLLM_BASE_IMAGE "$VLLM_BASE_IMAGE"
+[[ -n "$BASE_DIGEST" ]] && env_set VLLM_BASE_DIGEST "$BASE_DIGEST"
+
+# MLA attention backend for this card. A hardware fact, so it is decided where
+# the hardware is, not by a default in compose that happens to suit one card.
+# Empty leaves vLLM to choose, which is what an unrecognised card should get.
+MLA_BACKEND="$(mla_attention_backend)"
+if [[ -n "$MLA_BACKEND" ]]; then
+  echo "  MLA attention backend for $(detect_gpu_class): $MLA_BACKEND"
+  env_set VLLM_GLMFLASH_ATTN_BACKEND "$MLA_BACKEND"
+else
+  warn "unrecognised card — leaving the MLA attention backend to vLLM"
+fi
 
 hdr "3. Model directory"
 echo "  VLLM_MODELS_ROOT: $VLLM_MODELS_ROOT"

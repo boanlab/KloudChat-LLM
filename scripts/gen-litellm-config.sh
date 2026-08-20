@@ -21,7 +21,11 @@ DRY_RUN=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
-    -h|--help) echo "Usage: $(basename "$0") [--dry-run]"; exit 0 ;;
+    # Read-only: compares the declared prices against OpenRouter's live
+    # catalogue and writes nothing. A wrong price breaks no request, so it is
+    # only ever noticed in a billing report — check it when the catalogue moves.
+    --check-prices) or_price_drift; exit $? ;;
+    -h|--help) echo "Usage: $(basename "$0") [--dry-run] [--check-prices]"; exit 0 ;;
     *)         err "Unknown: $arg"; exit 2 ;;
   esac
 done
@@ -48,7 +52,9 @@ CTX_FALLBACK=32768
 # the concurrency gate's job, so these stay generous; deep research runs for
 # minutes on qwen3.6-35b. Note that max_parallel_requests only soft-queues — the
 # gate's pre-call rewrite is what reroutes.
-declare -A MODEL_TIMEOUT=( [qwen3.6-35b]=900 [glm-4.7-flash]=300 )
+# The 122B decodes at roughly a third of the 35B's rate, so the same generous
+# backstop is proportionally tighter for it.
+declare -A MODEL_TIMEOUT=( [qwen3.6-35b]=900 [glm-4.7-flash]=300 [qwen3.5-122b-a10b]=1800 [gemma-4-26b-a4b]=600 [qwen3-coder-30b]=900 [qwen3.6-27b]=600 )
 
 # OpenRouter provider routing variant appended to chat/agent model routes.
 # ":floor" = route to the lowest-price provider for that model (cost optimization).
@@ -294,38 +300,58 @@ emit_vllm_chat() {
   done <<<"$urls"
 }
 
-# OR-only deployment without a GPU: register the local model_name (local/<m>)
-# directly against the OpenRouter same-model, so every surface that names a local
-# model keeps working with no vLLM behind it.
-emit_local_or_brain() {  # $1=local-model  $2=or-slug  $3=in_pm  $4=out_pm
-  echo "  - model_name: local/$1"
+# The brain's OpenRouter route where no vLLM serves it: an ordinary commercial
+# registration under the model's own slug, plus the tool-capability flags. The
+# frontier catalogue gets those from LiteLLM's model map, which does not
+# reliably carry an entry for a self-hostable open-weight slug — and without
+# them the picker drops tools for a model that has them.
+emit_or_brain() {  # $1=or-slug  $2=in_pm  $3=out_pm
+  echo "  - model_name: $1"
   echo "    litellm_params:"
-  echo "      model: openrouter/$2${OR_VARIANT}"
+  echo "      model: openrouter/$1${OR_VARIANT}"
   echo "      api_key: os.environ/OPENROUTER_API_KEY"
   echo "    model_info:"
   echo "      supports_function_calling: true"
   echo "      supports_tool_choice: true"
-  echo "      input_cost_per_token: $(per_token_cost "$3")"
-  echo "      output_cost_per_token: $(per_token_cost "$4")"
+  echo "      input_cost_per_token: $(per_token_cost "$2")"
+  echo "      output_cost_per_token: $(per_token_cost "$3")"
   emit_kchat_boundary external false false
 }
 
-# Brain registration: if a local vLLM URL exists use local (+ a separate OR twin
-# fallback); if not and an OR key exists, connect directly to OR.
+# Brain registration. The local/ prefix states where a request starts, not which
+# weights answer it: a local deployment that spills to OpenRouter under load or
+# on failure still starts local, so local/<m> is honest there. With no vLLM URL
+# nothing about the route is local, so the model registers under its own
+# OpenRouter slug rather than borrowing the name. That keeps one invariant worth
+# having: local/* is never kchat_data_boundary external.
+#
+# Consequence for a GPU-less install: surfaces that name local/<m> no longer
+# resolve, and must pick from the catalogue instead (docs/models.md).
 emit_brain() {  # $1=local-model  $2=url_csv  $3=or-slug  $4=or_in_pm  $5=or_out_pm
-  if [[ -n "$2" ]]; then emit_vllm_chat "$1" "$2"
-  elif has_openrouter; then emit_local_or_brain "$1" "$3" "$4" "$5"; fi
+  if [[ -n "$2" ]]; then
+    emit_vllm_chat "$1" "$2"
+  elif has_openrouter; then
+    # Exclusive with emit_or_fallback, which emits this same model_name only
+    # when the URL *is* set. Both firing would put two deployments under one
+    # name and split ordinary traffic onto the paid twin.
+    emit_or_brain "$3" "$4" "$5"
+  fi
 }
 
 # Registration order = local → openai → anthropic → google (by provider group)
 SECTION=$(
   echo "  ${MARKER_START}"
   # --- local (vLLM) ---
-  # Chat models: the local vLLM when one exists, otherwise the same model direct
-  # from OpenRouter. qwen3.6-35b covers chat, vision, deep research and coding;
+  # Chat models: the local vLLM when one exists, otherwise the same model under
+  # its OpenRouter slug — the local/ alias is not created without a deployment
+  # behind it. qwen3.6-35b covers chat, vision, deep research and coding;
   # glm-4.7-flash is the cheap-decode floor.
-  emit_brain "qwen3.6-35b"   "$(env_get VLLM_QWEN35B_URL)"    "qwen/qwen3.6-35b-a3b" 0.15 1.00
+  emit_brain "qwen3.6-35b"   "$(env_get VLLM_QWEN35B_URL)"    "qwen/qwen3.6-35b-a3b" 0.14 1.00
   emit_brain "glm-4.7-flash" "$(env_get VLLM_GLMFLASH_URL)"   "z-ai/glm-4.7-flash"  0.06 0.40
+  emit_brain "qwen3.5-122b-a10b" "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b" 0.26 2.08
+  emit_brain "gemma-4-26b-a4b" "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it" 0.07 0.34
+  emit_brain "qwen3-coder-30b" "$(env_get VLLM_CODER30B_URL)" "qwen/qwen3-coder-30b-a3b-instruct" 0.07 0.28
+  emit_brain "qwen3.6-27b" "$(env_get VLLM_QWEN27B_URL)" "qwen/qwen3.6-27b" 0.30 2.00
   # Embeddings for RAG. Local when placed; the OpenAI catalogue below is the
   # fallback, and with neither there is no /embeddings route and retrieval
   # falls back to lexical matching in KloudChat.
@@ -350,6 +376,10 @@ SECTION=$(
   for m in "${ZAI_MODELS[@]}";        do emit_commercial_or z-ai       "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
   for m in "${XIAOMI_MODELS[@]}";     do emit_commercial_or xiaomi     "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
   for m in "${MOONSHOTAI_MODELS[@]}"; do emit_commercial_or moonshotai "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
+  # Qwen's hosted tier and MiniMax. Distinct from the qwen3.x checkpoints served
+  # locally — same vendor, different weights and a context these cards cannot hold.
+  for m in "${QWEN_MODELS[@]}";       do emit_commercial_or qwen       "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
+  for m in "${MINIMAX_MODELS[@]}";    do emit_commercial_or minimax    "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
   # --- free tier: whatever OpenRouter gives away at generation time ---
   free_count=0
   while IFS= read -r free_slug; do
@@ -371,8 +401,12 @@ SECTION=$(
     emit_or_audio "$m" "${MODEL_AUDIO_IN_PM[$m]}" "${MODEL_AUDIO_OUT_PM[$m]}" "${MODEL_AUDIO_PER_CALL[$m]:-}"
   done
   # --- others: local vLLM → OR same-model fallback twin (see router_settings.fallbacks, not shown in UI) ---
-  emit_or_fallback "$(env_get VLLM_QWEN35B_URL)"  "qwen/qwen3.6-35b-a3b" 0.15 1.00
+  emit_or_fallback "$(env_get VLLM_QWEN35B_URL)"  "qwen/qwen3.6-35b-a3b" 0.14 1.00
   emit_or_fallback "$(env_get VLLM_GLMFLASH_URL)" "z-ai/glm-4.7-flash" 0.06 0.40
+  emit_or_fallback "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b" 0.26 2.08
+  emit_or_fallback "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it" 0.07 0.34
+  emit_or_fallback "$(env_get VLLM_CODER30B_URL)" "qwen/qwen3-coder-30b-a3b-instruct" 0.07 0.28
+  emit_or_fallback "$(env_get VLLM_QWEN27B_URL)" "qwen/qwen3.6-27b" 0.30 2.00
   echo "  ${MARKER_END}"
 )
 
@@ -388,6 +422,10 @@ FALLBACKS=$(
   echo "  fallbacks:"
   fb_line "qwen3.6-35b"   "$(env_get VLLM_QWEN35B_URL)"  "qwen/qwen3.6-35b-a3b"
   fb_line "glm-4.7-flash" "$(env_get VLLM_GLMFLASH_URL)" "z-ai/glm-4.7-flash"
+  fb_line "qwen3.5-122b-a10b" "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b"
+  fb_line "gemma-4-26b-a4b" "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it"
+  fb_line "qwen3-coder-30b" "$(env_get VLLM_CODER30B_URL)" "qwen/qwen3-coder-30b-a3b-instruct"
+  fb_line "qwen3.6-27b" "$(env_get VLLM_QWEN27B_URL)" "qwen/qwen3.6-27b"
   echo "  ${FB_END}"
 )
 
