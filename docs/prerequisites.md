@@ -37,8 +37,16 @@ connected only by URL.
 
 | Requirement | Minimum |
 |---|---|
-| NVIDIA GPU | RTX 5090 32 GB for the default NVFP4 lineup; an FP4-less card needs the int4 aliases below |
+| NVIDIA GPU | 32 GiB usable. RTX 5090 for the default NVFP4 lineup; an FP4-less card of 48 GB or more runs the int4 aliases below |
 | Model disk | 100 GB |
+
+**24 GiB cards are out of scope** — RTX 4090, RTX 3090, L4, A10. Not for want of
+a format: the int4 aliases execute there. There is nowhere to put the model.
+Measured across the catalogue on 24 GiB, exactly one entry places —
+`gemma-4-26b-a4b-awq`, at its 32K floor and 0.92 of the card, with no room to
+grow and nothing left to share the card with. The same builds on a 48 GiB
+FP4-less card place at 128K–256K. `manage-vllm.sh up` refuses below the floor, by
+usable VRAM rather than by card name.
 
 **NVIDIA only.** AMD/ROCm is out of scope, and the reason is not that nobody got
 to it. `nvidia-smi` is what the inventory reads capacity, card class and
