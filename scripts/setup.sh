@@ -56,9 +56,14 @@ step_env_validate() {
     err "neither OPENROUTER_API_KEY nor a vLLM node — one of them is required"; exit 1
   fi
 
+  local required=(LITELLM_MASTER_KEY LITELLM_DB_PASSWORD CODE_INTERPRETER_API_KEY CODE_INTERPRETER_MINIO_PASSWORD SCRAPER_API_KEY)
+  # The index database only exists when its profile is on, but then its password
+  # is as required as the others — compose refuses to start index-db without it.
+  [[ ",$(env_get COMPOSE_PROFILES)," == *",index,"* ]] && required+=(INDEX_DB_PASSWORD)
+
   local missing=()
   local key
-  for key in LITELLM_MASTER_KEY LITELLM_DB_PASSWORD CODE_INTERPRETER_API_KEY CODE_INTERPRETER_MINIO_PASSWORD; do
+  for key in "${required[@]}"; do
     [[ -z "$(env_get "$key")" || "$(env_get "$key")" == change-me-* ]] && missing+=("$key")
   done
   (( ${#missing[@]} )) && { err "unfilled secrets: ${missing[*]} — ./scripts/gen-env.sh --force"; exit 1; }

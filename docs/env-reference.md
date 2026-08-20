@@ -27,7 +27,7 @@ vLLM node is present.
 |---|---|---|
 | `GATEWAY_PORT` | `8080` | The only published port |
 | `COMPOSE_PROFILES` | `tools,models` | What to run. `setup.sh` appends `whisper` (the transcription shim) once a backend answers. Add `index` for the retrieval index |
-| `INDEX_DB_USER` / `INDEX_DB_PASSWORD` | `index` | Credentials for the retrieval index's pgvector database |
+| `INDEX_DB_USER` | `index` | Owner role of the retrieval index's pgvector database. Its password is a generated secret — see below |
 | `INDEX_EMBED_MODELS` | `local/bge-m3,text-embedding-3-small` | Embedding preference order, tried through LiteLLM by name |
 
 ## 3. Generated secrets
@@ -42,7 +42,8 @@ Filled in by `gen-env.sh`. If you create them yourself, keep the formats below.
 | `SEARXNG_SECRET_KEY` | 32 hex | SearXNG session signing |
 | `CODE_INTERPRETER_API_KEY` | 32 hex | Injected by the gateway into code execution requests |
 | `CODE_INTERPRETER_MINIO_PASSWORD` | 32 hex | Artifact storage |
-| `SCRAPER_API_KEY` | string | Injected by the gateway into document fetch requests |
+| `INDEX_DB_PASSWORD` | 32 hex | The retrieval index's pgvector database. Required whenever the `index` profile is on |
+| `SCRAPER_API_KEY` | 32 hex | Injected by the gateway into document fetch requests, checked by the shim |
 
 The two injected keys **never reach the UI**: they exist only inside the gateway.
 

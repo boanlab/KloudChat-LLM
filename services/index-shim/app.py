@@ -35,7 +35,9 @@ from pydantic import BaseModel, Field
 log = logging.getLogger("index-shim")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
-DATABASE_URL = os.getenv("INDEX_DATABASE_URL", "postgresql://index:index@index-db:5432/index")
+#: No fallback: a default with credentials in it is a credential in the source
+#: tree, and compose always supplies this one.
+DATABASE_URL = os.environ["INDEX_DATABASE_URL"]
 #: The model gateway. Embeddings are requested by name, so which backend answers
 #: — local vLLM or a commercial fallback — is LiteLLM's decision, not ours.
 LITELLM_URL = os.getenv("LITELLM_URL", "http://litellm:8000")

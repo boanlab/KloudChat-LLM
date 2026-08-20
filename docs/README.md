@@ -36,6 +36,15 @@ STT goes to OpenRouter.
 `/tools/*` is unauthenticated. The gateway port must only be open inside a
 private network.
 
+Compose puts the backing stores on their own networks, each shared with exactly
+the one service that owns it: `litellm-db` with LiteLLM, `index-db` with
+index-shim, MinIO and redis with code-interpreter, valkey with SearXNG. None of
+them publish a port, and their networks are `internal`, so the databases are
+reachable only through the service in front of them — not from the rest of the
+stack, and not from the host. That matters most for code-interpreter: it runs
+user-supplied code on the service plane, and cannot open a socket to a database
+it does not own.
+
 ## Documents
 
 **Setup and when something breaks**
