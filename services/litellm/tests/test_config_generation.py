@@ -141,7 +141,9 @@ def _parse_dry_run(output: str) -> tuple[list[dict], list[dict]]:
     ("with_vllm", "with_openrouter", "normal_boundary", "has_strict", "has_fallback"),
     [
         (False, False, None, False, False),
-        (False, True, "external", False, False),
+        # No vLLM URL: nothing about the route is local, so the model registers
+        # under its OpenRouter slug instead of borrowing the local/ name.
+        (False, True, None, False, False),
         (True, False, "self_hosted", True, False),
         (True, True, "hybrid", True, True),
     ],
@@ -178,9 +180,51 @@ def test_local_and_strict_aliases_follow_deployment_topology(
         assert strict["model_info"]["kchat_strict_local"] is True
         assert strict["model_info"]["kchat_privacy_only"] is True
 
+    # The OpenRouter slug appears either way, but for opposite reasons: as the
+    # hidden failover twin behind a local deployment, or — with no deployment —
+    # as the model's only route, and then it belongs in the picker. Both at once
+    # would put two deployments under one name and split ordinary traffic onto
+    # the paid one.
+    twin = by_name.get("qwen/qwen3.6-35b-a3b")
+    assert (twin is not None) is with_openrouter
+    if twin is not None:
+        assert twin["model_info"]["kchat_data_boundary"] == "external"
+        assert twin["model_info"].get("kchat_hidden", False) is with_vllm
+        # Visible route: it is what the picker offers, so it has to declare the
+        # tool support the local alias would have declared.
+        if not with_vllm:
+            assert twin["model_info"]["supports_function_calling"] is True
+            assert twin["model_info"]["supports_tool_choice"] is True
+
     fallback_sources = {source for mapping in fallbacks for source in mapping}
     assert ("local/qwen3.6-35b" in fallback_sources) is has_fallback
     assert not any(source.startswith("strict-local/") for source in fallback_sources)
+
+
+@pytest.mark.parametrize("with_vllm", [True, False])
+def test_local_alias_never_carries_an_external_boundary(
+    tmp_path: Path, with_vllm: bool
+) -> None:
+    """The local/ prefix states where a request starts.
+
+    A local deployment that spills to OpenRouter under load still starts local,
+    so hybrid is honest. A route that starts at OpenRouter has no claim on the
+    name, and an operator reading the catalogue must not have to check
+    model_info to find that out.
+    """
+    result, _ = _run_generator(
+        tmp_path, with_vllm=with_vllm, with_openrouter=True, include_all_classes=True
+    )
+    models, _ = _parse_dry_run(result.stdout)
+
+    assert models
+    external_locals = [
+        model["model_name"]
+        for model in models
+        if model["model_name"].startswith("local/")
+        and (model.get("model_info") or {}).get("kchat_data_boundary") == "external"
+    ]
+    assert external_locals == []
 
 
 def test_every_generated_model_class_declares_its_boundary(tmp_path: Path) -> None:

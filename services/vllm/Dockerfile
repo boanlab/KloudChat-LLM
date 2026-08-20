@@ -1,6 +1,8 @@
 # vLLM plus pytest: torch._dynamo lazy-imports it while tracing, and engine init
 # fails when it is missing
-ARG BASE_IMAGE=vllm/vllm-openai:nightly-aarch64
+# No default: install-vllm.sh passes the pinned base from lib.sh. A default here
+# would be a second place for the pin to live, and the one nobody updates.
+ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 RUN pip install --no-cache-dir pytest

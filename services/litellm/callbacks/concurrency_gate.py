@@ -58,12 +58,26 @@ STRICT_STATE_TTL = max(POLL_TTL * 3, POLL_TTL + SCRAPE_TIMEOUT * 2)
 # silently drops that model from the gate, so `_load_gate_map` warns about it.
 #
 # The numbers are starting points, not measurements: too high queues latency, too
-# low idles the card. Both models are ~3B-active MoE and share a cap.
+# low idles the card. The ~3B-active MoEs share a cap.
+#
+# The 122B does not. Its cap is the one figure here derived rather than guessed:
+# 78 GiB of weights leaves ~22 GiB of KV on a GB10, which is ~13 requests at the
+# 128K it is deployed with. Queueing past that preempts running sequences instead
+# of adding throughput, so the gate spills to OpenRouter first.
 DEFAULT_CAPS = {
     "local/qwen3.6-35b": 64,
     "local/glm-4.7-flash": 64,
+    "local/qwen3.5-122b-a10b": 12,
+    "local/gemma-4-26b-a4b": 64,
+    # 48 KiB/token, so this one's KV pool empties four times faster than the 35B's
+    "local/qwen3-coder-30b": 24,
+    "local/qwen3.6-27b": 32,
     "strict-local/qwen3.6-35b": 64,
     "strict-local/glm-4.7-flash": 64,
+    "strict-local/qwen3.5-122b-a10b": 12,
+    "strict-local/gemma-4-26b-a4b": 64,
+    "strict-local/qwen3-coder-30b": 24,
+    "strict-local/qwen3.6-27b": 32,
 }
 
 

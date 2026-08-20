@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage:
 #   manage-vllm.sh up [--recreate] [svc...]     verify weights + compose up
-#                                               (svc = vllm-qwen35b | vllm-glmflash | whisper;
+#                                               (svc = vllm-qwen35b | vllm-qwen122b | vllm-glmflash | whisper;
 #                                                omit = every service with local weights — see the
 #                                                warning in cmd_up, the scheduler owns placement)
 #   manage-vllm.sh down [-v]                    stop + remove containers (transcription included)
@@ -12,7 +12,11 @@
 #
 # Services (no compose profiles — the lineup is small enough that both are default):
 #   vllm-qwen35b     Qwen3.6-35B-A3B  chat + vision + deep-research + coding
+#   vllm-qwen122b    Qwen3.5-122B-A10B top chat — 78 GiB, wants the card to itself
 #   vllm-glmflash    GLM-4.7-Flash cheap-decode floor
+#   vllm-gemma26b    Gemma-4-26B-A4B — a second model family
+#   vllm-coder30b    Qwen3-Coder-30B-A3B — coding
+#   vllm-qwen27b     Qwen3.6-27B — the one dense model
 #   whisper          resident transcription backend (amd64 only — arm64 delegates STT to OpenRouter)
 #
 # Which vLLM subset lands on which node is the scheduler's call: `python -m scheduler
@@ -55,17 +59,24 @@ cmd_up() {
   if (( ${#want[@]} == 0 && only_extra == 0 )); then
     warn "no service named — starting every service with local weights."
     warn "  the scheduler decides placement: python -m scheduler apply"
-    warn "  to drive this node by hand: manage-vllm.sh up vllm-qwen35b [vllm-glmflash ...]"
+    warn "  to drive this node by hand: manage-vllm.sh up vllm-qwen35b [vllm-qwen122b ...]"
   fi
 
   local root="${VLLM_MODELS_ROOT:-/var/lib/vllm/models}"
   local gpu_class; gpu_class="$(detect_gpu_class)"
 
   # Explicit .env value over the default weight directory.
-  local cd; cd="$(env_get VLLM_QWEN35B_DIR)"
+  local cd bd gd
+  cd="$(env_get VLLM_QWEN35B_DIR)"; bd="$(env_get VLLM_QWEN122B_DIR)"
+  gd="$(env_get VLLM_GEMMA26B_DIR)"
+  local kd dd; kd="$(env_get VLLM_CODER30B_DIR)"; dd="$(env_get VLLM_QWEN27B_DIR)"
   declare -A svc_dir=(
     [vllm-qwen35b]="${cd:-qwen3.6-35b-nvfp4}"
     [vllm-glmflash]="$(env_get VLLM_GLMFLASH_DIR)"
+    [vllm-qwen122b]="${bd:-qwen3.5-122b-a10b}"
+    [vllm-gemma26b]="${gd:-gemma-4-26b}"
+    [vllm-coder30b]="${kd:-qwen3-coder-30b}"
+    [vllm-qwen27b]="${dd:-qwen3.6-27b}"
   )
 
   local svc up_svcs=()
@@ -75,7 +86,8 @@ cmd_up() {
       # Transcription still runs on this card; `up whisper` never reaches here.
       die "GPU=RTX4090 has no FP4 support — this lineup needs an NVFP4-capable card"
     fi
-    for svc in vllm-qwen35b vllm-glmflash; do
+    for svc in vllm-qwen35b vllm-qwen122b vllm-glmflash vllm-gemma26b \
+               vllm-coder30b vllm-qwen27b; do
       # An explicit list narrows the set; otherwise every service with weights
       if (( ${#want[@]} )); then
         local hit=0 w
@@ -114,7 +126,8 @@ cmd_pull()    { docker compose -f "$COMPOSE_FILE" pull "$@"; }
 cmd_status() {
   docker compose -f "$COMPOSE_FILE" ps
   echo
-  for c in vllm-qwen35b vllm-glmflash whisper; do
+  for c in vllm-qwen35b vllm-qwen122b vllm-glmflash vllm-gemma26b \
+           vllm-coder30b vllm-qwen27b whisper; do
     s="$(docker inspect "$c" --format '{{.State.Health.Status}}' 2>/dev/null || echo missing)"
     printf "  %-15s %s\n" "$c:" "$s"
   done

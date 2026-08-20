@@ -36,6 +36,21 @@ Which models are registered where, and how requests are routed to them.
 > `curl https://openrouter.ai/api/v1/models` — the live catalogue, not a blog
 > post — before trusting a billing report.
 
+**`./scripts/gen-litellm-config.sh --check-prices`** does that comparison and
+writes nothing. Worth running whenever the catalogue is touched: a wrong price
+breaks no request — the model answers, the call succeeds — so it surfaces only
+when someone reads a billing report and disbelieves it. An audit in this repo
+found seven of eighteen declared chat prices had drifted, one of them by 14×,
+and `gpt-audio` wrong on both its token rates.
+
+It covers chat (`prompt`/`completion`), image (`image_output`) and audio
+(`audio`/`audio_output`) prices, and reports a declared id that has left the
+catalogue as `GONE` — that one 404s on first call. Per-clip models are the
+awkward case: OpenRouter leaves their `pricing` block empty and states the figure
+in the model description instead ("30 second duration clips are priced at $0.04
+per clip"), so the check reads it from there rather than treating it as
+unverifiable.
+
 **Generated configuration**
 
 `gen-litellm-config.sh` combines the definitions above with the environment and
@@ -58,32 +73,57 @@ than deriving trust from the model name.
 | `kchat_strict_local` | `true` only for a no-egress `strict-local/*` alias |
 | `kchat_privacy_only` | Keeps the strict alias out of ordinary default selection |
 
-The normal `local/*` alias is `hybrid` when an OpenRouter fallback exists,
-`self_hosted` without one, and `external` when no GPU URL exists and the alias is
-served directly by OpenRouter. Only `strict-local/*` has both boolean flags set.
+The normal `local/*` alias is `hybrid` when an OpenRouter fallback exists and
+`self_hosted` without one. It is never `external`: the prefix states where a
+request starts, and a deployment that spills to OpenRouter under load or on
+failure still starts local. Where no GPU URL exists there is no local alias at
+all — the model registers under its OpenRouter slug instead. Only
+`strict-local/*` has both boolean flags set.
 
 ## The model set
 
 vLLM is the only local LLM backend, on two architectures:
 
-- **amd64** — discrete cards (RTX 5090 / PRO 5000 / PRO 6000), standard image
+- **amd64** — discrete cards (RTX 5090 / PRO 5000 / PRO 6000), base image
   `vllm/vllm-openai:cu129-nightly`.
-- **arm64** — GB10 with 128 GB of unified memory, `vllm/vllm-openai:nightly-aarch64`.
+- **arm64** — GB10 with 128 GB of unified memory, base image pinned by digest in
+  `lib.sh::VLLM_IMAGE_ARM64`.
+
+**The base is pinned, and compose does not run it directly.** `install-vllm.sh`
+pulls the base, builds this repo's layer over it as `kloudchat-vllm:local`, and
+records `VLLM_IMAGE`, `VLLM_BASE_IMAGE` and `VLLM_BASE_DIGEST` in the node's
+`.env`. A floating `nightly` fails silently rather than loudly: the build that
+relocated vLLM's tool-parser registry left every container healthy and every tool
+call unparsed. amd64 is still on a tag because no node of that architecture has
+been probed here — pin it from the digest `install-vllm.sh` prints on first
+install.
 
 | Model (alias) | Container | Port | Quant | Role |
 |---|---|---|---|---|
-| `local/qwen3.6-35b` | `vllm-qwen35b` | 8001 | NVFP4 | Unified chat — conversation, artifacts, vision, deep research, coding |
-| `local/glm-4.7-flash` | `vllm-glmflash` | 8002 | NVFP4 | Cheap-decode floor — titles, memory extraction, query rewriting, default chat (31.2B-A3B) |
-| `strict-local/qwen3.6-35b` | same as `local/qwen3.6-35b` | 8001 | NVFP4 | Privacy-only alias; fails rather than leaving vLLM |
-| `strict-local/glm-4.7-flash` | same as `local/glm-4.7-flash` | 8002 | NVFP4 | Privacy-only alias; fails rather than leaving vLLM |
+| `local/qwen3.5-122b-a10b` | `vllm-qwen122b` | 8004 | NVFP4 | Top chat — 10B active, 128K here. Needs the card to itself |
+| `local/qwen3.6-35b` | `vllm-qwen35b` | 8001 | NVFP4 | Unified chat and floor — conversation, artifacts, vision, deep research, coding, titles, memory extraction |
+| `local/gemma-4-26b-a4b` | `vllm-gemma26b` | 8005 | NVFP4 | Second family — vision, tool calling, 256K. 4B active of 26B |
+| `local/qwen3-coder-30b` | `vllm-coder30b` | 8006 | FP8 | Coding. 48 KiB/token, the most KV-expensive model here |
+| `local/qwen3.6-27b` | `vllm-qwen27b` | 8007 | NVFP4 | The one dense model — no routing, a different kind of answer |
+| `local/glm-4.7-flash` | `vllm-glmflash` | 8002 | NVFP4 | Cheap-decode floor (31.2B-A3B). **Defined, not deployed here** — a fourth chat model costs `qwen3.6-35b` half its context on two nodes |
+| `strict-local/<model>` | same backend as its `local/` twin | — | NVFP4 | Privacy-only alias; fails rather than leaving vLLM |
 
-**Why two models**
+**Why this split**
 
-Qwen3.6-35B-A3B covers vision, a 262K context and agentic coding on its own, so
-there is no reason to split by role. The one split that remains is **cost**: the
-high-volume internal calls (titles, memory extraction, query rewriting) get their
-own deployment so they do not eat the chat deployment's KV cache. Both are 3B
-active MoE; the floor model is lighter because its context is shorter.
+Qwen3.6-35B-A3B covers vision, a 262K context and agentic coding on its own, and
+at 3B active it is cheap enough to also carry the high-volume internal calls
+(titles, memory extraction, query rewriting). It is the workhorse.
+
+Qwen3.5-122B-A10B is the quality end, and it is not a substitute for the 35B in
+any of those roles: 10B active puts its decode at roughly a third the rate, and
+78 GiB of weights leaves ~22 GiB of KV on a GB10 — about 13 concurrent requests
+at 128K, against the 35B's several times that. Point volume at the 35B and choose
+the 122B when the answer is worth the wait.
+
+`glm-4.7-flash` stays defined in the catalogue but is not in `VLLM_MODELS`: the
+122B took its card, and a second 3B-active floor alongside the 35B earns nothing.
+Its `local/` alias is therefore not registered at all — see
+[Registration](#vllm-local).
 
 **Quantisation**
 
@@ -96,7 +136,11 @@ active MoE; the floor model is lighter because its context is shorter.
 
 | Model | Tool parser | Reasoning parser | Notes |
 |---|---|---|---|
+| `qwen3-coder-30b` | `qwen3_coder` | — | Qwen3-Coder has its own XML dialect; `qwen3_xml` is a different format and silently yields no tool calls. No thinking mode, so no reasoning parser |
+| `qwen3.6-27b` | `qwen3_xml` | `qwen3` | Same family plumbing as `qwen3.6-35b` |
+| `gemma-4-26b-a4b` | `gemma4` | `gemma4` | Gemma states tool calls in its own `<\|tool>` form, which no generic parser reads. Without `gemma4` the model falls back to ReAct text and the client cannot execute anything |
 | `qwen3.6-35b` | `qwen3_xml` | `qwen3` | Thinking is on by default upstream and turned off with `--default-chat-template-kwargs '{"enable_thinking": false}'`. Hybrid Gated-DeltaNet requires `--max-num-seqs` (cudagraph OOM without it) |
+| `qwen3.5-122b-a10b` | `qwen3_xml` | `qwen3` | Same architecture family (`Qwen3_5MoeForConditionalGeneration`) and the same chat-template controls, so the same parsers. `--max-num-seqs` is set low here for KV rather than for cudagraph capture |
 | `glm-4.7-flash` | `glm45` | `glm47` | Without the reasoning parser, chain-of-thought leaks into `content` |
 
 ## Free models
@@ -139,7 +183,17 @@ there the provider stated the price.
   | `model_name` | URL variable |
   |---|---|
   | `local/qwen3.6-35b` | `VLLM_QWEN35B_URL` |
+  | `local/qwen3.5-122b-a10b` | `VLLM_QWEN122B_URL` |
+  | `local/gemma-4-26b-a4b` | `VLLM_GEMMA26B_URL` |
+  | `local/qwen3-coder-30b` | `VLLM_CODER30B_URL` |
+  | `local/qwen3.6-27b` | `VLLM_QWEN27B_URL` |
   | `local/glm-4.7-flash` | `VLLM_GLMFLASH_URL` |
+
+- **No URL** — no `local/*` name is created. With an OpenRouter key the model is
+  still reachable, but under its own slug (`qwen/qwen3.6-35b-a3b`,
+  `z-ai/glm-4.7-flash`) and priced as the paid route it is. A surface that names
+  `local/<m>` therefore stops resolving on a GPU-less install and must pick from
+  the catalogue — see **Naming a model from outside** below.
 
 - **Discovery** — `gen-litellm-config.sh` polls `/v1/models` at each URL and
   registers only the nodes that answer.
@@ -147,7 +201,7 @@ there the provider stated the price.
   LiteLLM router picks with `least-busy`.
 - **Strict aliases** — each configured chat vLLM also registers a
   `strict-local/<model>` alias over the same backend. An empty URL never creates
-  that alias, even if OpenRouter can serve the corresponding `local/*` name.
+  that alias, and never creates the plain `local/*` one either.
 
 **Operations**
 
@@ -160,16 +214,41 @@ What fits on which card is in the
 
 | Model | Node class | Notes |
 |---|---|---|
-| `qwen3.6-35b` | Any single NVFP4-capable GPU | Unified chat |
-| `glm-4.7-flash` | PRO 5000 and up | Cheap-decode floor |
+| `qwen3.6-35b` | Any single NVFP4-capable GPU | Unified chat and floor |
+| `qwen3.5-122b-a10b` | GB10 or PRO 6000, **alone on the card** | Top chat |
+| `gemma-4-26b-a4b` | Any single NVFP4-capable GPU | Second family; shares a card |
+| `qwen3-coder-30b` | Any single GPU (FP8 — no FP4 needed) | Coding |
+| `qwen3.6-27b` | Any single NVFP4-capable GPU | Dense |
+| `glm-4.7-flash` | PRO 5000 and up | Cheap-decode floor (not deployed here) |
 
 **Roles**
 
-- **`qwen3.6-35b`** — default chat. Artifacts, deep research and coding run on
-  the same deployment; `DEEP_RESEARCH_MODEL` points here, and the scheduler holds
-  a 128K context floor on it for that reason.
-- **`glm-4.7-flash`** — the high-volume internal calls: titles, memory
-  extraction, query rewriting. Their call sites are named by the UI.
+- **`qwen3.6-35b`** — default chat, and the deployment volume is pointed at.
+  Artifacts, deep research and coding run here; `DEEP_RESEARCH_MODEL` points
+  here, and the scheduler holds a 128K context floor on it for that reason. It
+  also takes the high-volume internal calls — titles, memory extraction, query
+  rewriting — which `glm-4.7-flash` used to carry. Their call sites are named by
+  the UI (`KCHAT_TITLE_MODEL`).
+- **`qwen3.5-122b-a10b`** — chosen from the picker when the answer is worth the
+  latency. Nothing is routed to it by default, and nothing should be: at 10B
+  active it decodes roughly three times slower, and its KV pool admits an order
+  of magnitude fewer concurrent requests.
+- **`qwen3-coder-30b`** and **`qwen3.6-27b`** — specialisations for a cluster
+  with cards to spare. Neither is routed to; both are picker choices. They fit
+  from three nodes up, and below that the planner delegates them rather than
+  taking context away from the 35B — check `scheduler plan` before adding them
+  to `VLLM_MODELS`.
+- **`gemma-4-26b-a4b`** — the second opinion. Nothing routes here either; it
+  exists because when a Qwen answer is wrong it tends to be wrong the same way
+  twice, and a different lineage fails differently. 4B active, so it costs about
+  what the 35B costs to run.
+
+  It carries `priority: 10` in `models.yaml` against the 35B's `20`, so where a
+  cluster cannot hold both, **the 35B keeps the card and this one is delegated**
+  — even though it is the larger model and coverage would otherwise seat it
+  first. Default chat, titles, memory extraction, deep research and the external
+  coding agents all land on the 35B; losing it degrades every path at once, while
+  losing the 122B removes a choice from the picker.
 - **Artifacts** — no separate model. The client produces code and document
   artifacts on the chat deployment and the server extracts them from the
   response.
@@ -192,7 +271,11 @@ independent paths:
 
 | Local (primary) | OpenRouter fallback (paid) |
 |---|---|
-| `local/qwen3.6-35b` | `qwen/qwen3.6-35b-a3b` ($0.15 / $1.00) |
+| `local/qwen3.6-35b` | `qwen/qwen3.6-35b-a3b` ($0.14 / $1.00) |
+| `local/qwen3.5-122b-a10b` | `qwen/qwen3.5-122b-a10b` ($0.26 / $2.08) |
+| `local/gemma-4-26b-a4b` | `google/gemma-4-26b-a4b-it` ($0.07 / $0.34) |
+| `local/qwen3-coder-30b` | `qwen/qwen3-coder-30b-a3b-instruct` ($0.07 / $0.28) |
+| `local/qwen3.6-27b` | `qwen/qwen3.6-27b` ($0.30 / $2.00) |
 | `local/glm-4.7-flash` | `z-ai/glm-4.7-flash` ($0.06 / $0.40) |
 
 > These prices must match the `emit_brain` and `emit_or_fallback` arguments in
@@ -201,10 +284,25 @@ independent paths:
 
 - **Emission condition** — `emit_or_fallback` emits the twin only when the local
   primary is deployed (its URL is set), under the OpenRouter slug as model name.
+  With no local primary, `emit_brain` registers that same slug as an ordinary
+  visible route. The two are mutually exclusive on purpose: both firing would put
+  two deployments under one `model_name` and the router would split ordinary
+  traffic onto the paid one.
 - **Hidden from the picker** — the twin keeps the OpenRouter slug, so it is
   distinct from the local alias and is used only as a fallback.
 - **Cost** — a fallback is **paid OpenRouter egress**. A node that dies often
   leaks money.
+
+### Naming a model from outside
+
+A caller that hard-codes `local/<m>` is asserting the install has that GPU
+deployment. Where it might not, read the catalogue and fall back:
+
+| Setting | Behaviour when the name is absent |
+|---|---|
+| `DEEP_RESEARCH_MODEL` (this repo) | Passed through to the deep-research service as-is; set it to a model the install actually serves |
+| `KCHAT_DEFAULT_CHAT_MODEL` (UI) | Blanked against the live catalogue; the picker falls back to its cheapest |
+| `KCHAT_TITLE_MODEL` (UI) | Blanked against the live catalogue; title and memory extraction use the session's own model |
 
 ### Strict-local fail-closed routing
 
@@ -249,8 +347,11 @@ nodes.
 
 | Model | Context (this cluster) | Purpose |
 |---|---|---|
-| `qwen3.6-35b` | 128K (262K native) | Chat, deep research, coding |
-| `glm-4.7-flash` | 128K | Internal calls and default chat |
+| `qwen3.6-35b` | 256K (262K native) | Chat, deep research, coding, internal calls |
+| `qwen3.5-122b-a10b` | **128K** (262K native) | Top chat. Capped by KV, not by the model |
+| `gemma-4-26b-a4b` | 256K | Second opinion — a different family's failure modes |
+| `qwen3-coder-30b` | 128K | Coding. Capped by KV: 48 KiB/token is 4.8× the 35B |
+| `qwen3.6-27b` | 256K | Dense |
 
 ### Embeddings
 
@@ -270,17 +371,31 @@ models. With neither, KloudChat falls back to lexical retrieval.
 ## Commercial defaults
 
 ```bash
-OPENAI_MODELS=(gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5-nano)
-ANTHROPIC_MODELS=(claude-opus-5 claude-sonnet-5 claude-haiku-4.5)
-GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.6-flash gemini-3.1-flash-lite)
-XAI_MODELS=(grok-4.5)
-PERPLEXITY_MODELS=(sonar)
+OPENAI_MODELS=(gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5-nano gpt-5.3-codex)
+ANTHROPIC_MODELS=(claude-fable-5 claude-opus-5 claude-sonnet-5 claude-haiku-4.5)
+GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.7-flash gemini-3.1-flash-lite)
+XAI_MODELS=(grok-4.6)
+PERPLEXITY_MODELS=(sonar sonar-pro)
 TENCENT_MODELS=(hy3)
 DEEPSEEK_MODELS=(deepseek-v4-pro deepseek-v4-flash)
-ZAI_MODELS=(glm-5.2)
+ZAI_MODELS=(glm-5.3)
 XIAOMI_MODELS=(mimo-v2.5)
 MOONSHOTAI_MODELS=(kimi-k3)
+QWEN_MODELS=(qwen3.8-max qwen3.7-flash qwen3-coder-plus)
+MINIMAX_MODELS=(minimax-m3)
 ```
+
+By use case, where the catalogue would otherwise leave a gap:
+
+| Need | Model | Price /1M |
+|---|---|---|
+| Bulk work where cost dominates | `qwen/qwen3.7-flash` (1M ctx) | $0.03 / $0.13 |
+| Commercial coding | `openai/gpt-5.3-codex`, `qwen/qwen3-coder-plus` | $1.75/$14, $0.65/$3.25 |
+| Search that reads more than a snippet | `perplexity/sonar-pro` | $3 / $15 |
+| Speech at a tenth the cost | `openai/gpt-audio-mini` | $0.60 / $2.40 audio |
+
+`sonar-pro` does not replace the stack's own deep-research service, which drives
+a local model over SearXNG instead of paying per search.
 
 > External coding clients (Claude Code, Codex) use `local/qwen3.6-35b` as well.
 
