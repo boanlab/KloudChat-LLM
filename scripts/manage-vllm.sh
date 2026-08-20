@@ -81,10 +81,13 @@ cmd_up() {
 
   local svc up_svcs=()
   if (( only_extra == 0 )); then
-    if [[ "$gpu_class" == "rtx4090" ]]; then
-      # NVFP4-only lineup, with no int4 build to swap in.
-      # Transcription still runs on this card; `up whisper` never reaches here.
-      die "GPU=RTX4090 has no FP4 support — this lineup needs an NVFP4-capable card"
+    # By size, not by card name. FP4 was never the whole story: the int4 aliases
+    # run on an Ada or Ampere card, and a 24 GiB one still places exactly one
+    # model at its floor and 0.92 of the card. What is missing there is room.
+    # Transcription still runs on such a card; `up whisper` never reaches here.
+    local usable; usable="$(gpu_usable_vram_gb)"
+    if (( usable > 0 && usable < VLLM_MIN_USABLE_VRAM_GB )); then
+      die "GPU=$(detect_gpu_class) has ${usable}GiB usable — this catalogue needs ${VLLM_MIN_USABLE_VRAM_GB}GiB before a model places with room to run"
     fi
     for svc in vllm-qwen35b vllm-qwen122b vllm-glmflash vllm-gemma26b \
                vllm-coder30b vllm-qwen27b; do
