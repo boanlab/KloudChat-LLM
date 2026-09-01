@@ -3,7 +3,8 @@ use_default_settings: true
 search:
   default_lang: ko
   safe_search: 0
-  autocomplete: duckduckgo
+  # duckduckgo 는 CAPTCHA 를 돌려주므로 자동완성도 같이 죽는다.
+  autocomplete: google
   ban_time_on_fail: 5
   max_ban_time_on_fail: 120
   default_doi_resolver: sci-hub.se
@@ -46,12 +47,52 @@ categories_as_tabs:
   news:
   it:
 
+# 일반 검색은 스크래핑으로 돌아간다. 상대가 데이터센터 IP 를 봇으로 보면 그
+# 엔진은 조용히 0건이 되고, SearXNG 는 200 을 돌려주므로 부르는 쪽에서는
+# "근거가 없는 주제" 와 구별되지 않는다. 2026-08-26 에 엔진을 하나씩 재보고
+# 살아 있는 것만 남겼다. 재보는 방법은 아래와 같다.
+#
+#   curl -s 'http://<host>/search?q=kubernetes+security&format=json&engines=bing' \
+#     | python3 -c 'import sys,json; d=json.load(sys.stdin); \
+#         print(len(d["results"]), d["unresponsive_engines"])'
+#
+# 측정값 (한국어·영어 각 3개 질의):
+#   bing        10건 · 전부 성공   ← 유일하게 한국어에서 안정적
+#   yahoo        7건 · 전부 성공
+#   arxiv/scholar 10건 · science 용
+#   google       0건 · 오류도 없음 → 동의 페이지나 빈 결과를 받는 중
+#   duckduckgo   CAPTCHA (kr-kr / us-en)
+#   brave        Suspended: too many requests
+#   startpage    응답 없음
+#   karmasearch  Suspended: access denied
+#   naver/mojeek/wikipedia  0건
+#
+# 죽은 엔진을 켜 두는 값은 0 이 아니라 음수다. 매 검색마다 타임아웃까지 기다린
+# 뒤 빈손으로 돌아오므로 응답이 느려지고, 로그가 오류로 덮여 진짜 문제가 묻힌다.
 engines:
 
+  # 살아 있는 일반 검색. 이 둘이 빠지면 리서치·팩트체크·웹 검색이 전부
+  # 근거 없이 돌아간다.
+  - name: bing
+    weight: 1.5
+    timeout: 6.0
+    categories: [general]
+    disabled: false
+
+  - name: yahoo
+    weight: 1.0
+    timeout: 6.0
+    categories: [general]
+    disabled: false
+
+  # ── 막혀 있는 엔진 ────────────────────────────────────────────────
+  # 켜면 다시 느려지기만 한다. 되살리려면 위 curl 로 먼저 재 보고, 결과가
+  # 나오면 그때 켜라. 지우지 않고 남겨 두는 것은 무엇을 이미 시도했는지가
+  # 다음 사람에게 필요한 정보이기 때문이다.
   - name: google
     weight: 1.5
     timeout: 6.0
-    disabled: false
+    disabled: true
 
   - name: google english
     engine: google
@@ -60,11 +101,11 @@ engines:
     weight: 1.3
     timeout: 6.0
     categories: [general]
-    disabled: false
+    disabled: true
 
   - name: duckduckgo
     weight: 1.0
-    disabled: false
+    disabled: true
 
   - name: google scholar
     shortcut: gs
@@ -108,10 +149,12 @@ engines:
     timeout: 8.0
     disabled: false
 
+  # 한국어 결과가 나오면 가장 좋을 자리인데 지금은 0건이다. 되살아나면
+  # weight 를 올려라 — 국내 업무 문서에는 이쪽 결과가 더 맞는다.
   - name: naver
     weight: 0.5
     categories: [general]
-    disabled: false
+    disabled: true
 
   - name: wikipedia
     weight: 1.0
