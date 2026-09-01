@@ -95,9 +95,10 @@ step_wait_vllm() {
   return 0
 }
 
-# A GPU node also runs the transcription backend. Without the shim in front of it,
-# /tools/stt is the one capability left dead. This is the only place that touches
-# the profile list, and it does nothing if the profile is already there.
+# The placement step fills WHISPER_URLS wherever it put the transcription model.
+# Without the shim in front of those backends, /tools/stt is the one capability
+# left dead. This is the only place that touches the profile list, and it does
+# nothing if the profile is already there.
 step_enable_stt_profile() {
   [[ -n "$(env_get WHISPER_URLS)" ]] || return 0
   local profiles; profiles="$(env_get COMPOSE_PROFILES)"

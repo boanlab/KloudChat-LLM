@@ -25,7 +25,7 @@ connected only by URL.
 | Utilities | `jq curl wget` | `jq curl wget` |
 | Disk | 50 GB (images and runtime data) | 100 GB+ (model weights) |
 | RAM | 16 GB | 16 GB+ |
-| Open ports | `GATEWAY_PORT` (8080 by default) and nothing else | vLLM 8001/8002 and transcription 9000, reachable from the compose host |
+| Open ports | `GATEWAY_PORT` (8080 by default) and nothing else | vLLM 8001–8009 and transcription 9000, reachable from the compose host |
 
 - **macOS and Windows are unsupported.**
 - **No Docker yet** — `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`
@@ -88,45 +88,38 @@ tight.
 
 ### What runs where
 
-- **NVIDIA Container Toolkit required** — both chat and floor models are served
-  by vLLM containers.
-- **Transcription backend** — the last step of `install-vllm.sh`:
-  - **amd64 (RTX/PRO) nodes** — a container, the `whisper` service in
-    `docker-compose.vllm.yml`, pulled as `boanlab/kloudchat-whisper` (built on
-    the node with `--reinstall`).
-  - **GB10 (arm64) nodes** — not installed. aarch64 ctranslate2 wheels are
-    CPU-only, so the card cannot be used and STT is delegated to OpenRouter
-    (`voxtral-small-24b`).
+- **NVIDIA Container Toolkit required** — every model a node serves, chat, floor
+  and transcription alike, is a vLLM container.
+- **Transcription backend** — `vllm-whisper`, the same vLLM image as the rest,
+  serving `openai/whisper-large-v3` (~3.1 GiB). Any architecture: there is no
+  architecture-specific step left on a GPU node.
 - **Wiring** — backends are published on their ports; the whisper-shim container
-  calls them over HTTP using `WHISPER_URLS`.
+  calls them over HTTP using `WHISPER_URLS`, which the scheduler writes from the
+  placement.
 
 ### Transcription (STT)
 
 - **What it is for** — transcribing uploaded audio, and YouTube videos without
   subtitles.
 - **It is optional.** With no backend (`WHISPER_URLS` empty) LiteLLM registers
-  OpenRouter STT instead. GPU-less deployments and arm64-only clusters land here.
+  OpenRouter STT instead. GPU-less deployments, and clusters with no card free
+  for it, land here. Deploy it by adding `whisper-large-v3` to `VLLM_MODELS`.
 - **Why run it locally** — audio never leaves the network, and there is no
   per-token billing.
 
 ### Commands to run on a GPU host
 
 ```bash
-./scripts/install-vllm.sh               # vLLM image + GPU runtime check + transcription
-./scripts/download-vllm-models.sh       # weights this card can serve, plus transcription prewarm
+./scripts/install-vllm.sh               # vLLM image + GPU runtime check
+./scripts/download-vllm-models.sh       # weights this card can serve, transcription included
 ```
 
-A GPU node has one role. There is no separate transcription install: reinstall
-with `./scripts/install-vllm.sh --reinstall`, or set the node up without
-transcription using `--no-whisper`.
+A GPU node has one role and one image. Re-pull it with
+`./scripts/install-vllm.sh --reinstall`.
 
 > `download-vllm-models.sh` inspects the card before downloading — compute
 > capability for FP4/FP8 support, usable VRAM for capacity. Weights it cannot
 > serve are skipped with the reason.
-
-> The transcription backend **pulls** `boanlab/kloudchat-whisper` from Docker Hub
-> (published by the release workflow, or `./scripts/build-push-images.sh whisper`;
-> amd64 only). `--reinstall` builds it on the node instead.
 
 - **Models served by vLLM** — chat (`qwen3.6-35b`) and floor (`glm-4.7-flash`)
 - **vLLM image per architecture**
@@ -203,16 +196,16 @@ ssh <your-user>@<gpu-node> "echo '<your-user> ALL=(ALL) NOPASSWD:ALL' | sudo tee
 
 - The shim keeps a 10-second `/health` cache to pick reachable nodes, then routes
   by in-flight count.
-- **Same model everywhere** — all backends are assumed to serve the same
-  `WHISPER_MODEL`. Per-node models are not supported.
+- **Same model everywhere** — every backend serves the same checkpoint, and the
+  shim names it on each request. Per-node models are not supported.
 - **No stickiness** — every call is self-contained.
 
 ## DGX Spark (GB10)
 
-- **Transcription is not installed.** aarch64 ctranslate2 wheels are CPU-only, so
-  the card cannot be used, and CPU transcription would share unified memory with
-  vLLM at roughly a third of realtime. STT on these nodes is delegated to
-  OpenRouter (`voxtral-small-24b`) — an empty `WHISPER_URLS` is the switch.
+- **Transcription runs on the card**, like every other model: `vllm-whisper`
+  serves `whisper-large-v3` from the same aarch64 image. A ctranslate2 backend
+  could not — its aarch64 wheels are CPU-only, and CPU transcription shares
+  unified memory with vLLM at roughly a third of realtime.
 - **vLLM** uses the `*-aarch64` image (GB10 is arm64).
 - **VRAM detection** — `nvidia-smi memory.total` reports `[N/A]`, so
   `lib.sh::gpu_usable_vram_gb` uses system RAM minus a 12 GiB OS reservation. The

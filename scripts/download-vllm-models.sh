@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: download-vllm-models.sh [alias|all|recommended|whisper] [...]
+# Usage: download-vllm-models.sh [alias|all|recommended] [...]
 #
 # Downloads the weights a GPU node will serve, after checking the card: FP4
 # capability and usable memory. Weights this node could not serve are skipped
@@ -15,11 +15,11 @@
 #   gemma-4-26b-a4b    google/gemma-4-26B-A4B-it              16 GB (second family — vision, tools)
 #   qwen3-coder-30b    Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8  33 GB (coding; FP8, so no FP4 needed)
 #   qwen3.6-27b        Qwen/Qwen3.6-27B                       21 GB (the one dense model)
+#   whisper-large-v3   openai/whisper-large-v3                 4 GB (transcription, any card)
 #
 # Special:
 #   recommended       what this card can serve and fit together (same as no args)
 #   all               every alias above, minus anything unservable here
-#   whisper           prewarm transcription weights — the node's resident backend (amd64 only)
 #
 # Env:
 #   HF_TOKEN          auto-loaded from .env (for gated models)
@@ -68,7 +68,6 @@ mkdir -p "$VLLM_MODELS_ROOT"
 hdr "GPU: $(describe_gpu)"
 
 # Filter by servability, printing the reason. Nothing is dropped silently.
-WANT_WHISPER=0
 add_target() {
   local alias="$1" reason
   if reason="$(vllm_model_unservable_reason "$alias")"; then
@@ -78,9 +77,10 @@ add_target() {
   fi
 }
 
-# No arguments: the recommended set for this card, plus the resident transcription backend.
+# No arguments: the recommended set for this card, plus transcription — 4 GB on
+# any card, and without it the microphone is an OpenRouter call.
 if [[ $# -eq 0 ]]; then
-  set -- recommended whisper
+  set -- recommended whisper-large-v3
 fi
 
 TARGETS=()
@@ -96,8 +96,6 @@ while [[ $# -gt 0 ]]; do
       # The whole catalogue, including both quantisations of the chat model.
       # add_target drops whatever this node cannot serve.
       for a in "${!VLLM_MODELS[@]}"; do add_target "$a"; done ;;
-    whisper)
-      WANT_WHISPER=1 ;;
     *)
       [[ -n "${VLLM_MODELS[$1]:-}" ]] || { err "Unknown alias: $1"; exit 1; }
       add_target "$1"
@@ -158,34 +156,6 @@ if (( ${#TARGETS[@]} == 0 )) && (( WANT_WHISPER == 0 )); then
 fi
 
 for a in "${TARGETS[@]}"; do pull_one "$a"; done
-
-# Transcription weights are a Hugging Face cache, fetched from inside the
-# container so the download_root mapping matches app.py. Non-fatal: the first
-# transcription call fetches them anyway.
-pull_whisper() {
-  local compose_file="${SCRIPT_DIR%/scripts}/docker-compose.vllm.yml"
-  if [[ "$(detect_arch)" != amd64 ]]; then
-    info "arm64 node — no transcription backend here (STT goes to OpenRouter); skipping"
-    return 0
-  fi
-  docker compose -f "$compose_file" ps -q whisper 2>/dev/null | grep -q . || {
-    warn "the transcription container is not running — run ./scripts/install-vllm.sh first"
-    return 1
-  }
-  local model; model="$(env_get WHISPER_MODEL)"; model="${model:-large-v3}"
-  info "prewarming ${model} (in the container)"
-  # device=cpu with int8: download and verify only, no GPU.
-  docker compose -f "$compose_file" exec -T whisper python3 - "$model" <<'PY'
-import sys
-from faster_whisper import WhisperModel
-WhisperModel(sys.argv[1], device="cpu", compute_type="int8", download_root="/var/lib/whisper")
-PY
-}
-
-if (( WANT_WHISPER )); then
-  hdr "Transcription weights"
-  pull_whisper || warn "transcription prewarm failed — the first call will fetch them"
-fi
 
 hdr "done"
 du -sh "$VLLM_MODELS_ROOT"/* 2>/dev/null | sort -k2 || echo "  (no models yet)"

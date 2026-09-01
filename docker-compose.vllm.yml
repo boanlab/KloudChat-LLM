@@ -11,8 +11,7 @@
 #   vllm-qwen27b    the one dense model — Qwen3.6-27B
 #   vllm-bgem3      retrieval embeddings — BAAI/bge-m3, pooling runner (~2 GiB)
 #   vllm-rerank     retrieval reranking — BAAI/bge-reranker-v2-m3 (~2.2 GiB)
-#   whisper         transcription — resident on the node rather than placed.
-#                   amd64 only: arm64 nodes skip it and delegate STT to OpenRouter
+#   vllm-whisper    transcription — openai/whisper-large-v3 (~3.1 GiB, any arch)
 #
 # Two chat models on one node is ~41 GiB of weights, so PRO5000 (48G) or larger.
 # NVFP4 weights need an FP4-capable card. The image defaults to arm64; amd64
@@ -529,26 +528,45 @@ services:
       # No torch.compile or KV profiling to wait through.
       start_period: 120s
 
-  # Transcription backend, resident on the vLLM card, called by whisper-shim
-  # through WHISPER_URLS. amd64 only — aarch64 ctranslate2 wheels are CPU-only,
-  # and an empty WHISPER_URLS routes STT to OpenRouter.
-  whisper:
-    container_name: whisper
-    image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-whisper:${KLOUDCHAT_IMAGE_TAG:-latest}
-    build:
-      context: ./services/whisper
+  # Transcription, called by whisper-shim through WHISPER_URLS. vLLM rather than
+  # faster-whisper because ctranslate2's aarch64 wheels are CPU-only, which
+  # would leave the arm64 nodes unable to use their cards for it.
+  vllm-whisper:
+    container_name: vllm-whisper
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     restart: unless-stopped
-    ports:
-      - "${WHISPER_PORT:-9000}:9000"
-    environment:
-      # HF token for the lazy-load download — rate limits
-      HF_TOKEN: ${HF_TOKEN:-}
-      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
-      WHISPER_DEVICE: ${WHISPER_DEVICE:-auto}
-      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+    ipc: host
+    command:
+      - --model
+      - /model
+      # vLLM 404s a name it does not serve, and the previous backend ignored the
+      # field entirely. The shim normalises to the first name; the aliases are
+      # for a caller that reaches a node directly.
+      - --served-model-name
+      - local/whisper-large-v3
+      - whisper-1
+      - whisper-large-v3
+      - large-v3
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      # The decoder window — 448 transcript tokens, whisper's whole context.
+      # Audio longer than one 30s clip is split by the server before decoding.
+      - --max-model-len
+      - "${VLLM_WHISPER_MAX_LEN:-448}"
+      # Overwritten by the scheduler per placement; a floor for standalone runs.
+      - --gpu-memory-utilization
+      - "${VLLM_WHISPER_GPU_UTIL:-0.14}"
     volumes:
-      # Weight cache (HF_HOME) — downloaded once
-      - ${WHISPER_DATA_ROOT:-/var/lib/whisper}:/var/lib/whisper
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_WHISPER_DIR:-whisper-large-v3}:/model:ro
+    ports:
+      - "9000:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_WHISPER_DEVICES:-all}
+      # Upload ceiling in MB. vLLM defaults to 25, which rejects an hour of m4a.
+      VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: ${WHISPER_MAX_UPLOAD_MB:-100}
     deploy:
       resources:
         reservations:
@@ -557,8 +575,8 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:9000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 120s

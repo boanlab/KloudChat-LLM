@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-# Usage: install-vllm.sh [--reinstall] [--image <tag>] [--no-whisper]
+# Usage: install-vllm.sh [--reinstall] [--image <tag>]
 #
-# Prepares a GPU node for everything it serves. Transcription is included: a GPU
-# node has one role, and there is nothing else to install separately.
+# Prepares a GPU node for everything it serves. One image covers all of it,
+# transcription included: whisper is a vLLM service like the rest.
 #
 #   1. GPU runtime check and vLLM image pull
 #   2. Model directory
-#   3. Transcription backend — an amd64 container. arm64 (GB10) does not install
-#      it and delegates STT to OpenRouter, because aarch64 ctranslate2 wheels are
-#      CPU-only and cannot use the card.
 #
 # Weights are downloaded by download-vllm-models.sh; services are started by
 # manage-vllm.sh.
@@ -18,9 +15,8 @@
 #   VLLM_MODELS_ROOT  model storage location (default /var/lib/vllm/models)
 #
 # Flags:
-#   --reinstall       re-pull the image (also reinstalls the transcription backend)
+#   --reinstall       re-pull the image
 #   --image <tag>     one-off override of the base image, same as VLLM_BASE_IMAGE
-#   --no-whisper      skip the transcription backend
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,12 +27,10 @@ source "${SCRIPT_DIR}/lib.sh"
 
 REINSTALL=0
 IMAGE_OVERRIDE=""
-WITH_WHISPER=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --reinstall)  REINSTALL=1; shift ;;
     --image)      IMAGE_OVERRIDE="$2"; shift 2 ;;
-    --no-whisper) WITH_WHISPER=0; shift ;;
     -h|--help)    sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'; exit 0 ;;
     *)            err "unknown option: $1"; exit 1 ;;
   esac
@@ -91,8 +85,9 @@ fi
 BASE_DIGEST="$(image_base_digest "$VLLM_BASE_IMAGE")"
 [[ -n "$BASE_DIGEST" ]] && echo "  digest:  $BASE_DIGEST"
 
-# pytest layer over the base. Context is services/vllm for its patches/.
-echo "  → building services/vllm/Dockerfile (pytest layer) onto the base"
+# This repo's layer over the base: pytest, the audio decoders the transcription
+# endpoint needs, and the GB10 MLA patch. Context is services/vllm for patches/.
+echo "  → building services/vllm/Dockerfile onto the base"
 docker build --quiet \
   --build-arg "BASE_IMAGE=$VLLM_BASE_IMAGE" \
   -t "$VLLM_IMAGE" \
@@ -129,93 +124,7 @@ if [[ ! -d "$VLLM_MODELS_ROOT" ]]; then
 fi
 ok "directory ready: $VLLM_MODELS_ROOT ($(df -h "$VLLM_MODELS_ROOT" 2>/dev/null | awk 'NR==2 {print $4}' || echo '?') free)"
 
-# ── 4. Transcription — same node, same card ─────────────────────────────────
-#
-# amd64 only: aarch64 ctranslate2 wheels are CPU-only. arm64 nodes keep no
-# backend, and the resulting empty WHISPER_URLS routes STT to OpenRouter.
-# A failure here leaves vLLM installed and is reported in the summary.
-install_whisper() {
-  local port model device compute img_ns img_tag data_root
-  port="${WHISPER_PORT:-$(env_get WHISPER_PORT)}"; port="${port:-9000}"
-  model="${WHISPER_MODEL:-$(env_get WHISPER_MODEL)}"; model="${model:-large-v3}"
-  device="${WHISPER_DEVICE:-$(env_get WHISPER_DEVICE)}"; device="${device:-auto}"
-  # float16: supported since Maxwell. int8_float16 returns a runtime 500 on some
-  # GPU/CTranslate2 combinations.
-  compute="${WHISPER_COMPUTE_TYPE:-$(env_get WHISPER_COMPUTE_TYPE)}"; compute="${compute:-float16}"
-  data_root="${WHISPER_DATA_ROOT:-$(env_get WHISPER_DATA_ROOT)}"; data_root="${data_root:-/var/lib/whisper}"
-
-  echo "  model=${model} device=${device} compute=${compute} :${port}"
-
-  # Weight cache volume (HF_HOME). /var/lib usually needs root to mkdir.
-  local sudo_cmd=""; [[ -w "$(dirname "$data_root")" ]] || sudo_cmd="sudo"
-  $sudo_cmd mkdir -p "$data_root"
-
-  img_ns="$(env_get KLOUDCHAT_IMAGE_NS)"; img_ns="${img_ns:-boanlab}"
-  img_tag="$(env_get KLOUDCHAT_IMAGE_TAG)"; img_tag="${img_tag:-latest}"
-  local wenv=(WHISPER_PORT="$port" WHISPER_DATA_ROOT="$data_root" WHISPER_MODEL="$model"
-              WHISPER_DEVICE="$device" WHISPER_COMPUTE_TYPE="$compute" HF_TOKEN="$(env_get HF_TOKEN)"
-              KLOUDCHAT_IMAGE_NS="$img_ns" KLOUDCHAT_IMAGE_TAG="$img_tag")
-
-  # Docker Hub pull by default; --reinstall builds on the node.
-  if (( REINSTALL )); then
-    info "docker compose build --no-cache (cuda + faster-whisper, several minutes)"
-    env "${wenv[@]}" docker compose -f "$COMPOSE_FILE" build --no-cache whisper || return 1
-  else
-    info "docker compose pull (${img_ns}/kloudchat-whisper)"
-    env "${wenv[@]}" docker compose -f "$COMPOSE_FILE" pull whisper \
-      || { err "pull failed — the image may not be published ('./scripts/build-push-images.sh whisper'), or build locally with '--reinstall'"; return 1; }
-  fi
-  env "${wenv[@]}" docker compose -f "$COMPOSE_FILE" up -d --no-build whisper || return 1
-
-  local i
-  for i in {1..60}; do
-    curl -sf "http://localhost:${port}/health" &>/dev/null && break
-    sleep 2
-    (( i == 60 )) && { err "transcription backend is not responding — ./scripts/manage-vllm.sh logs whisper"; return 1; }
-  done
-
-  # Single-host wiring. Multi-node WHISPER_URLS comes from `scheduler apply`.
-  if [[ -f "$ENV_FILE" ]]; then
-    local shim_url="http://whisper-shim:9000"   # the shim always listens on 9000, independent of the backend port
-    local cur; cur="$(env_get WHISPER_URL)"
-    if [[ -z "$cur" || "$cur" == "http://host.docker.internal:"* || "$cur" == "$shim_url" ]]; then
-      env_set WHISPER_URL "$shim_url"
-    else
-      warn "WHISPER_URL=$cur (custom). To route through the shim, set it to ${shim_url}."
-    fi
-    local local_be="http://host.docker.internal:${port}"
-    local urls; urls="$(env_get WHISPER_URLS)"
-    if [[ -z "$urls" ]]; then env_set WHISPER_URLS "$local_be"
-    elif ! grep -qF "$local_be" <<<"$urls"; then env_set WHISPER_URLS "${urls},${local_be}"; fi
-  fi
-
-  # Same-host shim restart, clearing the 10s health cache and in-flight counters.
-  # Skipped automatically when the shim runs elsewhere.
-  if [[ -f "${PROJECT_DIR}/docker-compose.yml" ]] \
-     && docker compose --project-directory "$PROJECT_DIR" ps -q whisper-shim 2>/dev/null | grep -q .; then
-    info "restarting whisper-shim (refresh health cache and in-flight counters)"
-    docker compose --project-directory "$PROJECT_DIR" restart whisper-shim || warn "whisper-shim restart failed"
-  fi
-
-  echo "  weights lazy-load into ${data_root} on the first call — prewarm: ./scripts/download-vllm-models.sh whisper"
-  return 0
-}
-
-WHISPER_OK=skipped
-if (( WITH_WHISPER )); then
-  hdr "4. Transcription backend"
-  if [[ "$(detect_arch)" != amd64 ]]; then
-    WHISPER_OK="delegated (arm64 — OpenRouter voxtral)"
-    info "arm64 node — no transcription backend here; STT goes to OpenRouter."
-  elif install_whisper; then
-    WHISPER_OK=ok
-  else
-    WHISPER_OK=failed
-    warn "transcription backend failed to install — vLLM is fine. Retry: ./scripts/install-vllm.sh --reinstall"
-  fi
-fi
-
-hdr "5. Next steps"
+hdr "4. Next steps"
 cat <<EOF
 
   ./scripts/download-vllm-models.sh                # only weights this card can serve
@@ -223,7 +132,7 @@ cat <<EOF
 
   # Fill in VLLM_*_URL in .env, then re-run setup.sh or gen-litellm-config.sh.
   # LiteLLM load-balances across every deployment of the same model_name.
-
-  transcription: ${WHISPER_OK}
+  # WHISPER_URLS follows the transcription model's placement, written by the
+  # scheduler; an empty value is what routes STT to OpenRouter.
 
 EOF

@@ -27,7 +27,7 @@ LDR settings live under `deep-research.environment` in `docker-compose.yml` as
 | Variable | Value |
 |---|---|
 | `LDR_LLM_PROVIDER` | `openai_endpoint` (through LiteLLM) |
-| `LDR_LLM_MODEL` | `${DEEP_RESEARCH_MODEL:-local/qwen3.6-35b}` — iterative search accumulates context, so the 262K model rather than the 128K floor |
+| `LDR_LLM_MODEL` | `${DEEP_RESEARCH_MODEL:-local/qwen3.5-122b-a10b}` — the top chat model, at 128K of accumulated context and 12 concurrent sessions |
 | `LDR_LLM_OPENAI_ENDPOINT_URL` | `${DEEP_RESEARCH_LLM_URL:-http://litellm:8000/v1}` |
 | `LDR_LLM_OPENAI_ENDPOINT_API_KEY` | `${LITELLM_MASTER_KEY}` |
 | `LDR_SEARCH_TOOL` | `searxng` (instance URL in `LDR_SEARCH_ENGINE_WEB_SEARXNG_DEFAULT_PARAMS_INSTANCE_URL`) |

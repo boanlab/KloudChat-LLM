@@ -13,13 +13,33 @@ from pathlib import Path
 import pytest
 import yaml
 
-COMPOSE = Path(__file__).resolve().parents[3] / "docker-compose.vllm.yml"
+ROOT = Path(__file__).resolve().parents[3]
+COMPOSE = ROOT / "docker-compose.vllm.yml"
+MODELS_YAML = ROOT / "scheduler" / "models.yaml"
 
 
 @pytest.fixture(scope="module")
 def services() -> dict:
     doc = yaml.safe_load(COMPOSE.read_text()) or {}
     return doc.get("services") or {}
+
+
+def test_every_model_in_the_catalogue_has_a_service_here(services: dict) -> None:
+    """The catalogue says a model can be served; this file says how.
+
+    The applier runs `docker compose up -d <service>` on the name models.yaml
+    derives, so a catalogue entry with no service here is a placement that fails
+    on the node with "no such service" — after the plan has already claimed the
+    card for it.
+    """
+    from scheduler import registry
+
+    for spec in registry.load(MODELS_YAML):
+        assert spec.service in services, (
+            f"{spec.id} is in the catalogue but {spec.service} is not a service "
+            "in docker-compose.vllm.yml — the scheduler would place it and the "
+            "node would have nothing to start"
+        )
 
 
 def test_devices_are_selected_through_the_runtime_variable(services: dict) -> None:

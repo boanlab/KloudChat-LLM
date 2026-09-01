@@ -44,6 +44,8 @@ def _fake_curl(bin_dir: Path) -> None:
                 printf '%s\n' '{"data":[{"id":"local/glm-4.7-flash","max_model_len":32768}]}' ;;
               *bge.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/bge-m3","max_model_len":8192}]}' ;;
+              *whisper.test*/v1/models)
+                printf '%s\n' '{"data":[{"id":"local/whisper-large-v3","max_model_len":448}]}' ;;
               *openrouter.ai*) printf '%s\n' '{"data":[]}' ;;
               *) exit 22 ;;
             esac
@@ -84,6 +86,7 @@ def _run_generator(
     include_all_classes: bool = False,
     dry_run: bool = True,
     store_prompts: str | None = "false",
+    whisper_urls: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     _require_associative_array_bash()
     env_file = tmp_path / ".env"
@@ -98,7 +101,10 @@ def _run_generator(
         "VLLM_QWEN35B_URL": "http://qwen.test:8000" if with_vllm else "",
         "VLLM_GLMFLASH_URL": "http://glm.test:8000" if include_all_classes else "",
         "VLLM_BGEM3_URL": "http://bge.test:8000" if include_all_classes else "",
-        "WHISPER_URLS": "" if include_all_classes else "http://whisper.test:9000",
+        "WHISPER_URLS": (
+            whisper_urls if whisper_urls is not None
+            else ("" if include_all_classes else "http://whisper.test:9000")
+        ),
     }
     env_file.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
     config_file.write_text(_base_config(store_prompts))
@@ -285,6 +291,42 @@ def test_config_example_disables_prompt_and_response_storage() -> None:
     config = yaml.safe_load((ROOT / "services/litellm/config.yaml.example").read_text())
 
     assert config["general_settings"]["store_prompts_in_spend_logs"] is False
+
+
+STT_OR_MODEL = "mistralai/voxtral-small-24b-2507"
+
+
+def _stt_registered(output: str) -> bool:
+    models, _ = _parse_dry_run(output)
+    return any(m.get("model_name") == STT_OR_MODEL for m in models)
+
+
+def test_a_placed_transcription_backend_keeps_stt_local(tmp_path: Path) -> None:
+    """A backend that answers is the whole reason not to register OpenRouter STT."""
+    result, _ = _run_generator(
+        tmp_path, with_vllm=True, with_openrouter=True,
+        whisper_urls="http://whisper.test:9000",
+    )
+    assert not _stt_registered(result.stdout)
+
+
+def test_a_placed_but_dead_transcription_backend_still_delegates(tmp_path: Path) -> None:
+    """WHISPER_URLS says where the model was *placed*, which the scheduler writes
+    from the plan. A container that failed to start leaves the URL behind, and
+    reading that as "there is a local backend" takes dictation from delegated to
+    dead."""
+    result, _ = _run_generator(
+        tmp_path, with_vllm=True, with_openrouter=True,
+        whisper_urls="http://whisper-down.test:9000",
+    )
+    assert _stt_registered(result.stdout)
+
+
+def test_no_transcription_backend_at_all_delegates(tmp_path: Path) -> None:
+    result, _ = _run_generator(
+        tmp_path, with_vllm=True, with_openrouter=True, whisper_urls="",
+    )
+    assert _stt_registered(result.stdout)
 
 
 def test_every_chat_model_in_the_catalogue_is_registered() -> None:

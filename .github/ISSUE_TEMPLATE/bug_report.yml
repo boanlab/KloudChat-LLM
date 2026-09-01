@@ -31,7 +31,7 @@ body:
         - LiteLLM / model registration
         - Scheduler (placement)
         - GPU node (vLLM)
-        - Transcription (whisper / whisper-shim)
+        - Transcription (vllm-whisper / whisper-shim)
         - Tools (search, fetch, exec, research)
         - Setup scripts
         - Docs

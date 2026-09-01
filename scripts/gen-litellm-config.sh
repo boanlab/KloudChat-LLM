@@ -394,9 +394,12 @@ SECTION=$(
   # falls back to lexical matching in KloudChat.
   emit_vllm_embed "bge-m3" "$(env_get VLLM_BGEM3_URL)"
   emit_vllm_rerank "bge-reranker-v2-m3" "$(env_get VLLM_RERANK_URL)"
-  # STT twin — registered whenever no local whisper is deployed, matching the
-  # scheduler's delegation. Its absence is what hides the microphone.
-  [[ -z "$(env_get WHISPER_URLS)" ]] && emit_or_stt "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" "$(or_price "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" in)" "$(or_price "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" out)"
+  # STT twin — registered whenever no local whisper *answers*. A set
+  # WHISPER_URLS is not enough: it names where the transcription model was
+  # placed, and a backend that failed to start would otherwise leave dictation
+  # with no route at all rather than a delegated one. Its absence is what hides
+  # the microphone.
+  vllm_any_url_alive "$(env_get WHISPER_URLS)" || emit_or_stt "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" "$(or_price "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" in)" "$(or_price "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" out)"
   # --- openai (commercial + embed fallback) ---
   for m in "${OPENAI_MODELS[@]}";        do emit_commercial_or openai "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
   for m in "${OPENAI_EMBED_CATALOG[@]}"; do emit_openai_embed "$m"; done

@@ -18,7 +18,6 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional, Sequence
 
-from scheduler.inventory import WHISPER_PORT
 from scheduler.planner import Placement, Plan
 from scheduler.registry import ModelSpec
 from scheduler.types import NodeSpec
@@ -28,6 +27,11 @@ from scheduler.types import NodeSpec
 #: single-host deployment, the stack itself — none of which may be stopped for
 #: being absent from a placement plan.
 MANAGED_SERVICE_PREFIX = "vllm-"
+
+#: The transcription model. ``WHISPER_URLS`` is its URL CSV under the name
+#: whisper-shim reads, and an empty value is what makes gen-litellm-config
+#: register STT against OpenRouter instead.
+STT_MODEL_ID = "whisper-large-v3"
 
 
 @dataclass(frozen=True)
@@ -91,7 +95,6 @@ def _read_env_keys(path: str, keys: Iterable[str]) -> dict[str, str]:
 
 def _url_csvs(target: Plan, specs: Sequence[ModelSpec],
               nodes: Sequence[NodeSpec],
-              stt_hosts: Sequence[str] = (),
               known: Sequence[ModelSpec] = ()) -> dict[str, str]:
     """URL CSVs per model. Unplaced models get an empty value, never a stale URL.
 
@@ -101,9 +104,10 @@ def _url_csvs(target: Plan, specs: Sequence[ModelSpec],
     been stopped — a model that appears healthy in the picker and times out on
     call.
 
-    ``stt_hosts`` are nodes whose transcription backend answered a probe, so
-    nodes without one (arm64) never appear. An empty ``WHISPER_URLS`` is what
-    makes gen-litellm-config register STT against OpenRouter.
+    ``WHISPER_URLS`` is the transcription model's own CSV under a second name,
+    because whisper-shim reads that one. It is written from the plan like every
+    other URL here: transcription is a placed model, and a node without it is a
+    node the planner did not put it on.
     """
     host_of = {n.node_id: n.hostname.split("@")[-1] for n in nodes}
     by_id = {s.id: s for s in specs}
@@ -118,9 +122,10 @@ def _url_csvs(target: Plan, specs: Sequence[ModelSpec],
         urls[f"{spec.env_prefix}_URL"].add(f"http://{host}:{spec.port}")
     out = {k: ",".join(sorted(v)) for k, v in urls.items()}
 
-    out["WHISPER_URLS"] = ",".join(
-        f"http://{h.split('@')[-1]}:{WHISPER_PORT}" for h in stt_hosts
+    stt = next(
+        (s for s in list(known) + list(specs) if s.id == STT_MODEL_ID), None
     )
+    out["WHISPER_URLS"] = out.get(f"{stt.env_prefix}_URL", "") if stt else ""
     return out
 
 
@@ -132,7 +137,6 @@ def compute_diff(
     nodes: Sequence[NodeSpec],
     layout: RemoteLayout = RemoteLayout(),
     local_env_path: Optional[str] = None,
-    stt_hosts: Sequence[str] = (),
     known: Sequence[ModelSpec] = (),
     node_env: Optional[dict[str, dict[str, str]]] = None,
 ) -> ChangePlan:
@@ -141,8 +145,6 @@ def compute_diff(
     Args:
         current: node id to the compose services running there.
         local_env_path: the orchestrator's .env. None skips the URL update.
-        stt_hosts: hosts whose transcription backend answered. Becomes
-            ``WHISPER_URLS``.
         node_env: node id to that node's current .env values. What makes a
             re-apply a no-op: without it every placed service was rewritten and
             force-recreated on every run, so `setup.sh all` reloaded models that
@@ -235,7 +237,7 @@ def compute_diff(
             ))
 
     if local_env_path:
-        desired = _url_csvs(target, specs, nodes, stt_hosts, known)
+        desired = _url_csvs(target, specs, nodes, known)
         actual = _read_env_keys(local_env_path, desired)
         change.local_env = {k: v for k, v in desired.items() if actual.get(k, "") != v}
 
