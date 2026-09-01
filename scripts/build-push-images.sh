@@ -16,8 +16,13 @@
 #   --ns NS         Override namespace (default KLOUDCHAT_IMAGE_NS=boanlab from .env).
 #   --tag TAG       Override tag (default KLOUDCHAT_IMAGE_TAG=latest from .env).
 #
+# Normally nobody runs this: .github/workflows/publish-images.yml builds and pushes
+# an image whenever its service directory changes on main, and setup.sh pulls what
+# is published. This is the manual path — a one-off republish, or a namespace of
+# your own.
+#
 # Prereq: to push to Docker Hub, run `docker login` first. Guidance shown on failure if no push permission.
-# Local build only (no push): build-push-images.sh --no-push  (setup.sh always pulls → overwrites the local copy)
+# Local build only (no push): build-push-images.sh --no-push  (setup.sh pulls unless given --build)
 # Re-deploy multi-arch for a single image: build-push-images.sh --multi-arch whisper-shim
 set -euo pipefail
 

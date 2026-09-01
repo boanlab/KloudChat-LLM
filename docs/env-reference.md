@@ -70,6 +70,11 @@ To manage them yourself, set `KLOUDCHAT_SKIP_SCHEDULER=1` and fill in the values
 | `KLOUDCHAT_IMAGE_NS` | `boanlab` | Images are pulled and pushed as `<NS>/kloudchat-*` |
 | `KLOUDCHAT_IMAGE_TAG` | `latest` | |
 
+`setup.sh` **pulls** these; it does not build them. The `Publish images` workflow
+builds and pushes an image whenever its service directory changes on main, so a
+deployment tracking main gets it by pulling. `setup.sh all --build` runs the
+working tree's own images instead — for an edit that is not merged yet.
+
 To publish to a different registry, change the namespace and use
 `./scripts/build-push-images.sh` (or the `Publish images` workflow).
 
