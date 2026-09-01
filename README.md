@@ -42,6 +42,11 @@ $EDITOR .env                  # fill in the table below
 ./scripts/setup.sh all
 ```
 
+Images come from Docker Hub: the `Publish images` workflow rebuilds one whenever
+its service directory changes on main, and `setup.sh` pulls what is published.
+`./scripts/setup.sh all --build` builds this working tree's images instead, which
+is what an unmerged edit to a service needs.
+
 The run ends by printing the addresses to paste into the UI admin screen. Print
 them again at any time:
 

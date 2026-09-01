@@ -5,14 +5,20 @@
 # At least one of OPENROUTER_API_KEY or a reachable vLLM node is required.
 #
 # Roles
-#   all                     install GPU nodes -> place models -> start stack -> print URLs
+#   all [--build]           install GPU nodes -> place models -> start stack -> print URLs
 #   vllm                    run install-vllm.sh on every node in NODES_VLLM
 #                           (vLLM plus transcription — a GPU node has one role)
 #   scheduler <subcommand>  forwarded to python3 -m scheduler {inventory|plan|apply}
-#   up                      start the backend stack (gateway, tools, LiteLLM)
+#   up [--build]            start the backend stack (gateway, tools, LiteLLM)
 #   urls                    print the addresses for the UI admin screen
 #   stop | start            stop / resume containers, data preserved
 #   clean                   DESTRUCTIVE — remove containers and runtime data
+#
+# Options
+#   --build                 build this working tree's images instead of pulling
+#                           the published ones. For an edit that is not merged
+#                           yet — the workflow publishes an image when its
+#                           service directory changes on main.
 #
 # Environment
 #   KLOUDCHAT_SKIP_SCHEDULER=1   skip placement in `all` (you manage VLLM_*_URL)
@@ -27,6 +33,12 @@ cd "$PROJECT_DIR"
 source "${SCRIPT_DIR}/lib.sh"
 
 GATEWAY_PORT="$(env_get GATEWAY_PORT)"; GATEWAY_PORT="${GATEWAY_PORT:-8080}"
+
+# Whether to build images here rather than take the published ones. Off: the
+# workflow builds and pushes an image whenever its service directory changes on
+# main, so a deployment gets it by pulling, and building the same source again
+# on every host is work nobody asked for.
+BUILD_LOCAL=0
 
 usage() { sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'; }
 
@@ -118,7 +130,24 @@ step_compose_up() {
   hdr "3. Starting the stack"
   local profiles; profiles="$(env_get COMPOSE_PROFILES)"
   echo "  profiles: ${profiles:-tools,models}"
-  docker compose up -d --build
+
+  if (( BUILD_LOCAL )); then
+    info "--build: images come from this working tree, not from the registry"
+    docker compose up -d --build
+    ok "containers started"
+    return 0
+  fi
+
+  # Published images. --ignore-pull-failures so one unreachable tag does not
+  # stop the services whose images did arrive; --no-build then refuses to
+  # quietly substitute a local build for the image that was meant to run.
+  docker compose pull --ignore-pull-failures
+  if ! docker compose up -d --no-build; then
+    err "an image is missing and could not be pulled"
+    echo "  → the workflow publishes an image when its service directory changes on main"
+    echo "  → to run a working tree ahead of that: ./scripts/setup.sh ${1:-all} --build"
+    return 1
+  fi
   ok "containers started"
 }
 
@@ -262,7 +291,7 @@ role_up() {
   step_env_check
   step_env_validate
   step_gen_configs
-  step_compose_up
+  step_compose_up up
   step_wait_gateway || true
   step_wait_services
   role_urls
@@ -291,7 +320,7 @@ role_all() {
 
   step_wait_vllm
   step_gen_configs
-  step_compose_up
+  step_compose_up all
   step_wait_gateway || true
   step_wait_services
   role_urls
@@ -330,8 +359,15 @@ role_clean() {
 main() {
   local role="${1:-}"; shift || true
   case "$role" in
-    all)       role_all ;;
-    up)        role_up ;;
+    all|up)
+      local opt
+      for opt in "$@"; do
+        case "$opt" in
+          --build) BUILD_LOCAL=1 ;;
+          *) err "unknown option for ${role}: $opt"; exit 2 ;;
+        esac
+      done
+      if [[ "$role" == all ]]; then role_all; else role_up; fi ;;
     urls)      role_urls ;;
     vllm)
       if [[ "${KLOUDCHAT_DISPATCHED:-0}" == "1" ]]; then "${SCRIPT_DIR}/install-vllm.sh" "$@"
