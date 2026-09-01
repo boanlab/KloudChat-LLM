@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Usage:
 #   manage-vllm.sh up [--recreate] [svc...]     verify weights + compose up
-#                                               (svc = vllm-qwen35b | vllm-qwen122b | vllm-glmflash | whisper;
+#                                               (svc = vllm-qwen35b | vllm-qwen122b | vllm-whisper | ...;
 #                                                omit = every service with local weights — see the
 #                                                warning in cmd_up, the scheduler owns placement)
-#   manage-vllm.sh down [-v]                    stop + remove containers (transcription included)
+#   manage-vllm.sh down [-v]                    stop + remove containers
 #   manage-vllm.sh restart [svc]                restart
 #   manage-vllm.sh logs [svc]                   follow logs
 #   manage-vllm.sh status                       container + healthcheck status
@@ -17,10 +17,10 @@
 #   vllm-gemma26b    Gemma-4-26B-A4B — a second model family
 #   vllm-coder30b    Qwen3-Coder-30B-A3B — coding
 #   vllm-qwen27b     Qwen3.6-27B — the one dense model
-#   whisper          resident transcription backend (amd64 only — arm64 delegates STT to OpenRouter)
+#   vllm-whisper     openai/whisper-large-v3 transcription, on any architecture
 #
-# Which vLLM subset lands on which node is the scheduler's call: `python -m scheduler
-# plan`. Transcription is not placed: it is resident on every amd64 node.
+# Which subset lands on which node is the scheduler's call: `python -m scheduler
+# plan`. Transcription is placed with everything else.
 #
 # compose project name = kloudchat-vllm — lifecycle separated from the main stack.
 set -euo pipefail
@@ -38,25 +38,19 @@ usage() {
 }
 
 cmd_up() {
-  local recreate=0 want=() extra=()
+  local recreate=0 want=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --recreate) recreate=1; shift ;;
       vllm-*)     want+=("$1"); shift ;;
-      # No weight check: the backend lazy-loads on the first call.
-      whisper)    extra+=("$1"); shift ;;
       *) err "Unknown: $1"; usage ;;
     esac
   done
 
   # Placement belongs to the scheduler. With no service arguments this starts
   # every service whose weights are on the node, which on a shared card sums the
-  # gpu_util fractions past 1.0 and OOMs. `up whisper` alone must not read as
-  # "start everything".
-  local only_extra=0
-  if (( ${#want[@]} == 0 && ${#extra[@]} > 0 )); then only_extra=1; fi
-
-  if (( ${#want[@]} == 0 && only_extra == 0 )); then
+  # gpu_util fractions past 1.0 and OOMs.
+  if (( ${#want[@]} == 0 )); then
     warn "no service named — starting every service with local weights."
     warn "  the scheduler decides placement: python -m scheduler apply"
     warn "  to drive this node by hand: manage-vllm.sh up vllm-qwen35b [vllm-qwen122b ...]"
@@ -69,7 +63,8 @@ cmd_up() {
   local cd bd gd
   cd="$(env_get VLLM_QWEN35B_DIR)"; bd="$(env_get VLLM_QWEN122B_DIR)"
   gd="$(env_get VLLM_GEMMA26B_DIR)"
-  local kd dd; kd="$(env_get VLLM_CODER30B_DIR)"; dd="$(env_get VLLM_QWEN27B_DIR)"
+  local kd dd wd; kd="$(env_get VLLM_CODER30B_DIR)"; dd="$(env_get VLLM_QWEN27B_DIR)"
+  wd="$(env_get VLLM_WHISPER_DIR)"
   declare -A svc_dir=(
     [vllm-qwen35b]="${cd:-qwen3.6-35b-nvfp4}"
     [vllm-glmflash]="$(env_get VLLM_GLMFLASH_DIR)"
@@ -77,37 +72,36 @@ cmd_up() {
     [vllm-gemma26b]="${gd:-gemma-4-26b}"
     [vllm-coder30b]="${kd:-qwen3-coder-30b}"
     [vllm-qwen27b]="${dd:-qwen3.6-27b}"
+    [vllm-whisper]="${wd:-whisper-large-v3}"
   )
 
   local svc up_svcs=()
-  if (( only_extra == 0 )); then
-    # By size, not by card name. FP4 was never the whole story: the int4 aliases
-    # run on an Ada or Ampere card, and a 24 GiB one still places exactly one
-    # model at its floor and 0.92 of the card. What is missing there is room.
-    # Transcription still runs on such a card; `up whisper` never reaches here.
-    local usable; usable="$(gpu_usable_vram_gb)"
-    if (( usable > 0 && usable < VLLM_MIN_USABLE_VRAM_GB )); then
-      die "GPU=$(detect_gpu_class) has ${usable}GiB usable — this catalogue needs ${VLLM_MIN_USABLE_VRAM_GB}GiB before a model places with room to run"
-    fi
-    for svc in vllm-qwen35b vllm-qwen122b vllm-glmflash vllm-gemma26b \
-               vllm-coder30b vllm-qwen27b; do
-      # An explicit list narrows the set; otherwise every service with weights
-      if (( ${#want[@]} )); then
-        local hit=0 w
-        for w in "${want[@]}"; do [[ "$w" == "$svc" ]] && hit=1; done
-        (( hit )) || continue
-      fi
-      local d="${svc_dir[$svc]}"
-      if [[ -f "$root/$d/config.json" ]]; then
-        ok "weight: $d ($(du -sh "$root/$d" 2>/dev/null | cut -f1))"
-        up_svcs+=("$svc")
-      else
-        warn "skip $svc — no weights at $root/$d/ (./scripts/download-vllm-models.sh $d)"
-      fi
-    done
-    (( ${#up_svcs[@]} )) || { err "no vLLM weights on this node — run ./scripts/download-vllm-models.sh"; exit 2; }
+  # By size, not by card name. FP4 was never the whole story: the int4 aliases
+  # run on an Ada or Ampere card, and a 24 GiB one still places exactly one
+  # model at its floor and 0.92 of the card. What is missing there is room.
+  # Transcription is 3 GiB and runs on such a card; naming it explicitly is how
+  # to start it there.
+  local usable; usable="$(gpu_usable_vram_gb)"
+  if (( ${#want[@]} == 0 && usable > 0 && usable < VLLM_MIN_USABLE_VRAM_GB )); then
+    die "GPU=$(detect_gpu_class) has ${usable}GiB usable — this catalogue needs ${VLLM_MIN_USABLE_VRAM_GB}GiB before a model places with room to run"
   fi
-  if (( ${#extra[@]} )); then up_svcs+=("${extra[@]}"); fi
+  for svc in vllm-qwen35b vllm-qwen122b vllm-glmflash vllm-gemma26b \
+             vllm-coder30b vllm-qwen27b vllm-whisper; do
+    # An explicit list narrows the set; otherwise every service with weights
+    if (( ${#want[@]} )); then
+      local hit=0 w
+      for w in "${want[@]}"; do [[ "$w" == "$svc" ]] && hit=1; done
+      (( hit )) || continue
+    fi
+    local d="${svc_dir[$svc]}"
+    if [[ -f "$root/$d/config.json" ]]; then
+      ok "weight: $d ($(du -sh "$root/$d" 2>/dev/null | cut -f1))"
+      up_svcs+=("$svc")
+    else
+      warn "skip $svc — no weights at $root/$d/ (./scripts/download-vllm-models.sh $d)"
+    fi
+  done
+  (( ${#up_svcs[@]} )) || { err "no vLLM weights on this node — run ./scripts/download-vllm-models.sh"; exit 2; }
 
   local recreate_args=()
   if (( recreate )); then
@@ -130,7 +124,7 @@ cmd_status() {
   docker compose -f "$COMPOSE_FILE" ps
   echo
   for c in vllm-qwen35b vllm-qwen122b vllm-glmflash vllm-gemma26b \
-           vllm-coder30b vllm-qwen27b whisper; do
+           vllm-coder30b vllm-qwen27b vllm-whisper; do
     s="$(docker inspect "$c" --format '{{.State.Health.Status}}' 2>/dev/null || echo missing)"
     printf "  %-15s %s\n" "$c:" "$s"
   done

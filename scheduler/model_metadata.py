@@ -145,7 +145,9 @@ def _count_kv_bearing_layers(cfg: dict) -> int:
     interval = int(cfg.get("full_attention_interval") or 0)
     if total and interval > 1 and cfg.get("linear_key_head_dim"):
         return max(1, total // interval)
-    return total
+    # An encoder-decoder caches on its decoder stack. The encoder runs once per
+    # clip and keeps nothing between decode steps.
+    return total or int(cfg.get("decoder_layers") or 0)
 
 
 def _count_sliding_layers(cfg: dict) -> tuple[int, int]:
@@ -169,9 +171,13 @@ def _resolve_kv_heads(cfg: dict) -> int:
     For grouped-query attention, ``num_key_value_heads`` is the number we
     actually pay for in KV cache. For multi-head attention, it equals
     ``num_attention_heads``.
+
+    An encoder-decoder config names neither: whisper writes
+    ``decoder_attention_heads``, and it is the decoder that holds the cache.
     """
     return int(cfg.get("num_key_value_heads")
                or cfg.get("num_attention_heads")
+               or cfg.get("decoder_attention_heads")
                or 1)
 
 
@@ -191,10 +197,17 @@ def _resolve_kv_latent_dim(cfg: dict):
 
 
 def _resolve_head_dim(cfg: dict) -> int:
+    """Width of one attention head.
+
+    ``d_model`` and ``decoder_attention_heads`` are the encoder-decoder spelling
+    of ``hidden_size`` and ``num_attention_heads``. Without them whisper reads as
+    a zero-width model, which sizes its KV cache at nothing.
+    """
     if "head_dim" in cfg:
         return int(cfg["head_dim"])
-    hidden = int(cfg.get("hidden_size") or 0)
-    n_heads = int(cfg.get("num_attention_heads") or 1)
+    hidden = int(cfg.get("hidden_size") or cfg.get("d_model") or 0)
+    n_heads = int(cfg.get("num_attention_heads")
+                  or cfg.get("decoder_attention_heads") or 1)
     return hidden // n_heads if n_heads else 0
 
 
@@ -271,8 +284,15 @@ def fetch(
 
 
 def _resolve_native_ctx(cfg: dict) -> int:
-    """The maximum position declared by config.json — the native context."""
-    for key in ("max_position_embeddings", "max_sequence_length", "n_positions"):
+    """The maximum position declared by config.json — the native context.
+
+    ``max_target_positions`` is the encoder-decoder spelling, and it describes
+    the decoder: whisper's 448 tokens of transcript, not the 1500 frames of audio
+    the encoder reads. Audio past one clip is split server-side, so 448 is the
+    whole window vLLM is ever asked for.
+    """
+    for key in ("max_position_embeddings", "max_sequence_length", "n_positions",
+                "max_target_positions"):
         value = cfg.get(key)
         if isinstance(value, int) and value > 0:
             return value

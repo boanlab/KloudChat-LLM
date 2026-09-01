@@ -76,15 +76,25 @@ convention are defined by MCP. Internals are in
 
 ### Transcription — whisper-shim
 
-A front end for faster-whisper on the GPU nodes. Backends live on the same nodes
-as vLLM (amd64 only), and `WHISPER_URLS` lists **only the backends that
-answered** a probe during placement. With several nodes it routes by in-flight
-count.
+A front end for the `vllm-whisper` backends — `openai/whisper-large-v3` on vLLM,
+placed on the GPU nodes like any other model, on any architecture.
+`WHISPER_URLS` lists the nodes it was placed on, and with several of them the
+shim routes by in-flight count.
+
+It also names the model on every forwarded request. vLLM answers only for a name
+it was started with, while callers send whatever their client was configured
+with — `whisper-1`, most often. The shim substitutes `WHISPER_MODEL_NAME`, which
+is safe because every backend serves the same model.
 
 Without a backend the shim's `/health` reports `degraded`, so it is fenced behind
 the `whisper` profile and never started alone: `setup.sh` enables that profile
-once `WHISPER_URLS` is populated. When it is empty — an arm64-only cluster, or no
-GPU at all — LiteLLM registers OpenRouter STT instead of the shim.
+once `WHISPER_URLS` is populated.
+
+The OpenRouter STT route is registered whenever no backend **answers**, which is
+not the same as `WHISPER_URLS` being empty. That variable says where the model
+was *placed*, and the scheduler writes it from the plan — a container that failed
+to start leaves the URL behind. `gen-litellm-config.sh` probes the URLs the same
+way it probes the chat backends, so a dead one delegates rather than 5xx-ing.
 
 ### Models — LiteLLM
 

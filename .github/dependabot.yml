@@ -9,7 +9,6 @@ updates:
 
   - package-ecosystem: docker
     directories:
-      - /services/whisper
       - /services/whisper-shim
       - /services/crawl4ai-shim
       - /services/code-interpreter

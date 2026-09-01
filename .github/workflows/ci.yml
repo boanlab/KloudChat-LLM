@@ -106,7 +106,7 @@ jobs:
               body = re.search(rf"^{name}=\((.*?)^\)", sh, re.S | re.M).group(1)
               return [e.split("|")[0] for e in re.findall(r'"([^"]+)"', body)]
 
-          script = table("BUILD_TABLE") + table("MEDIA_TABLE")
+          script = table("BUILD_TABLE")
 
           # kloudchat-vllm is upstream, built on the GPU nodes from ${VLLM_IMAGE}
           # and never pushed; keying on the namespace variable is what tells a

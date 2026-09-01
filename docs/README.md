@@ -25,13 +25,12 @@ One gateway port is exposed. Behind it, seven capabilities are split by path.
 | `/tools/stt/*` | whisper-shim | `whisper` |
 | `/tools/index/*` | index-shim + pgvector | `index` |
 
-GPU nodes live outside this stack. A node runs vLLM and transcription together —
-there is one node list, `NODES_VLLM` — and LiteLLM and whisper-shim call them at
-the URLs recorded in `.env`. Those URLs are decided by the
-[scheduler](../scheduler/README.md): vLLM from the placement result,
-transcription from the backends that answered a health probe. The transcription
-backend is amd64 only, so on an arm64-only cluster `WHISPER_URLS` stays empty and
-STT goes to OpenRouter.
+GPU nodes live outside this stack — there is one node list, `NODES_VLLM` — and
+LiteLLM and whisper-shim call them at the URLs recorded in `.env`. Every one of
+those URLs comes from the [scheduler](../scheduler/README.md)'s placement result,
+transcription included: it is `openai/whisper-large-v3` on vLLM, placed like any
+other model. A cluster with no room for it leaves `WHISPER_URLS` empty, and STT
+goes to OpenRouter.
 
 `/tools/*` is unauthenticated. The gateway port must only be open inside a
 private network.

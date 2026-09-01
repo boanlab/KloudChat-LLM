@@ -26,13 +26,14 @@ def _meta(**kw) -> ModelMetadata:
 
 def _spec(model_id: str, *, weight: int, ctx_floor: int = 0,
           native: int = 131072, arches=(), priority: int = 0,
+          placement: str = "any", share: float = 1.0,
           **kw) -> registry.ModelSpec:
     spec = registry.ModelSpec(
         id=model_id, hf_repo=f"org/{model_id}", dir=model_id,
         service=f"vllm-{model_id}", port=8001,
         env_prefix=f"VLLM_{model_id.upper()}", served_name=f"local/{model_id}",
         ctx_floor=ctx_floor, concurrent_sessions=1, or_twin=None, arches=arches,
-        priority=priority,
+        priority=priority, placement=placement, share=share,
     )
     return spec.bind(_meta(weight_bytes=weight, **kw), native)
 
@@ -99,6 +100,33 @@ def test_a_hybrid_written_as_a_stride_is_still_a_hybrid():
     assert model_metadata._count_kv_bearing_layers(
         {"num_hidden_layers": 48, "full_attention_interval": 4}
     ) == 48
+
+
+def test_an_encoder_decoder_config_is_read():
+    """whisper writes d_model, decoder_layers and max_target_positions where a
+    decoder-only model writes hidden_size, num_hidden_layers and
+    max_position_embeddings. Read with the decoder-only names alone it is a
+    zero-width model with no declared context, which the binder drops entirely —
+    transcription would be delegated to OpenRouter on a card that fits it."""
+    from scheduler import model_metadata
+
+    cfg = {
+        "architectures": ["WhisperForConditionalGeneration"],
+        "d_model": 1280, "decoder_attention_heads": 20, "decoder_layers": 32,
+        "encoder_attention_heads": 20, "encoder_layers": 32,
+        "max_source_positions": 1500, "max_target_positions": 448,
+        "torch_dtype": "float16", "vocab_size": 51866,
+    }
+    assert model_metadata._resolve_native_ctx(cfg) == 448
+    assert model_metadata._resolve_head_dim(cfg) == 64
+    assert model_metadata._resolve_kv_heads(cfg) == 20
+    assert model_metadata._count_kv_bearing_layers(cfg) == 32
+
+    # A decoder-only config still answers from its own keys
+    plain = {"hidden_size": 4096, "num_attention_heads": 32,
+             "num_hidden_layers": 40, "max_position_embeddings": 131072}
+    assert model_metadata._resolve_native_ctx(plain) == 131072
+    assert model_metadata._resolve_head_dim(plain) == 128
 
 
 def test_kv_bearing_layers_drive_cost():
@@ -377,6 +405,94 @@ def test_kv_is_replicated_when_ranks_outnumber_kv_heads():
     assert planner.kv_shards(mla) == 1
 
 
+# ── node roles ──────────────────────────────────────────────────────────
+
+
+def test_a_pool_model_leaves_the_head_node_alone():
+    """The head node is roomier here, and worst-fit would take it. Default chat
+    and retrieval live on it, and a card-sized picker model landing there costs
+    every request rather than one picker entry."""
+    spec = _spec("big", weight=20 * GB, ctx_floor=16384, placement="pool")
+    result = planner.plan([spec], [_node("head", 96), _node("n2", 64)], head="head")
+    assert [p.node_id for p in result.placements] == ["n2"]
+
+
+def test_a_head_model_does_not_follow_the_room_into_the_pool():
+    spec = _spec("floor", weight=20 * GB, ctx_floor=16384, placement="head")
+    result = planner.plan([spec], [_node("head", 48), _node("n2", 96)], head="head")
+    assert [p.node_id for p in result.placements] == ["head"]
+
+
+def test_a_full_pool_delegates_rather_than_spilling_onto_the_head():
+    """Spilling would seat the model — and take the floor's card doing it, which
+    is the outcome the split exists to prevent."""
+    resident = _spec("resident", weight=40 * GB, ctx_floor=16384, placement="pool")
+    arrival = _spec("arrival", weight=40 * GB, ctx_floor=16384, placement="pool")
+    result = planner.plan([resident, arrival],
+                          [_node("head", 96), _node("n2", 96)], head="head")
+    assert [p.node_id for p in result.placements] == ["n2"]
+    assert [d.model_id for d in result.delegations] == ["arrival"]
+    # A real capacity reason, measured over the pool rather than the cluster
+    assert "GiB" in result.delegations[0].reason
+
+
+def test_one_declared_node_has_no_pool_to_be_kept_out_of():
+    """`head=None` is the one-node cluster: the distinction describes nothing
+    there, and honouring it would delegate every pool model on a working card."""
+    spec = _spec("big", weight=20 * GB, ctx_floor=16384, placement="pool")
+    result = planner.plan([spec], [_node("only", 96)], head=None)
+    assert [p.node_id for p in result.placements] == ["only"]
+
+
+def test_the_head_is_named_rather_than_taken_from_the_node_order():
+    """Nodes arrive in probe-completion order, so a positional head would move a
+    78 GiB model whenever a different SSH answered first."""
+    def specs():
+        return [_spec("floor", weight=20 * GB, ctx_floor=16384, placement="head"),
+                _spec("top", weight=20 * GB, ctx_floor=16384, placement="pool")]
+
+    nodes = [_node("head", 96), _node("n2", 96)]
+    forward = planner.plan(specs(), nodes, head="head")
+    reverse = planner.plan(specs(), list(reversed(nodes)), head="head")
+    assert {(p.model_id, p.node_id) for p in forward.placements} == \
+           {(p.model_id, p.node_id) for p in reverse.placements}
+    assert {(p.model_id, p.node_id) for p in forward.placements} == \
+           {("floor", "head"), ("top", "n2")}
+
+
+def test_a_pool_model_with_no_pool_node_answering_says_so():
+    """Not a capacity message: the head node's free card is not room this model
+    may use, and reporting it sends somebody looking for a leak."""
+    spec = _spec("top", weight=20 * GB, ctx_floor=16384, placement="pool")
+    result = planner.plan([spec], [_node("head", 96)], head="head")
+    assert not result.placements
+    assert "pool" in result.delegations[0].reason
+    assert "GiB" not in result.delegations[0].reason
+
+
+def test_extra_instances_follow_the_declared_share():
+    """60 and 40 over five pool nodes is three and two. Fewest-instances-first
+    would split them evenly and leave the odd node to a tiebreak."""
+    def specs():
+        return [_spec("top", weight=20 * GB, placement="pool", share=60),
+                _spec("coder", weight=20 * GB, placement="pool", share=40)]
+
+    nodes = [_node("head", 32)] + [_node(f"n{i}", 32) for i in range(2, 7)]
+    result = planner.plan(specs(), nodes, head="head")
+    counts = Counter(p.model_id for p in result.placements)
+    assert counts == {"top": 3, "coder": 2}, counts
+    assert "head" not in {p.node_id for p in result.placements}
+
+
+def test_equal_shares_still_deepen_by_fewest_instances():
+    """The share is a generalisation of the old order, not a replacement: left
+    undeclared every model weighs 1 and the counts stay level."""
+    specs = [_spec("a", weight=20 * GB), _spec("b", weight=20 * GB)]
+    result = planner.plan(specs, [_node(f"n{i}", 32) for i in range(1, 5)])
+    counts = Counter(p.model_id for p in result.placements)
+    assert counts == {"a": 2, "b": 2}, counts
+
+
 # ── across card sizes ───────────────────────────────────────────────────
 #
 # Every case above this line runs on a 96 GiB node, which is how three sizing
@@ -643,6 +759,67 @@ def test_unknown_model_id_is_an_error():
         raise AssertionError("an undefined id must raise KeyError")
 
 
+def test_placement_and_share_are_declared_values():
+    path = _write_yaml(
+        "models:\n  - id: foo\n    hf_repo: org/Foo\n"
+        "    placement: pool\n    share: 60\n"
+        "  - id: bar\n    hf_repo: org/Bar\n"
+    )
+    pool, plain = registry.load(path)
+    assert (pool.placement, pool.share) == ("pool", 60.0)
+    assert (plain.placement, plain.share) == ("any", 1.0)
+
+
+def test_an_unknown_placement_is_an_error():
+    """A typo would silently widen the model to the whole cluster, which is the
+    one outcome the field exists to rule out."""
+    path = _write_yaml("models:\n  - id: foo\n    hf_repo: org/Foo\n    placement: haed\n")
+    try:
+        registry.load(path)
+    except ValueError as exc:
+        assert "haed" in str(exc)
+    else:
+        raise AssertionError("an undefined placement must raise ValueError")
+
+
+def test_an_unknown_runner_is_an_error():
+    """The runner decides KV accounting and whether the model is a chat route.
+    A typo would size an embedding model as a generate one and register it."""
+    path = _write_yaml("models:\n  - id: foo\n    hf_repo: org/Foo\n    runner: polling\n")
+    try:
+        registry.load(path)
+    except ValueError as exc:
+        assert "polling" in str(exc)
+    else:
+        raise AssertionError("an undefined runner must raise ValueError")
+
+
+def test_transcription_is_sized_like_a_generate_model():
+    """It decodes, so it is charged decode headroom and a KV cache. Only the
+    routing differs — /tools/stt rather than a LiteLLM chat route."""
+    path = _write_yaml(
+        "models:\n  - id: foo\n    hf_repo: org/Foo\n    runner: transcription\n"
+    )
+    spec = registry.load(path)[0]
+    assert spec.runner == "transcription"
+    assert not spec.is_pooling
+
+
+def test_a_share_of_zero_is_an_error():
+    """It reads as "never replicate", divides as a crash, and is one careless
+    `or` away from being read as the default weight of 1."""
+    for value in ("0", "-1"):
+        path = _write_yaml(
+            f"models:\n  - id: foo\n    hf_repo: org/Foo\n    share: {value}\n"
+        )
+        try:
+            registry.load(path)
+        except ValueError as exc:
+            assert "share" in str(exc)
+        else:
+            raise AssertionError(f"share: {value} must raise ValueError")
+
+
 def test_size_suffixes():
     assert registry.parse_size("1GiB") == GB
     assert registry.parse_size(1024) == 1024
@@ -674,42 +851,53 @@ def test_stops_services_no_longer_planned():
     assert any(a.kind == "stop" and "vllm-gone" in a.description for a in change.actions)
 
 
-def test_does_not_stop_the_nodes_transcription_backend():
-    """The transcription backend is resident on the same node and compose file.
-
-    ``current`` is the node's whole ``docker ps``, so whisper appears in it.
-    Stopping it because the plan does not list it would take that node's STT down,
-    and for the same reason a single-host deployment's stack containers must be
-    left alone.
-    """
+def test_leaves_containers_this_stack_does_not_place_alone():
+    """``current`` is the node's whole ``docker ps``. A single-host deployment
+    runs the stack on the same box, and stopping what the plan does not name
+    would take the gateway down with it."""
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
     result = planner.plan([spec], nodes)
     change = applier.compute_diff(
         target=result,
-        current={"n1": {spec.service, "whisper", "kloudchat-gateway"}},
+        current={"n1": {spec.service, "kloudchat-gateway", "whisper-shim"}},
         specs=[spec], nodes=nodes,
     )
     stopped = [a.description for a in change.actions if a.kind == "stop"]
     assert not stopped, f"nothing should be stopped, got: {stopped}"
 
 
-def test_whisper_urls_hold_only_probed_backends():
-    """A node with no transcription backend (arm64) must not appear in WHISPER_URLS.
+def _stt_spec(**kw):
+    return _spec(applier.STT_MODEL_ID, weight=4 * GB, ctx_floor=448,
+                 native=448, placement="head", **kw)
 
-    Deriving the list mechanically from the node list would include it, and a
-    non-empty value stops gen-litellm-config from registering the OpenRouter STT
-    fallback. That is the path by which the microphone disappears.
+
+def test_whisper_urls_follow_the_transcription_placement():
+    """WHISPER_URLS is the transcription model's own URL under a second name.
+
+    Deriving it from the node list instead would name a node the planner never
+    put whisper on, and a non-empty value stops gen-litellm-config from
+    registering the OpenRouter STT fallback. That is the path by which the
+    microphone disappears.
     """
-    spec = _spec("a", weight=20 * GB, ctx_floor=16384)
-    nodes = [_node("n1", 96), _node("n2", 96, arch="arm64")]
-    result = planner.plan([spec], nodes)
+    stt = _stt_spec()
+    nodes = [_node("n1", 96), _node("n2", 96)]
+    result = planner.plan([stt], nodes, replicas=1, head="n1")
 
-    urls = applier._url_csvs(result, [spec], nodes, ["user@n1"])
-    assert urls["WHISPER_URLS"] == "http://n1:9000"
+    urls = applier._url_csvs(result, [stt], nodes)
+    assert urls["WHISPER_URLS"] == f"http://n1:{stt.port}"
+    assert urls["WHISPER_URLS"] == urls[f"{stt.env_prefix}_URL"]
 
-    # No backend answered means an empty value, which is the OpenRouter switch
-    assert applier._url_csvs(result, [spec], nodes, [])["WHISPER_URLS"] == ""
+
+def test_whisper_urls_empty_when_transcription_is_delegated():
+    """The empty value is the OpenRouter switch, so an unplaced model must clear
+    it rather than leave the last host that ran one."""
+    stt = _stt_spec()
+    other = _spec("a", weight=20 * GB, ctx_floor=16384)
+    nodes = [_node("n1", 96)]
+    # A cluster with no room for it: placed nowhere, so no URL and no CSV.
+    result = planner.plan([other], nodes)
+    assert applier._url_csvs(result, [other], nodes, [stt])["WHISPER_URLS"] == ""
 
 
 def test_url_csv_written_for_placed_models():

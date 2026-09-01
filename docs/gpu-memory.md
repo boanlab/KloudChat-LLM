@@ -161,7 +161,9 @@ per-sequence state, so it is charged `POOLING_ACTIVATION_BYTES` (2 GiB) instead.
   container plus page cache can still leave too little, which is what the 12 GiB
   reservation protects.
 - **`qwen3.5-122b-a10b` requires a node to itself.** The other three use a
-  fraction of one card and can share.
+  fraction of one card and can share. It is a pool model for that reason: the
+  head node holds default chat and retrieval, and a model that takes a whole card
+  cannot go where they are — see [models.md](models.md#where-models-are-defined).
 
 ## Tuning knobs
 
@@ -209,26 +211,26 @@ served entry is unchanged.
 
 ## Transcription (STT)
 
-Transcription is **amd64 only**: aarch64 ctranslate2 wheels are CPU-only, so GB10
-cannot use its card for it. arm64 nodes keep no backend, which leaves
-`WHISPER_URLS` empty, which is what sends STT to OpenRouter
-(`voxtral-small-24b`).
+Transcription runs on **any architecture**: `openai/whisper-large-v3` served by
+vLLM, as `vllm-whisper`. There is one transcription mechanism and it is the same
+one every other model uses — placed by the scheduler, sized by the same
+arithmetic, started by the same compose file.
 
-vLLM can serve `whisper-large-v3` itself, on any architecture, and that was tried
-here. It works — but it is a **second** transcription mechanism, and the
-production target is amd64, where the resident backend already runs. Carrying two
-paths to buy local STT on the arm64 test bench alone is maintenance surface for
-no production gain, so the delegation stands. The cost is that dictation on an
-arm64 node leaves the network; on amd64 it does not.
+vLLM rather than faster-whisper for one reason: ctranslate2's aarch64 wheels are
+CPU-only, so a GB10 cannot use its card for it, and CPU transcription shares
+unified memory with vLLM at roughly a third of realtime. Serving it on the engine
+that is already there costs a runtime nobody has to keep working, and no node in
+the fleet is a special case.
 
-On amd64 nodes it is a **resident cost rather than a placement decision**.
-`install-vllm.sh` brings it up alongside vLLM (the `whisper` service in
-`docker-compose.vllm.yml`), and when its `/health` answers, the planner subtracts
-**6 GiB** before packing vLLM onto that node
-(`scheduler/__main__.WHISPER_RESERVE_BYTES`).
+| | |
+|---|---|
+| Weights | **3.1 GiB** measured (`whisper-large-v3` ships 24.7 GB across four serialisations; vLLM reads one) |
+| Context | 448 — the decoder's window, not the audio's. Longer clips are split by the server before decoding |
+| Placement | `placement: head`, priority 4 — below `bge-m3`, because losing embeddings turns retrieval lexical while losing this one still transcribes through OpenRouter |
+| Charged | ~13 GiB, the generate-runner headroom. Conservative for a 1.55B encoder-decoder, and the head node has the room |
 
-Weights are ~3.2 GiB for large-v3 and the 6 GiB reservation covers runtime
-headroom. That figure is an estimate, not a measurement.
+`WHISPER_URLS` is written from the placement. Empty — no room for it, or no GPU
+node at all — is what sends STT to OpenRouter (`voxtral-small-24b`).
 
 ## Where the numbers come from
 
