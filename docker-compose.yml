@@ -256,11 +256,11 @@ services:
       LDR_LLM_PROVIDER: openai_endpoint
       LDR_LLM_OPENAI_ENDPOINT_URL: ${DEEP_RESEARCH_LLM_URL:-http://litellm:8000/v1}
       LDR_LLM_OPENAI_ENDPOINT_API_KEY: ${LITELLM_MASTER_KEY:-}
-      LDR_LLM_MODEL: ${DEEP_RESEARCH_MODEL:-local/qwen3.6-35b}
+      LDR_LLM_MODEL: ${DEEP_RESEARCH_MODEL:-local/qwen3.5-122b-a10b}
     networks: [kloudchat]
 
   # ── transcription ───────────────────────────────────────────────────
-  # Front end for faster-whisper on the GPU nodes, routing by in-flight count.
+  # Front end for the vllm-whisper backends, routing by in-flight count.
   # Profile-fenced: its healthcheck passes even with no backend.
   whisper-shim:
     container_name: kloudchat-whisper-shim

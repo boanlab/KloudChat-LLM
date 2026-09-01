@@ -26,12 +26,9 @@ from scheduler.types import GB, NodeSpec
 _UNIFIED_RESERVE_BYTES: int = 12 * GB
 
 #: Containers this stack owns, for telling our GPU memory from anyone else's.
-#: Mirrors applier.MANAGED_SERVICE_PREFIX.
+#: Mirrors applier.MANAGED_SERVICE_PREFIX. Transcription is one of them —
+#: vllm-whisper is a placed model like any other, not a resident workload.
 MANAGED_PREFIX: str = "vllm-"
-WHISPER_CONTAINER: str = "whisper"
-
-#: Transcription backend port. amd64 only — the probe never answers on arm64.
-WHISPER_PORT: int = 9000
 
 
 @dataclass(frozen=True)
@@ -51,7 +48,6 @@ class NodeProbe:
     alive: bool
     running_workloads: tuple[RunningWorkload, ...] = field(default_factory=tuple)
     running_containers: frozenset[str] = frozenset()
-    whisper_running: bool = False
     raw_errors: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -168,12 +164,6 @@ def _probe_checkpoints(host: str, models_root: str) -> Optional[frozenset[str]]:
     if rc != 0:
         return None
     return frozenset(line.strip() for line in out.splitlines() if line.strip())
-
-
-def _probe_whisper(host: str) -> bool:
-    """Transcription backend liveness. Drives capacity reservation, not placement."""
-    rc, _, _ = _ssh(host, f"curl -fsS -o /dev/null http://localhost:{WHISPER_PORT}/health")
-    return rc == 0
 
 
 #: What an unrecognised NVIDIA card is called. lib.sh::detect_gpu_class says
@@ -349,7 +339,6 @@ def _probe_node_once(
     # its weakest device, not by its average.
     total_vram = min(card_sizes) if card_sizes else 0
     arch = _probe_arch(host)
-    whisper_up = _probe_whisper(host)
     alive = bool(running) or total_vram > 0
 
     workloads = tuple(
@@ -370,9 +359,7 @@ def _probe_node_once(
 
     # Anything on the card that is not ours. Our own containers are excluded on
     # purpose: the plan is free to reassign what they hold.
-    managed = frozenset(
-        c for c in running if c.startswith(MANAGED_PREFIX) or c == WHISPER_CONTAINER
-    )
+    managed = frozenset(c for c in running if c.startswith(MANAGED_PREFIX))
     foreign, _ours = _probe_vram_by_owner(host, managed)
 
     spec = NodeSpec(
@@ -394,7 +381,6 @@ def _probe_node_once(
         alive=alive,
         running_workloads=workloads,
         running_containers=frozenset(running),
-        whisper_running=whisper_up,
         raw_errors=tuple(errors),
     )
 

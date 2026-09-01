@@ -25,6 +25,16 @@ BASE_PORT = 8001
 #: Concurrent sessions assumed when sizing the effective KV context.
 DEFAULT_CONCURRENT_SESSIONS = 4
 
+#: What kind of endpoint a model answers on. "generate" and "pooling" are vLLM's
+#: own runner names and are passed through as --runner; "transcription" is not a
+#: flag — vLLM infers it from the architecture — but it is what says the model is
+#: reached through /tools/stt rather than registered as a LiteLLM chat route.
+RUNNERS = ("generate", "pooling", "transcription")
+
+#: Where a model may sit. "head" is the first node in NODES_VLLM, which carries
+#: the always-on service stack; "pool" is every other node; "any" is unconstrained.
+PLACEMENTS = ("any", "head", "pool")
+
 _SIZE = re.compile(r"^\s*([\d.]+)\s*([KMGT]i?B)?\s*$", re.I)
 _UNITS = {
     "b": 1, "kb": 10**3, "mb": 10**6, "gb": 10**9, "tb": 10**12,
@@ -67,13 +77,26 @@ class ModelSpec:
     #: Declare this where the cluster cannot hold everything and the operator —
     #: not the weight table — should decide which model keeps a card.
     priority: int = 0
+    #: Which nodes may hold it: "head" for the first node in NODES_VLLM, "pool"
+    #: for every other node, "any" for no constraint. The split separates the
+    #: always-on service stack — default chat, retrieval, transcription — from
+    #: the cards the large picker models take outright, so that adding one of
+    #: those cannot evict the path every request depends on. A cluster declaring
+    #: one node has no pool, and the constraint does not apply there.
+    placement: str = "any"
+    #: Relative weight for extra instances, once every model has one. A weight
+    #: and not a percentage: 60 and 40 divide spare nodes the same way 3 and 2
+    #: do. It decides only between models that compete for the same nodes.
+    share: float = 1.0
     #: Cards to shard this model across on one node (``--tensor-parallel-size``).
     #: 1 is a whole model per card. Above 1 the model claims that many cards
     #: outright: vLLM is given them, and nothing else may be packed onto them.
     tensor_parallel: int = 1
-    #: vLLM runner. "generate" is autoregressive; "pooling" is an embedding or
-    #: reranking model, which decodes nothing and holds no KV cache — see
-    #: `planner.kv_bytes`.
+    #: What the model answers. "generate" is autoregressive; "pooling" is an
+    #: embedding or reranking model, which decodes nothing and holds no KV cache
+    #: (see `planner.kv_bytes`); "transcription" decodes like a generate model
+    #: and is sized like one, and names the models reached through /tools/stt
+    #: instead of being registered as LiteLLM chat routes.
     runner: str = "generate"
     #: None until config.json is probed. Filled by bind().
     metadata: Optional[ModelMetadata] = None
@@ -131,6 +154,24 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
             )
         )
 
+    runner = str(entry.get("runner") or "generate").strip().lower()
+    if runner not in RUNNERS:
+        raise ValueError(
+            f"{model_id}: runner {runner!r} is not one of {', '.join(RUNNERS)}"
+        )
+    placement = str(entry.get("placement") or "any").strip().lower()
+    if placement not in PLACEMENTS:
+        raise ValueError(
+            f"{model_id}: placement {placement!r} is not one of "
+            f"{', '.join(PLACEMENTS)}"
+        )
+    # `or 1.0` would read a declared 0 as "undeclared" and weight it 1 — the
+    # opposite of what writing 0 says.
+    raw_share = entry.get("share")
+    share = 1.0 if raw_share is None else float(raw_share)
+    if share <= 0:
+        raise ValueError(f"{model_id}: share must be above zero, not {share}")
+
     env_prefix = str(entry.get("env_prefix") or _env_prefix_from_id(model_id))
     return ModelSpec(
         id=model_id,
@@ -148,9 +189,11 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
         ),
         or_twin=twin,
         priority=int(entry.get("priority") or 0),
+        placement=placement,
+        share=share,
         tensor_parallel=max(1, int(entry.get("tensor_parallel") or 1)),
         arches=tuple(entry.get("arches") or ()),
-        runner=str(entry.get("runner") or "generate"),
+        runner=runner,
         ctx_target_override=int(entry["ctx_target"]) if entry.get("ctx_target") else None,
         weight_override=parse_size(entry["weight"]) if entry.get("weight") else None,
     )

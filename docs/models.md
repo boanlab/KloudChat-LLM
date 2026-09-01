@@ -10,8 +10,9 @@ Which models are registered where, and how requests are routed to them.
 Two catalogues, with different jobs.
 
 `scheduler/models.yaml` — **local models**: what vLLM can serve, and everything
-placement needs (port, env prefix, context floor, priority). `VLLM_MODELS` in
-`.env` selects which of them are deployed.
+placement needs (port, env prefix, context floor, priority, and which half of the
+cluster the model belongs to). `VLLM_MODELS` in `.env` selects which of them are
+deployed, and the order of `NODES_VLLM` names the head node.
 
 `scripts/lib.sh` — **commercial models** routed through OpenRouter, and the
 per-checkpoint download table `download-vllm-models.sh` uses.
@@ -114,22 +115,29 @@ with a local build, and a digest read back from that is an image id `docker pull
 cannot resolve.
 
 The catalogue below is what vLLM *can* serve. `VLLM_MODELS` selects what is
-deployed, and `priority` in `models.yaml` ranks them when the cards cannot hold
-everything — the lowest-ranked model is delegated to OpenRouter rather than
-squeezed in.
+deployed, `placement` says which half of the cluster a model belongs to, and
+`priority` ranks the models within that half when the cards cannot hold
+everything — the lowest-ranked is delegated to OpenRouter rather than squeezed
+in.
 
-| Model (alias) | Container | Port | Quant | Priority | Role |
-|---|---|---|---|---|---|
-| `local/qwen3.6-35b` | `vllm-qwen35b` | 8001 | NVFP4 | 20 | Unified chat and floor — conversation, artifacts, vision, deep research, coding, titles, memory extraction |
-| `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | 15 | Coding (Qwen3-Coder-Next-80B-A3B). Hybrid attention — 12 of 48 layers hold KV — so 12 KiB/token at 262K |
-| `local/qwen3.5-122b-a10b` | `vllm-qwen122b` | 8004 | NVFP4 | 10 | Top chat — 10B active, 128K here. Needs the card to itself |
-| `local/bge-m3` | `vllm-bgem3` | 8003 | BF16 | 5 | Retrieval embeddings. Pooling runner |
-| `local/bge-reranker-v2-m3` | `vllm-rerank` | 8009 | BF16 | 0 | Retrieval reranking, second stage over vector search |
-| `local/gemma-4-26b-a4b` | `vllm-gemma26b` | 8005 | NVFP4 | 0 | Second family — vision, tool calling, 256K. 4B active of 26B |
-| `local/qwen3-coder-30b` | `vllm-coder30b` | 8006 | FP8 | 0 | Coding, smaller. 48 KiB/token. Superseded by `qwen3-coder-next` where 75 GiB fits |
-| `local/qwen3.6-27b` | `vllm-qwen27b` | 8007 | NVFP4 | 0 | The one dense model — no routing, a different kind of answer |
-| `local/glm-4.7-flash` | `vllm-glmflash` | 8002 | NVFP4 | 0 | Cheap-decode floor (31.2B-A3B) |
-| `strict-local/<model>` | same backend as its `local/` twin | — | — | — | Privacy-only alias; fails rather than leaving vLLM |
+**Node** is `placement` in `models.yaml`. The **head** node is the first target
+in `NODES_VLLM` and carries the paths every request touches; the **pool** is
+every other node and carries the card-sized models a user picks by name. A blank
+means the model is placed wherever it fits.
+
+| Model (alias) | Container | Port | Quant | Node | Priority | Role |
+|---|---|---|---|---|---|---|
+| `local/qwen3.6-35b` | `vllm-qwen35b` | 8001 | NVFP4 | head | 20 | Unified chat and floor — conversation, artifacts, vision, coding, titles, memory extraction |
+| `local/qwen3.5-122b-a10b` | `vllm-qwen122b` | 8004 | NVFP4 | pool (share 60) | 15 | Top chat and deep research — 10B active, 128K here. Needs the card to itself |
+| `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | pool (share 40) | 10 | Coding (Qwen3-Coder-Next-80B-A3B). Hybrid attention — 12 of 48 layers hold KV — so 12 KiB/token at 262K |
+| `local/bge-m3` | `vllm-bgem3` | 8003 | BF16 | head | 5 | Retrieval embeddings. Pooling runner |
+| `local/bge-reranker-v2-m3` | `vllm-rerank` | 8009 | BF16 | head | 0 | Retrieval reranking, second stage over vector search |
+| `local/whisper-large-v3` | `vllm-whisper` | 9000 | FP16 | head | 4 | Transcription. Reached through `/tools/stt`, not registered as a LiteLLM chat route |
+| `local/gemma-4-26b-a4b` | `vllm-gemma26b` | 8005 | NVFP4 | — | 0 | Second family — vision, tool calling, 256K. 4B active of 26B |
+| `local/qwen3-coder-30b` | `vllm-coder30b` | 8006 | FP8 | — | 0 | Coding, smaller. 48 KiB/token. Superseded by `qwen3-coder-next` where 75 GiB fits |
+| `local/qwen3.6-27b` | `vllm-qwen27b` | 8007 | NVFP4 | — | 0 | The one dense model — no routing, a different kind of answer |
+| `local/glm-4.7-flash` | `vllm-glmflash` | 8002 | NVFP4 | — | 0 | Cheap-decode floor (31.2B-A3B) |
+| `strict-local/<model>` | same backend as its `local/` twin | — | — | — | — | Privacy-only alias; fails rather than leaving vLLM |
 
 **Why this split**
 
@@ -252,17 +260,24 @@ What fits on which card is in the
 **Roles**
 
 - **`qwen3.6-35b`** — default chat, and the deployment volume is pointed at.
-  Artifacts, deep research and coding run here; `DEEP_RESEARCH_MODEL` points
-  here, and the scheduler holds a 128K context floor on it for that reason. It
-  also takes the high-volume internal calls — titles, memory extraction, query
-  rewriting — whose call sites the UI names (`KCHAT_TITLE_MODEL`).
-- **`qwen3.5-122b-a10b`** — chosen from the picker when the answer is worth the
-  latency. Nothing is routed to it by default, and nothing should be: at 10B
-  active it decodes roughly three times slower, and its KV pool admits an order
-  of magnitude fewer concurrent requests.
+  Artifacts and coding run here, as do the high-volume internal calls — titles,
+  memory extraction, query rewriting — whose call sites the UI names
+  (`KCHAT_TITLE_MODEL`). The scheduler holds a 128K context floor on it: a long
+  conversation with a coding agent accumulates context the same way a research
+  run does. It sits on the head node with retrieval, and nothing card-sized may
+  join it there.
+- **`qwen3.5-122b-a10b`** — top chat, chosen from the picker when the answer is
+  worth the latency, and what the pool exists for: three pool nodes in five hold
+  it. `DEEP_RESEARCH_MODEL` points here, which is the one route that reaches it
+  without a user choosing it by name — a research run is a handful of long,
+  sequential calls where the answer per round is what the run is made of, and
+  it is the shape of traffic this model is worth its latency for. Interactive
+  volume is a different matter: at 10B active it decodes roughly three times
+  slower, and its KV pool admits 12 concurrent sessions against the 35B's 128,
+  so nothing else is routed here by default.
 - **`qwen3-coder-next`** — coding, and a picker choice rather than a default
-  route. 75 GiB of FP8 weights, so it wants the card to itself; `priority: 15`
-  puts it ahead of the 122B when only one of the two fits.
+  route. 75 GiB of FP8 weights, so it wants a pool card to itself; two pool nodes
+  in five, and on a pool of one it is the model that yields.
 - **`qwen3-coder-30b`** and **`qwen3.6-27b`** — specialisations for a cluster
   with cards to spare. Neither is routed to; both are picker choices. Check
   `scheduler plan` before adding them to `VLLM_MODELS`.
@@ -271,13 +286,25 @@ What fits on which card is in the
   twice, and a different lineage fails differently. 4B active, so it costs about
   what the 35B costs to run.
 
-**Ranking.** `priority` in `models.yaml` decides who keeps a card when they
-  cannot all have one: `qwen3.6-35b` (20), `qwen3-coder-next` (15),
-  `qwen3.5-122b-a10b` (10), then `bge-m3` (5) and everything else. Without it,
-  coverage seats the largest model first — a packing guard, not a judgement about
-  what the cluster needs. Default chat, titles, memory extraction, deep research
-  and the coding agents all land on the 35B, so losing it degrades every path at
-  once; losing a picker choice removes an option.
+**Ranking.** `placement` decides *which* cards a model may compete for, and
+`priority` decides who wins among the models competing for the same ones:
+`qwen3.6-35b` (20) then `bge-m3` (5) on the head node, `qwen3.5-122b-a10b` (15)
+then `qwen3-coder-next` (10) in the pool. Without a priority, coverage seats the
+largest model first — a packing guard, not a judgement about what the cluster
+needs.
+
+The head node is ranked separately rather than ranked highest, because the two
+sets are not comparable. Default chat, titles, memory extraction and the coding
+agents all land on the 35B, so losing it degrades every path at once; losing a
+pool model costs deep research or a picker choice. Ranking them on one scale would
+mean a pool card could be won by the floor and a head card by a picker model,
+and both are the wrong trade.
+
+**Sharing the pool.** `share` divides the pool nodes once every model has one:
+60 to `qwen3.5-122b-a10b` and 40 to `qwen3-coder-next`, so a pool of five holds
+three and two. It is a weight rather than a percentage — 60 and 40 divide exactly
+as 3 and 2 do — and with a pool of one it decides nothing, because coverage seats
+by priority before any share is consulted.
 - **Artifacts** — no separate model. The client produces code and document
   artifacts on the chat deployment and the server extracts them from the
   response.
@@ -376,8 +403,8 @@ nodes.
 
 | Model | Context (this cluster) | Purpose |
 |---|---|---|
-| `qwen3.6-35b` | 256K (262K native) | Chat, deep research, coding, internal calls |
-| `qwen3.5-122b-a10b` | **128K** (262K native) | Top chat. Capped by KV, not by the model |
+| `qwen3.6-35b` | 256K (262K native) | Chat, coding, internal calls |
+| `qwen3.5-122b-a10b` | **128K** (262K native) | Top chat and deep research. Capped by KV, not by the model |
 | `gemma-4-26b-a4b` | 256K | Second opinion — a different family's failure modes |
 | `qwen3-coder-30b` | 128K | Coding. Capped by KV: 48 KiB/token is 4.8× the 35B |
 | `qwen3.6-27b` | 256K | Dense |
@@ -451,7 +478,7 @@ LiteLLM. There is no local media GPU backend; the user picks the model in the UI
 |---|---|
 | Images and audio | `modalities` on `chat/completions` |
 | Video | `/api/v1/videos` passthrough — it does not appear in `/model/info`, so the model list is declared in the UI repository |
-| Transcription (STT) | `whisper-shim` to the GPU nodes' faster-whisper, or OpenRouter when no backend is deployed |
+| Transcription (STT) | `whisper-shim` to the GPU nodes' `vllm-whisper`, or OpenRouter when the model is not placed |
 
 Per-tool paths are in [tools.md](tools.md).
 

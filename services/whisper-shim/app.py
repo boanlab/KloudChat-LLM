@@ -1,27 +1,31 @@
 """OpenAI-compatible Whisper aggregator in front of one or more whisper backends.
 
-Each backend is an amd64 GPU node's transcription container, installed alongside
-vLLM by `scripts/install-vllm.sh` (faster-whisper on the card) exposing
-OpenAI-style `/v1/audio/transcriptions`. arm64 nodes run no backend — aarch64
-ctranslate2 wheels are CPU-only, so STT is delegated to OpenRouter there and this
-shim is not deployed at all. The shim multiplexes the same protocol across the
-backends — no translation, just routing — so any client that speaks `WHISPER_URL`
-gets a single endpoint while audio jobs spread across the GPU fleet.
+Each backend is a GPU node's `vllm-whisper`, placed there by the scheduler and
+serving openai/whisper-large-v3 behind OpenAI-style `/v1/audio/transcriptions`.
+Any architecture can run one. The shim multiplexes the same protocol across the
+backends, so any client that speaks `WHISPER_URL` gets a single endpoint while
+audio jobs spread across the GPU fleet.
+
+The one thing it rewrites is the `model` field. vLLM answers only for a name it
+was told to serve and 404s the rest, while callers send whatever their client
+was configured with — `whisper-1`, most often, because that is what OpenAI's
+SDK defaults to. The shim names the backend's model itself, which is safe
+because every backend serves the same one.
 
 Routing
 ───────
 For each request, among backends that pass /health, pick the one with the
-lowest in-flight count. Each backend serves a request on its GPU sequentially
-(whisper's model state is per-process; concurrent requests queue inside the
-worker), so steering to the least-busy node keeps a single hot node from
-accumulating jobs while an idle node sits empty.
+lowest in-flight count. A clip occupies its node's card for the length of the
+decode, so steering to the least-busy node keeps one hot node from accumulating
+jobs while an idle node sits empty.
 
 If every backend's health probe fails we still forward to the first one so the
-caller gets a meaningful 5xx instead of a silent drop. STT is GPU-only — there
-is no OpenRouter fallback (callers surface the failure directly).
+caller gets a meaningful 5xx instead of a silent drop. The shim itself has no
+OpenRouter fallback: the switch is upstream, where an empty WHISPER_URLS means
+this shim is not deployed at all and LiteLLM registers OpenRouter's STT instead.
 
-No variant catalogue (every backend serves the same WHISPER_MODEL), no
-prompt_id stickiness (each request is one HTTP round-trip and self-contained).
+No variant catalogue (every backend serves the same model), no prompt_id
+stickiness (each request is one HTTP round-trip and self-contained).
 """
 from __future__ import annotations
 
@@ -41,7 +45,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 
 
 def _parse_backends() -> list[str]:
-    """WHISPER_URLS — comma-separated whisper backend URLs (GPU nodes' faster-whisper).
+    """WHISPER_URLS — comma-separated backend URLs (the GPU nodes' vllm-whisper).
     WHISPER_URL = a separate variable by which a consumer (youtube MCP) points at the shim — unused here."""
     raw = os.getenv("WHISPER_URLS", "")
     urls = [u.strip().rstrip("/") for u in raw.split(",") if u.strip()]
@@ -51,6 +55,9 @@ def _parse_backends() -> list[str]:
 
 
 BACKENDS: list[str] = _parse_backends()
+#: The name every backend answers to. Must be one of vllm-whisper's
+#: --served-model-name values in docker-compose.vllm.yml.
+MODEL_NAME: str = os.getenv("WHISPER_MODEL_NAME", "local/whisper-large-v3")
 HEALTH_PROBE_TIMEOUT_SEC = float(os.getenv("HEALTH_PROBE_TIMEOUT_SEC", "2.0"))
 HEALTH_CACHE_TTL_SEC    = float(os.getenv("HEALTH_CACHE_TTL_SEC", "10"))
 TRANSCRIBE_TIMEOUT_SEC  = float(os.getenv("TRANSCRIBE_TIMEOUT_SEC", "900"))
@@ -149,18 +156,39 @@ async def health() -> dict[str, Any]:
     }
 
 
+async def _rebuild_form(request: Request) -> tuple[dict, dict]:
+    """(files, fields) for httpx, with `model` set to what the backend serves.
+
+    Re-encoding rather than passing the body through, because vLLM answers 404
+    for a name it was not started with and a caller's default of `whisper-1` is
+    not a name anyone here chose.
+
+    Reading the upload into memory is what the passthrough did too. These are
+    short audio files (the youtube MCP downloads bestaudio[ext=m4a]), and the
+    backend needs the whole clip before it can decode any of it.
+    """
+    form = await request.form()
+    files: dict[str, tuple] = {}
+    fields: dict[str, str] = {}
+    for key, value in form.multi_items():
+        if hasattr(value, "filename"):
+            files[key] = (value.filename, await value.read(),
+                          value.content_type or "application/octet-stream")
+        else:
+            fields[key] = str(value)
+    fields["model"] = MODEL_NAME
+    return files, fields
+
+
 @app.post("/v1/audio/transcriptions")
 async def transcribe(request: Request) -> Response:
-    """Multipart passthrough — forward the raw request body and content-type
-    to the chosen backend, then mirror its response.
-
-    Reading the body into memory once is fine: whisper inputs are short audio
-    files (the youtube MCP downloads bestaudio[ext=m4a]), and faster-whisper
-    needs the whole file on disk anyway. Streaming through wouldn't save
-    memory and would complicate the inflight accounting.
-    """
-    body = await request.body()
-    content_type = request.headers.get("content-type", "application/octet-stream")
+    """Forward the upload to the least-busy backend and mirror its response."""
+    try:
+        files, fields = await _rebuild_form(request)
+    except Exception as e:  # noqa: BLE001 — a malformed upload is the caller's
+        raise HTTPException(400, f"could not read the upload: {e}") from e
+    if not files:
+        raise HTTPException(400, "no audio file in the request")
 
     async with httpx.AsyncClient(timeout=TRANSCRIBE_TIMEOUT_SEC) as client:
         backend = await _pick_backend(client)
@@ -168,8 +196,7 @@ async def transcribe(request: Request) -> Response:
         try:
             r = await client.post(
                 f"{backend}/v1/audio/transcriptions",
-                content=body,
-                headers={"content-type": content_type},
+                files=files, data=fields,
             )
         except httpx.HTTPError as e:
             LOG.warning("whisper backend %s request failed: %s", backend, e)

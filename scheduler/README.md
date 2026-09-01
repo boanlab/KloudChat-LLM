@@ -14,7 +14,7 @@ python3 -m scheduler apply -y      # apply without confirmation
 
 ```bash
 # .env
-NODES_VLLM=ops@gpu-1,ops@gpu-2       # SSH targets
+NODES_VLLM=ops@gpu-1,ops@gpu-2       # SSH targets, head node first
 VLLM_MODELS=qwen3.5-122b-a10b,qwen3.6-35b,bge-m3
 VLLM_MODELS_ROOT=/var/lib/vllm/models
 ```
@@ -22,6 +22,32 @@ VLLM_MODELS_ROOT=/var/lib/vllm/models
 Model definitions are in [`models.yaml`](models.yaml), which carries only
 identity (`id`, `hf_repo`) and the delegation path (`openrouter`). Everything
 else is read from the checkpoint's `config.json` and its size on disk.
+
+## Node roles
+
+The **first target in `NODES_VLLM` is the head node**, and every other one is the
+**pool**. `placement:` in models.yaml says which of the two a model belongs to,
+and it is applied before any packing:
+
+| `placement` | Where it may sit | The models that declare it |
+|---|---|---|
+| `head` | the head node only | default chat, embeddings, reranking, transcription |
+| `pool` | every node but the head | the card-sized models a user picks by name |
+| unset | anywhere | everything else |
+
+The split is there because packing cannot tell the two kinds apart. A 78 GiB
+model is worth a card of its own right until it takes the card holding the
+floor, and then every request answers at a tenth of the concurrency instead of
+one picker entry being absent. Worst-fit makes that outcome likely rather than
+unlucky: the head node is usually the roomiest, because what it runs is small.
+
+A pool model that finds no pool seat is delegated to OpenRouter rather than
+spilled onto the head node, and the reason counts only the pool's cards.
+
+The head is named by the caller, not read off `nodes[0]`: nodes arrive in
+probe-completion order, and a plan that turned on which SSH answered first would
+migrate a 78 GiB model at random. A cluster declaring a single node has no pool,
+and `placement` constrains nothing there.
 
 ## How placement works
 
@@ -45,9 +71,16 @@ else is read from the checkpoint's `config.json` and its size on disk.
    node, raising contexts toward their targets. The placement furthest from its
    target goes first, so one model cannot take everything.
 3. **Replication** — capacity coverage did not need is filled with extra
-   instances, deepening models in declared priority order, and only after every
-   model has one. `--replicas N` caps the count per model; `--replicas 1` turns
+   instances, and only after every model has one. Each round seats the model
+   furthest below its `share:` — `instances / share`, lowest first — so 60 and 40
+   converge on three pool nodes to two as the pool grows, and an undeclared
+   share of 1 everywhere reproduces fewest-instances-first, with `priority` as
+   the tiebreak. `--replicas N` caps the count per model; `--replicas 1` turns
    replication off.
+
+   A share is a weight, not a percentage: 60 and 40 divide the pool exactly as 3
+   and 2 do. It decides only between models that compete for the same nodes, so
+   comparing one across the head/pool line means nothing.
 
 Only nodes that carry the model's checkpoint are candidates in any of the three.
 Docker does not refuse a bind mount of a path that is not there — it creates the

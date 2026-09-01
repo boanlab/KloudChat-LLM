@@ -7,9 +7,11 @@ Three phases:
    would let a large model claim a node and starve the next one.
 2. Restoration — leftover capacity raises contexts toward their targets.
 3. Replication — capacity coverage did not need is filled with extra instances,
-   deepening models in priority order. ``replicas`` caps it; 1 turns it off.
+   deepening models by ``share``. ``replicas`` caps it; 1 turns it off.
 
-Unplaced models are delegated to OpenRouter with a reason.
+A model's ``placement`` narrows the nodes it may use to the head node or to the
+pool before any of the three run. Unplaced models are delegated to OpenRouter
+with a reason.
 """
 
 from __future__ import annotations
@@ -246,6 +248,7 @@ def plan(
     reserved: Optional[dict[str, int]] = None,
     replicas: Optional[int] = None,
     deployed: Optional[dict[str, frozenset[str]]] = None,
+    head: Optional[str] = None,
 ) -> Plan:
     """Decide the placement.
 
@@ -255,10 +258,16 @@ def plan(
         reserved: per-node bytes held by resident, unplaced workloads such as
             transcription. Subtracted before packing.
         replicas: cap on instances per model. None fills whatever capacity is
-            left after coverage, deepening by priority; 1 disables replication.
+            left after coverage, deepening by share; 1 disables replication.
         deployed: model id to the node ids already running it. A model that fits
             where it is stays there; without this the plan is free to migrate it
             on a capacity difference too small to matter.
+        head: node id of the head node, which carries the always-on service
+            stack. Named rather than taken from ``nodes[0]``, because nodes
+            arrive in probe-completion order and a plan that moved a 78 GiB
+            model on that would be a plan that depends on which SSH answered
+            first. None means the cluster declares one node, so there is no
+            pool and ``placement`` constrains nothing.
     """
     result = Plan()
     reserved = reserved or {}
@@ -291,7 +300,8 @@ def plan(
     )
     for spec in ordered:
         # Each node reports what it can seat, narrowing sessions where it must.
-        holders = [n for n in nodes if _carries(n, spec)]
+        allowed = _eligible(spec, nodes, head)
+        holders = [n for n in allowed if _carries(n, spec)]
         seatable = {
             n.node_id: _fit_sessions(spec, n, free[n.node_id], card_capacity[n.node_id])
             for n in holders
@@ -299,7 +309,7 @@ def plan(
         candidates = [n for n in holders if seatable[n.node_id] is not None]
         if not candidates:
             result.delegations.append(
-                Delegation(spec.id, _why_not(spec, nodes, free, card_capacity))
+                Delegation(spec.id, _why_not(spec, allowed, free, card_capacity))
             )
             continue
         target = _worst_fit(candidates, free, incumbent=deployed.get(spec.id))
@@ -327,7 +337,7 @@ def plan(
     # ── 3. Replication: fill what coverage left ───────────────────────────
     # `replicas=1` is how a caller asks for one of each and no more.
     if replicas is None or replicas > 1:
-        _replicate(result, specs, nodes, free, card_capacity, replicas)
+        _replicate(result, specs, nodes, free, card_capacity, replicas, head)
         # Replicas seat at the floor too — redistribute the remainder
         _restore_context(result, specs, by_id, free, card_capacity)
 
@@ -360,6 +370,27 @@ def _worst_fit(
     return sorted(home or tied, key=lambda n: n.node_id)[0]
 
 
+def _eligible(spec: ModelSpec, nodes: Sequence[NodeSpec],
+              head: Optional[str]) -> list[NodeSpec]:
+    """The nodes this model's ``placement`` allows it on.
+
+    The head node carries the stack every request touches — default chat,
+    retrieval, transcription — and the pool carries the models a user picks. The
+    split exists because packing alone cannot tell the two apart: a 78 GiB model
+    is worth a card of its own right up until it takes the one holding the floor,
+    and then the whole deployment answers slowly instead of one picker entry
+    being absent.
+
+    ``head is None`` is a cluster of one node, where the distinction says
+    nothing, so nothing is filtered.
+    """
+    if head is None or spec.placement == "any":
+        return list(nodes)
+    if spec.placement == "head":
+        return [n for n in nodes if n.node_id == head]
+    return [n for n in nodes if n.node_id != head]
+
+
 def _carries(node: NodeSpec, spec: ModelSpec) -> bool:
     """Whether the node holds this model's checkpoint.
 
@@ -376,11 +407,23 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
     """Delegation reason, separating "no capacity" from "cannot serve".
 
     Blurring the two invites a VRAM upgrade that cannot fix an architecture.
+
+    ``nodes`` is what ``placement`` left, not the cluster: reporting the emptiest
+    card on a node the model may not use would send an operator looking for a
+    capacity problem that is not there.
     """
+    if not nodes:
+        if spec.placement == "head":
+            return ("the head node — the first in NODES_VLLM — is not answering, "
+                    "and placement: head keeps this model off the pool")
+        return ("no pool node is answering — the pool is every node in "
+                "NODES_VLLM but the first")
+
+    where = _scope(spec)
     servable = [n for n in nodes if spec.runs_on(n.arch)]
     if not servable:
         arches = ", ".join(spec.arches) or "(unrestricted)"
-        return f"no architecture in this cluster can serve it (supported: {arches})"
+        return f"no architecture in {where} can serve it (supported: {arches})"
 
     carrying = [n for n in servable if _carries(n, spec)]
     if not carrying:
@@ -425,8 +468,19 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
         )
     return (
         f"needs {per_gpu / GB:.1f} GiB on one card at its "
-        f"{spec.ctx_floor // 1024}K context floor, and the emptiest card in the "
-        f"cluster has {freest / GB:.1f} GiB left"
+        f"{spec.ctx_floor // 1024}K context floor, and the emptiest card in "
+        f"{where} has {freest / GB:.1f} GiB left"
+    )
+
+
+def _scope(spec: ModelSpec) -> str:
+    """What a delegation reason's figures were measured over.
+
+    Naming the cluster where only the pool was counted reads as a cluster-wide
+    shortage, and sends an operator to look at a card the model may not use.
+    """
+    return {"head": "the head node", "pool": "the pool"}.get(
+        spec.placement, "this cluster"
     )
 
 
@@ -481,9 +535,14 @@ def _restore_context(
 def _replicate(
     plan_: Plan, specs: Sequence[ModelSpec], nodes: Sequence[NodeSpec],
     free: dict[str, list[int]], card_capacity: dict[str, int],
-    replicas: Optional[int],
+    replicas: Optional[int], head: Optional[str] = None,
 ) -> None:
-    """Extra instances, once every model has one, highest priority first.
+    """Extra instances, once every model has one, in declared share.
+
+    Each round seats the model furthest below its share — ``instances / share``,
+    lowest first — so two models at 60 and 40 converge on three nodes to two as
+    the pool grows, and equal shares reproduce the fewest-instances-first order
+    that had no other way of being expressed.
 
     ``replicas`` caps the count per model; None means fill until nothing more
     seats. Either way the loop ends when no node can take another instance.
@@ -495,16 +554,17 @@ def _replicate(
     grew = True
     while grew:
         grew = False
-        # Fewest instances first, then declared priority: spare capacity
+        # Furthest below its share first, then declared priority: spare capacity
         # deepens the model the cluster least wants to queue on.
-        for spec in sorted(eligible, key=lambda s: (counts[s.id], -s.priority)):
+        for spec in sorted(eligible,
+                           key=lambda s: (counts[s.id] / s.share, -s.priority)):
             if replicas is not None and counts[spec.id] >= replicas:
                 continue
             used = {p.node_id for p in plan_.placements if p.model_id == spec.id}
             seatable = {
                 n.node_id: _fit_sessions(spec, n, free[n.node_id],
                                           card_capacity[n.node_id])
-                for n in nodes
+                for n in _eligible(spec, nodes, head)
                 if n.node_id not in used and _carries(n, spec)
             }
             candidates = [n for n in nodes if seatable.get(n.node_id) is not None]

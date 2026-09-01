@@ -23,10 +23,6 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 MODELS_YAML = Path(__file__).resolve().parent / "models.yaml"
 ENV_FILE = PROJECT_DIR / ".env"
 
-#: Node capacity held by the resident transcription backend, subtracted before
-#: packing. Charged only to nodes whose probe answered.
-WHISPER_RESERVE_BYTES = 6 * GB
-
 
 def _env(key: str, default: str = "") -> str:
     try:
@@ -63,6 +59,18 @@ def _remote_workdir() -> str:
 def _resolve_hosts(arg: Optional[str]) -> dict[str, str]:
     hosts = _csv(arg) if arg else _csv(_env("NODES_VLLM"))
     return {inventory.node_id_from_host(h): h for h in hosts}
+
+
+def _head_node(hosts: dict[str, str]) -> Optional[str]:
+    """Node id of the head node — the first target in NODES_VLLM.
+
+    Declared order, not probe order: reading it off the probe results would make
+    which SSH answered first decide where a 78 GiB model lives.
+
+    None for a cluster of one node, which has no pool for ``placement`` to keep
+    anything out of.
+    """
+    return next(iter(hosts), None) if len(hosts) > 1 else None
 
 
 def _load_specs(arg: Optional[str]) -> list[registry.ModelSpec]:
@@ -105,14 +113,6 @@ def _bind(specs, probes, models_root: str):
             continue
         bound.append(spec.bind(metadata, native))
     return bound, failed
-
-
-def _reservations(probes) -> dict[str, int]:
-    """Bytes reserved per node: subtract the transcription backend where it runs."""
-    return {
-        p.spec.node_id: WHISPER_RESERVE_BYTES
-        for p in probes if p.whisper_running
-    }
 
 
 def _services(specs) -> dict[str, int]:
@@ -174,23 +174,26 @@ def _build_plan(args):
     hosts = _resolve_hosts(args.hosts)
     probes = _probe(hosts, specs)
     if not probes:
-        return None, None, None
+        return None, None, None, None
     bound, failed = _bind(specs, probes, _env("VLLM_MODELS_ROOT", "/var/lib/vllm/models"))
     nodes = [p.spec for p in probes if p.alive]
+    head = _head_node(hosts)
     result = planner.plan(
         bound, nodes,
-        reserved=_reservations(probes),
         replicas=args.replicas,
         deployed=_deployed(probes, bound),
+        head=head,
     )
     for model_id, reason in failed:
         result.delegations.append(planner.Delegation(model_id, reason))
-    return result, probes, bound
+    return result, probes, bound, head
 
 
-def _print_plan(result) -> None:
+def _print_plan(result, head: Optional[str] = None) -> None:
     if result.placements:
-        print("Placements")
+        # Which node is the head is a placement input, and every "why is it
+        # there" question starts with it.
+        print("Placements" + (f"   head node: {head}" if head else ""))
         for p in sorted(result.placements, key=lambda x: (x.node_id, x.model_id)):
             # Cards and TP width only when they say something: on the common
             # single-card node "gpu 0, TP 1" is noise in every row.
@@ -214,18 +217,18 @@ def _print_plan(result) -> None:
 
 
 def cmd_plan(args) -> int:
-    result, _, _ = _build_plan(args)
+    result, _, _, head = _build_plan(args)
     if result is None:
         return 1
-    _print_plan(result)
+    _print_plan(result, head)
     return 0
 
 
 def cmd_apply(args) -> int:
-    result, probes, bound = _build_plan(args)
+    result, probes, bound, head = _build_plan(args)
     if result is None:
         return 1
-    _print_plan(result)
+    _print_plan(result, head)
 
     current = {p.spec.node_id: set(p.running_containers) for p in probes}
     change = applier.compute_diff(
@@ -233,8 +236,6 @@ def cmd_apply(args) -> int:
         nodes=[p.spec for p in probes if p.alive],
         layout=applier.RemoteLayout(workdir=_remote_workdir()),
         local_env_path=str(ENV_FILE),
-        # Probed backends only — an empty result routes STT to OpenRouter
-        stt_hosts=[p.spec.hostname for p in probes if p.whisper_running],
         # The whole catalogue, so a model dropped from VLLM_MODELS has its URL
         # cleared rather than left pointing at a container that is now stopped
         known=registry.load(MODELS_YAML),

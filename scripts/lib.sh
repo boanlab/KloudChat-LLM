@@ -283,6 +283,9 @@ declare -A VLLM_MODELS=(
   [bge-m3]="BAAI/bge-m3"
   # Retrieval reranking, second stage over what the embeddings return.
   [bge-reranker-v2-m3]="BAAI/bge-reranker-v2-m3"
+  # Transcription. FP16, so every card in this catalogue serves it — including
+  # the aarch64 nodes, where a ctranslate2 backend could only use the CPU.
+  [whisper-large-v3]="openai/whisper-large-v3"
 )
 : "${VLLM_MODELS_ROOT:=/var/lib/vllm/models}"
 
@@ -305,6 +308,7 @@ declare -A VLLM_MODEL_WEIGHT_GB=(
   [qwen3.6-27b]=21
   [bge-m3]=3
   [bge-reranker-v2-m3]=3
+  [whisper-large-v3]=4
 )
 declare -A VLLM_MODEL_QUANT=(
   [qwen3.6-35b-nvfp4]=nvfp4
@@ -321,6 +325,7 @@ declare -A VLLM_MODEL_QUANT=(
   # BF16 — every card that can run the lineup can run this.
   [bge-m3]=bf16
   [bge-reranker-v2-m3]=bf16
+  [whisper-large-v3]=fp16
 )
 # Runtime headroom on top of the weights: activation buffers plus enough KV to
 # admit one request. A card that fits only the weights cannot start the engine.
@@ -714,6 +719,23 @@ vllm_union_node_models() {
   done
 }
 
+# Whether any URL in a CSV is a vLLM that answers.
+#
+# "A backend was placed" and "a backend is serving" are different facts, and only
+# the URL records the first: the scheduler writes it from the plan, so a
+# container that failed to start still has one. Anything choosing between a local
+# backend and an external fallback has to ask this instead.
+vllm_any_url_alive() {
+  local csv="$1" u
+  [[ -n "$csv" ]] || return 1
+  local IFS=,
+  for u in $csv; do
+    [[ -n "$u" ]] || continue
+    [[ -n "$(__vllm_node_models "$u")" ]] && return 0
+  done
+  return 1
+}
+
 # State of a single URL — the unit decision for the readiness wait.
 #   0 = ready   (/v1/models 200 + at least 1 model)
 #   1 = loading (TCP responds but HTTP not ready — model loading / 503 / empty model list)
@@ -1032,9 +1054,16 @@ rsync_push() {
 
 # Seed a node's .env only when it has none, so applier-written placement values
 # survive. Paired with rsync_push, which skips .env.
+#
+# The path is relative: ssh_run has already cd'd into KLOUDCHAT_REMOTE_DIR, so
+# naming the directory again tests a path one level deeper than any node has.
+# That test cannot pass, and a guard that never holds seeds over the node's .env
+# every run — which drops the per-model MAX_LEN and GPU_UTIL the applier wrote,
+# leaves every option looking changed, and force-recreates every model on the
+# node. Twenty minutes of weight loading for a file that was already correct.
 rsync_push_env_if_absent() {
   local host="$1"
-  if ssh_run "$host" "test -f '${KLOUDCHAT_REMOTE_DIR}/.env'" 2>/dev/null; then
+  if ssh_run "$host" "test -f .env" 2>/dev/null; then
     echo "  → ${host}: .env exists, keeping node-local overrides"
     return 0
   fi

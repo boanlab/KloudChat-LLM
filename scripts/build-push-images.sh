@@ -9,7 +9,6 @@
 #   SERVICE...      Target only specific image short-names (multiple OK). All if omitted.
 #                   Available: crawl4ai-shim, whisper-shim, code-interpreter,
 #                   deep-research, index-shim
-#                   amd64-only (only when explicitly selected, excluded from 'build all'): whisper
 #   --no-push       build only (local use).
 #   --push-only     skip build, push local images only.
 #   --multi-arch    Build linux/amd64,linux/arm64 simultaneously (buildx) → push. For mixed-node
@@ -17,8 +16,13 @@
 #   --ns NS         Override namespace (default KLOUDCHAT_IMAGE_NS=boanlab from .env).
 #   --tag TAG       Override tag (default KLOUDCHAT_IMAGE_TAG=latest from .env).
 #
+# Normally nobody runs this: .github/workflows/publish-images.yml builds and pushes
+# an image whenever its service directory changes on main, and setup.sh pulls what
+# is published. This is the manual path — a one-off republish, or a namespace of
+# your own.
+#
 # Prereq: to push to Docker Hub, run `docker login` first. Guidance shown on failure if no push permission.
-# Local build only (no push): build-push-images.sh --no-push  (setup.sh always pulls → overwrites the local copy)
+# Local build only (no push): build-push-images.sh --no-push  (setup.sh pulls unless given --build)
 # Re-deploy multi-arch for a single image: build-push-images.sh --multi-arch whisper-shim
 set -euo pipefail
 
@@ -35,13 +39,6 @@ BUILD_TABLE=(
   "code-interpreter|services/code-interpreter/Dockerfile|services/code-interpreter"
   "deep-research|services/deep-research/Dockerfile|services/deep-research"
   "index-shim|services/index-shim/Dockerfile|services/index-shim"
-)
-
-# GPU media backends (amd64-only — arm64 delegates STT to OpenRouter), built only on explicit
-# selection. Force platform linux/amd64 (won't attempt arm64 even with
-# --multi-arch).
-MEDIA_TABLE=(
-  "whisper|services/whisper/Dockerfile|services/whisper|linux/amd64"
 )
 
 NS=""; TAG=""; DO_BUILD=1; DO_PUSH=1; MULTI=0; SELECTED=()
@@ -63,18 +60,17 @@ NS="${NS:-$(env_get KLOUDCHAT_IMAGE_NS 2>/dev/null || true)}"; NS="${NS:-boanlab
 TAG="${TAG:-$(env_get KLOUDCHAT_IMAGE_TAG 2>/dev/null || true)}"; TAG="${TAG:-latest}"
 img_of() { echo "${NS}/kloudchat-${1}:${TAG}"; }
 
-# If SERVICE args are given, narrow to those short-names (otherwise the whole
-# BUILD_TABLE — excluding MEDIA). Explicit selection searches both BUILD_TABLE +
-# MEDIA_TABLE. Nonexistent names are rejected.
+# If SERVICE args are given, narrow to those short-names; otherwise the whole
+# BUILD_TABLE. Nonexistent names are rejected.
 if (( ${#SELECTED[@]} )); then
   _filtered=()
   for want in "${SELECTED[@]}"; do
     _hit=0
-    for e in "${BUILD_TABLE[@]}" "${MEDIA_TABLE[@]}"; do
+    for e in "${BUILD_TABLE[@]}"; do
       IFS='|' read -r s _ <<<"$e"
       [[ "$s" == "$want" ]] && { _filtered+=("$e"); _hit=1; break; }
     done
-    (( _hit )) || { err "unknown image: '$want' (available: $(for e in "${BUILD_TABLE[@]}" "${MEDIA_TABLE[@]}"; do IFS='|' read -r s _ <<<"$e"; printf '%s ' "$s"; done))"; exit 2; }
+    (( _hit )) || { err "unknown image: '$want' (available: $(for e in "${BUILD_TABLE[@]}"; do IFS='|' read -r s _ <<<"$e"; printf '%s ' "$s"; done))"; exit 2; }
   done
   BUILD_TABLE=("${_filtered[@]}")
 fi
@@ -92,7 +88,7 @@ if (( MULTI )); then
   PLAT="linux/amd64,linux/arm64"
   for e in "${BUILD_TABLE[@]}"; do
     IFS='|' read -r short df ctx plat <<<"$e"; img="$(img_of "$short")"
-    platforms="${plat:-$PLAT}"   # if the entry specifies a platform (amd64-only media), only that.
+    platforms="${plat:-$PLAT}"   # an entry that names a platform is built only for that one.
     hdr "buildx ${img}  [${platforms}]"
     docker buildx build --builder kloudchat-builder --platform "$platforms" \
       -t "$img" -f "$df" --push "$ctx"
@@ -106,7 +102,7 @@ if (( DO_BUILD )); then
   host_plat="linux/$(detect_arch)"
   for e in "${BUILD_TABLE[@]}"; do
     IFS='|' read -r short df ctx plat <<<"$e"; img="$(img_of "$short")"
-    # Platform-forced (amd64-only media) entries are built only when the host arch matches.
+    # A platform-forced entry is built only when the host arch matches.
     if [[ -n "$plat" && "$plat" != *"$host_plat"* ]]; then
       warn "$short is ${plat}-only — can't build on host (${host_plat}), skipping (run on an amd64 node)"
       continue
@@ -123,7 +119,7 @@ if (( DO_PUSH )); then
   host_plat="linux/$(detect_arch)"
   for e in "${BUILD_TABLE[@]}"; do
     IFS='|' read -r short _ _ plat <<<"$e"; img="$(img_of "$short")"
-    # Same guard as the build loop — platform-forced entries not buildable on the host arch are also skipped for push.
+    # Same guard as the build loop: no host artifact, nothing to push.
     if [[ -n "$plat" && "$plat" != *"$host_plat"* ]]; then
       warn "$short is ${plat}-only — no host (${host_plat}) build artifact, skipping push"
       continue

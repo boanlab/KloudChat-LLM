@@ -15,7 +15,7 @@ the only values a human fills in are external keys and node addresses.
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | token | Hugging Face gated repositories. Used only for weight downloads |
-| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. Empty means no local models. Each node runs vLLM and, on amd64, transcription — this is the only node list |
+| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. Empty means no local models. This is the only node list. **Order matters**: the first target is the head node, which holds default chat, retrieval and transcription; the rest are the pool, which holds the large picker models ([models.md](models.md#where-models-are-defined)) |
 | `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml` |
 
 `setup.sh` refuses to continue unless at least one of `OPENROUTER_API_KEY` or a
@@ -26,7 +26,7 @@ vLLM node is present.
 | Variable | Default | Notes |
 |---|---|---|
 | `GATEWAY_PORT` | `8080` | The only published port |
-| `COMPOSE_PROFILES` | `tools,models` | What to run. `setup.sh` appends `whisper` (the transcription shim) once a backend answers. Add `index` for the retrieval index |
+| `COMPOSE_PROFILES` | `tools,models` | What to run. `setup.sh` appends `whisper` (the transcription shim) once the transcription model is placed. Add `index` for the retrieval index |
 | `INDEX_DB_USER` | `index` | Owner role of the retrieval index's pgvector database. Its password is a generated secret — see below |
 | `INDEX_EMBED_MODELS` | `local/bge-m3,text-embedding-3-small` | Embedding preference order, tried through LiteLLM by name |
 
@@ -56,7 +56,7 @@ Do not set these by hand. The placement step of `setup.sh all` writes them.
 | `VLLM_<MODEL>_URL` | CSV of node addresses serving that model |
 | `VLLM_<MODEL>_MAX_LEN` | Context decided for it |
 | `VLLM_<MODEL>_GPU_UTIL` | `--gpu-memory-utilization` decided for it |
-| `WHISPER_URLS` | CSV of nodes whose transcription backend answered. Empty means STT goes to OpenRouter |
+| `WHISPER_URLS` | CSV of the nodes the transcription model was placed on, written by the placement step. STT goes to OpenRouter when none of them answers — placed is not the same as serving |
 
 The prefix (`VLLM_QWEN35B` and so on) is the `env_prefix` in
 `scheduler/models.yaml`.
@@ -69,6 +69,11 @@ To manage them yourself, set `KLOUDCHAT_SKIP_SCHEDULER=1` and fill in the values
 |---|---|---|
 | `KLOUDCHAT_IMAGE_NS` | `boanlab` | Images are pulled and pushed as `<NS>/kloudchat-*` |
 | `KLOUDCHAT_IMAGE_TAG` | `latest` | |
+
+`setup.sh` **pulls** these; it does not build them. The `Publish images` workflow
+builds and pushes an image whenever its service directory changes on main, so a
+deployment tracking main gets it by pulling. `setup.sh all --build` runs the
+working tree's own images instead — for an edit that is not merged yet.
 
 To publish to a different registry, change the namespace and use
 `./scripts/build-push-images.sh` (or the `Publish images` workflow).
@@ -106,23 +111,21 @@ Where the defaults come from, and how they relate to the placement step, is in
 
 | Variable | Default | Notes |
 |---|---|---|
-| `DEEP_RESEARCH_MODEL` | `local/qwen3.6-35b` | Model used for iterative search. Needs the 128K floor the scheduler reserves on it |
+| `DEEP_RESEARCH_MODEL` | `local/qwen3.5-122b-a10b` | Model used for iterative search. Needs the 128K floor the scheduler reserves on it, and takes a pool node's KV pool for the length of a run |
 | `DEEP_RESEARCH_LLM_URL` | `http://litellm:8000/v1` | LiteLLM on the same network |
 
 ## 9. Transcription
 
-Runs on amd64 GPU nodes — `install-vllm.sh` installs it alongside vLLM, and the
-planner subtracts 6 GiB per node for it. arm64 nodes do not install it and
-delegate STT to OpenRouter, so these values go unused there.
+`openai/whisper-large-v3` on vLLM, placed like any other model — on any
+architecture, and with `MAX_LEN` and `GPU_UTIL` written by the placement step.
+Add `whisper-large-v3` to `VLLM_MODELS` to deploy it.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `WHISPER_MODEL` | `large-v3` | |
-| `WHISPER_DEVICE` | `auto` | GPU when CUDA is available |
-| `WHISPER_COMPUTE_TYPE` | `float16` | `int8` on low-VRAM nodes |
-| `WHISPER_PORT` | `9000` | Backend port on the node |
-| `WHISPER_DATA_ROOT` | `/var/lib/whisper` | Weight cache, so weights are downloaded once |
+| `VLLM_WHISPER_DIR` | `whisper-large-v3` | Checkpoint directory under `VLLM_MODELS_ROOT` |
+| `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling. vLLM defaults to 25, which rejects an hour of m4a |
 | `TRANSCRIBE_TIMEOUT_SEC` | `3600` | Headroom for long meeting recordings |
+| `WHISPER_MODEL_NAME` | `local/whisper-large-v3` | The name the shim puts on every forwarded request. Must be one of `vllm-whisper`'s `--served-model-name` values |
 
 ## Shell-only variables
 
