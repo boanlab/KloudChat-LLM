@@ -72,10 +72,16 @@ SEARXNG_SECRET_KEY="$(grep -E '^SEARXNG_SECRET_KEY=' "$ENV_FILE" | tail -n1 | cu
 # The secret is gen-env.sh's openssl rand -hex output so it's [0-9a-f] only — no collision.
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-sed "s|${SENTINEL}|${SEARXNG_SECRET_KEY}|" "$CONFIG_EXAMPLE" > "$tmp"
+# The secret_key line only. The sentinel is named in the comment above it as
+# well, and substituting there writes the secret into a second place and leaves
+# the comment describing a name that no longer appears in the file.
+sed "/^[[:space:]]*secret_key:/ s|${SENTINEL}|${SEARXNG_SECRET_KEY}|" "$CONFIG_EXAMPLE" > "$tmp"
 
-if grep -qF "$SENTINEL" "$tmp"; then
-  err "sentinel substitution failed — check the $SENTINEL format in .example."
+# Assert the result rather than the absence of the sentinel: a .example that
+# lost its secret_key line entirely would pass an absence check and ship a
+# SearXNG with no secret at all.
+if ! grep -qE "^[[:space:]]*secret_key: \"?${SEARXNG_SECRET_KEY}\"?[[:space:]]*$" "$tmp"; then
+  err "secret_key was not substituted — check the ${SENTINEL} line in .example."
   exit 1
 fi
 mv "$tmp" "$CONFIG_FILE"

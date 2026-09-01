@@ -167,13 +167,34 @@ step_wait_gateway() {
 # The gateway can answer while the services behind it are still starting. Printing
 # the URL table in that window shows everything as "not started", which reads as a
 # broken deployment when it is a healthy one.
+# Capabilities behind the gateway: "<name>|<public path>|<probe>|<blocking>".
+#
+# One list, because the readiness wait and the status table have to agree. They
+# did not: the wait omitted deep research, declared every capability responding
+# while it was still booting, and the table printed "not started" for it two
+# lines later — pointing at COMPOSE_PROFILES, which was not the problem.
+#
+# blocking=0 for transcription alone. Its shim is fenced behind the `whisper`
+# profile, so a deployment with no GPU node has none, and holding the wait open
+# for it would spend the whole timeout on every run.
+CAPABILITIES=(
+  "LiteLLM|/litellm|/litellm/health/liveliness|1"
+  "Web search|/tools/search|/tools/search/healthz|1"
+  "Document fetch|/tools/fetch|/tools/fetch/health|1"
+  "Code execution|/tools/exec|/tools/exec/health|1"
+  "Deep research|/tools/research|/tools/research/mcp|1"
+  "Transcription|/tools/stt|/tools/stt/health|0"
+)
+
 step_wait_services() {
   hdr "5. Waiting for services"
   local max="${KLOUDCHAT_SERVICE_WAIT:-180}" step=5 elapsed pending
   for elapsed in $(seq 0 "$step" "$max"); do
     pending=0
-    local probe
-    for probe in /litellm/health/liveliness /tools/search/healthz /tools/fetch/health /tools/exec/health; do
+    local spec probe blocking
+    for spec in "${CAPABILITIES[@]}"; do
+      IFS='|' read -r _ _ probe blocking <<<"$spec"
+      [[ "$blocking" == 1 ]] || continue
       local code; code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:${GATEWAY_PORT}${probe}" 2>/dev/null || echo 000)
       [[ "$code" == "502" || "$code" == "503" || "$code" == "000" ]] && pending=$((pending+1))
     done
@@ -202,16 +223,8 @@ role_urls() {
   echo
   printf "  %-46s %-18s %s\n" "URL" "CAPABILITY" "STATUS"
   local name path probe
-  for spec in \
-    "LiteLLM:/litellm:/litellm/health/liveliness" \
-    "Web search:/tools/search:/tools/search/healthz" \
-    "Document fetch:/tools/fetch:/tools/fetch/health" \
-    "Code execution:/tools/exec:/tools/exec/health" \
-    "Deep research:/tools/research:/tools/research/mcp" \
-    "Transcription:/tools/stt:/tools/stt/health"
-  do
-    name="${spec%%:*}"; local rest="${spec#*:}"
-    path="${rest%%:*}"; probe="${rest#*:}"
+  for spec in "${CAPABILITIES[@]}"; do
+    IFS='|' read -r name path probe _ <<<"$spec"
     local code; code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "${base}${probe}" 2>/dev/null || echo 000)
     local status
     case "$code" in
