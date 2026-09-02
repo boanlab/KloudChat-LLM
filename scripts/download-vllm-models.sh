@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 # Usage: download-vllm-models.sh [alias|all|recommended] [...]
 #
-# Downloads the weights a GPU node will serve, after checking the card: FP4
-# capability and usable memory. Weights this node could not serve are skipped
-# with the reason rather than discovered at engine startup.
+# Downloads weights after checking the card (compute capability, usable memory).
+# Weights this node cannot serve are skipped with the reason.
 #
-# With no arguments: the recommended set for this card (same as `recommended`).
+# No arguments: `recommended whisper-large-v3`.
 #
 # Aliases (lib.sh::VLLM_MODELS):
-#   qwen3.6-35b-nvfp4  unsloth/Qwen3.6-35B-A3B-NVFP4          21 GB (chat: vision + 262K + coding)
-#   qwen3.6-35b        Qwen/Qwen3.6-35B-A3B                   35 GB (fp8 — older engines)
-#   glm-4.7-flash      unsloth/GLM-4.7-Flash-NVFP4            20 GB (cheap-decode floor, A3B)
-#   qwen3.5-122b-a10b  Qwen/Qwen3.5-122B-A10B-NVFP4           78 GB (top chat — needs the card to itself)
-#   gemma-4-26b-a4b    google/gemma-4-26B-A4B-it              16 GB (second family — vision, tools)
-#   qwen3-coder-30b    Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8  33 GB (coding; FP8, so no FP4 needed)
-#   qwen3.6-27b        Qwen/Qwen3.6-27B                       21 GB (the one dense model)
-#   whisper-large-v3   openai/whisper-large-v3                 4 GB (transcription, any card)
+#   qwen3.6-35b-nvfp4   unsloth/Qwen3.6-35B-A3B-NVFP4          21 GB  chat (default)
+#   qwen3.6-35b         Qwen/Qwen3.6-35B-A3B                   35 GB  chat, FP8
+#   qwen3.6-35b-awq     QuantTrio/Qwen3.6-35B-A3B-AWQ          26 GB  chat, int4 (cards without FP4)
+#   qwen3.5-122b-a10b   Qwen/Qwen3.5-122B-A10B-NVFP4           78 GB  top chat
+#   qwen3-coder-next    Qwen/Qwen3-Coder-Next-FP8              75 GB  coding
+#   qwen3-coder-30b     Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8  33 GB  coding
+#   qwen3.6-27b         Qwen/Qwen3.6-27B                       21 GB  dense chat
+#   bge-m3 / bge-reranker-v2-m3                                 3 GB  retrieval
+#   whisper-large-v3    openai/whisper-large-v3                 4 GB  transcription
 #
 # Special:
-#   recommended       what this card can serve and fit together (same as no args)
-#   all               every alias above, minus anything unservable here
+#   recommended       what this card can serve and fit together
+#   all               every alias, minus anything unservable here
 #
 # Env:
 #   HF_TOKEN          auto-loaded from .env (for gated models)
@@ -29,9 +29,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
-# What this card can execute, limited to what fits on it together. Derived from
-# measured compute capability and usable memory rather than a GPU-class table, so
-# an unlisted card still gets a verdict.
+# VLLM_PREFERRED_MODELS filtered to what this card can execute and fit together.
 recommended_vllm_set() {
   local alias weight used=0 budget out=()
   budget="$(gpu_usable_vram_gb)"
@@ -44,14 +42,12 @@ recommended_vllm_set() {
   echo "${out[*]:-}"
 }
 
-# One line of card specifications, so the chosen set is self-explanatory.
 describe_gpu() {
   has_nvidia_gpu || { echo "no GPU"; return; }
   local cap; cap="$(gpu_compute_cap)"
   echo "$(get_gpu_name) · ${cap:+compute ${cap} · }$(gpu_usable_vram_gb)GiB usable"
 }
 
-# Header comment only, so --help stays usage rather than design notes.
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'
   exit 0
@@ -67,7 +63,7 @@ mkdir -p "$VLLM_MODELS_ROOT"
 
 hdr "GPU: $(describe_gpu)"
 
-# Filter by servability, printing the reason. Nothing is dropped silently.
+# Servability filter; skips print the reason.
 add_target() {
   local alias="$1" reason
   if reason="$(vllm_model_unservable_reason "$alias")"; then
@@ -77,8 +73,6 @@ add_target() {
   fi
 }
 
-# No arguments: the recommended set for this card, plus transcription — 4 GB on
-# any card, and without it the microphone is an OpenRouter call.
 if [[ $# -eq 0 ]]; then
   set -- recommended whisper-large-v3
 fi
@@ -93,8 +87,6 @@ while [[ $# -gt 0 ]]; do
       for a in $r; do TARGETS+=("$a"); done
       ;;
     all)
-      # The whole catalogue, including both quantisations of the chat model.
-      # add_target drops whatever this node cannot serve.
       for a in "${!VLLM_MODELS[@]}"; do add_target "$a"; done ;;
     *)
       [[ -n "${VLLM_MODELS[$1]:-}" ]] || { err "Unknown alias: $1"; exit 1; }
@@ -112,19 +104,10 @@ pull_one() {
     ok "already downloaded ($(du -sh "$dest" | cut -f1)) — to re-download, delete the directory and re-run"
     return 0
   fi
-  # hf_xet: Xet-backed repos refuse plain HTTP downloads ("file too large").
-  # Legacy repos still use HTTP with it installed.
-  #
-  # One pattern per flag: `hf download` takes a single value for --exclude, and
-  # the extra patterns are read as positional arguments, which mean "download
-  # only these files". Written as one flag with a list it fetched nothing at all
-  # and said "Downloaded" while doing it.
-  #
-  # Alternative serialisations are skipped. A repo may ship the same weights four
-  # ways — safetensors, a flax msgpack, a pickled .bin, an fp32 copy — and vLLM
-  # reads exactly one of them: whisper-large-v3 is 24.7 GB whole and 3.1 GB as
-  # the shards that get loaded. Downloading the rest costs disk and, worse,
-  # inflates what the scheduler measures the model to weigh.
+  # hf_xet: Xet-backed repos refuse plain HTTP. One --exclude per pattern (a
+  # list is read as positional filters). Alternative serialisations are
+  # excluded: vLLM loads only the safetensors, and extra files inflate what the
+  # scheduler measures the model to weigh.
   HF_TOKEN="$HF_TOKEN" \
   HF_HUB_DOWNLOAD_TIMEOUT=180 \
   uv tool run --from "huggingface_hub[hf_xet]" hf download \
@@ -132,25 +115,20 @@ pull_one() {
     --exclude "*.msgpack" --exclude "*.h5" --exclude "*.ot" --exclude "*.tflite" \
     --exclude "*fp32*" --exclude "*.pth" --exclude "*.gguf" --exclude "ggml*" \
     --exclude "coreml/*" --exclude "openvino/*" --exclude "onnx/*"
-  # .bin only when there is no safetensors alternative: some repos ship only it.
+  # .bin only where a repo ships nothing else
   if compgen -G "$dest/*.safetensors" >/dev/null; then
     rm -f "$dest"/*.bin "$dest"/pytorch_model*.bin 2>/dev/null || true
   fi
-  # `|| true`: with no safetensors the glob does not expand, du exits non-zero,
-  # and under `set -e` a bare assignment from a failed substitution aborts the
-  # script — silently, right after saying "Downloaded".
   local loadable
   loadable="$(du -cb "$dest"/*.safetensors 2>/dev/null | tail -1 | cut -f1 || true)"
   if [[ "${loadable:-0}" =~ ^[0-9]+$ ]] && (( loadable > 0 )); then
     ok "received $(du -sh "$dest" | cut -f1), $(awk -v b="$loadable" 'BEGIN{printf "%.1fGB", b/1024/1024/1024}') of it safetensors"
   else
-    # Older repos ship pytorch_model.bin and nothing else; the whole directory is
-    # what gets loaded, which is also what measure_weight_bytes falls back to.
     ok "received $(du -sh "$dest" | cut -f1)"
   fi
 }
 
-if (( ${#TARGETS[@]} == 0 )) && (( WANT_WHISPER == 0 )); then
+if (( ${#TARGETS[@]} == 0 )); then
   err "nothing to download — this card cannot serve the requested models ($(describe_gpu))"
   exit 1
 fi

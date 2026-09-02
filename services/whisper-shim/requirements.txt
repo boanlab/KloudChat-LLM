@@ -1,5 +1,5 @@
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 httpx==0.27.2
-# Reading the upload's form fields, to name the model the backend serves
+# multipart form parsing
 python-multipart==0.0.20

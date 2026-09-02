@@ -1,5 +1,5 @@
-# The only externally exposed entry point. Strips the path prefix and forwards to
-# each service's root.
+# The only published entry point. Strips the path prefix and forwards to each
+# service's root.
 #
 #   /litellm/*         → litellm root       (admin API included, Authorization passed through)
 #   /tools/index/*     → index-shim         (RAG: chunk, embed, store, search)
@@ -10,8 +10,8 @@
 #   /tools/research/*  → deep-research      (MCP streamable-http)
 #   /tools/stt/*       → whisper-shim
 #
-# /tools/* is unauthenticated and assumes a private network. Internal service keys
-# are injected here and never leave the gateway.
+# /tools/* is unauthenticated and assumes a private network. Service keys are
+# injected here and never reach clients.
 {
 	admin off
 	auto_https off
@@ -27,17 +27,15 @@
 		respond `{"status":"ok"}` 200
 	}
 
-	# LiteLLM's root. Its admin API (/key/*, /user/*, /model/info, /health/*) does
-	# not live under /v1, so the service root is exposed as-is. LiteLLM itself
-	# authenticates with the master key.
+	# LiteLLM root: admin API and UI, authenticated by LiteLLM with the master key
 	handle_path /litellm* {
 		reverse_proxy litellm:8000 {
-			# Forward streamed responses immediately
+			# Streamed responses forwarded immediately
 			flush_interval -1
 		}
 	}
 
-	# The path for OpenAI-compatible clients connecting directly
+	# OpenAI-compatible clients
 	handle /v1/* {
 		reverse_proxy litellm:8000 {
 			flush_interval -1

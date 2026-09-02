@@ -1,10 +1,4 @@
-"""What the GPU-node compose file must not say.
-
-Runtime facts that a unit test can still hold onto. The device-visibility one is
-here because getting it wrong took a production model down: `CUDA_VISIBLE_DEVICES=0`
-fails engine init on GB10 with `cudaErrorNotPermitted`, on a device that runs
-fine when the variable is simply absent.
-"""
+"""Invariants of the GPU-node compose file."""
 
 from __future__ import annotations
 
@@ -25,13 +19,7 @@ def services() -> dict:
 
 
 def test_every_model_in_the_catalogue_has_a_service_here(services: dict) -> None:
-    """The catalogue says a model can be served; this file says how.
-
-    The applier runs `docker compose up -d <service>` on the name models.yaml
-    derives, so a catalogue entry with no service here is a placement that fails
-    on the node with "no such service" — after the plan has already claimed the
-    card for it.
-    """
+    """Every models.yaml entry has the compose service the applier will start."""
     from scheduler import registry
 
     for spec in registry.load(MODELS_YAML):
@@ -43,13 +31,7 @@ def test_every_model_in_the_catalogue_has_a_service_here(services: dict) -> None
 
 
 def test_devices_are_selected_through_the_runtime_variable(services: dict) -> None:
-    """NVIDIA_VISIBLE_DEVICES, never CUDA_VISIBLE_DEVICES.
-
-    Two reasons, and the second is the one that cost an outage. The runtime
-    variable has a safe "every card" value; the CUDA one has no way to say that,
-    and an empty value means *no* card — so a compose default cannot express
-    "leave it alone". And on GB10, setting the CUDA one at all fails engine init.
-    """
+    """NVIDIA_VISIBLE_DEVICES only: CUDA_VISIBLE_DEVICES has no "all" value and fails engine init on GB10."""
     for name, svc in services.items():
         env = svc.get("environment") or {}
         assert "CUDA_VISIBLE_DEVICES" not in env, (
@@ -59,7 +41,7 @@ def test_devices_are_selected_through_the_runtime_variable(services: dict) -> No
 
 
 def test_every_vllm_service_can_be_told_which_cards_to_use(services: dict) -> None:
-    """A multi-card node needs per-service pinning, or two models land on card 0."""
+    """Every vLLM service exposes NVIDIA_VISIBLE_DEVICES with an "all" default."""
     for name, svc in services.items():
         if not name.startswith("vllm-"):
             continue

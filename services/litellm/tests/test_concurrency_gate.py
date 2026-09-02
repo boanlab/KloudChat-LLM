@@ -368,12 +368,12 @@ def test_poll_cycle_scrapes_shared_multi_node_endpoints_once_and_in_parallel(
         "http://qwen-1:8000/metrics",
         "http://qwen-2:8000/metrics",
     ]
-    glm_urls = [
-        "http://glm-1:8000/metrics",
-        "http://glm-2:8000/metrics",
+    big_urls = [
+        "http://big-1:8000/metrics",
+        "http://big-2:8000/metrics",
     ]
     gate.gate = {
-        # Normal and strict aliases intentionally share the same deployments.
+        # Normal and strict aliases share deployments.
         "local/qwen3.6-35b": {
             "metrics": qwen_urls,
             "cap": 64,
@@ -385,18 +385,17 @@ def test_poll_cycle_scrapes_shared_multi_node_endpoints_once_and_in_parallel(
             "cap": 64,
             "mode": "reject",
         },
-        "strict-local/glm-4.7-flash": {
-            "metrics": glm_urls,
-            "cap": 64,
+        "strict-local/qwen3.5-122b-a10b": {
+            "metrics": big_urls,
+            "cap": 12,
             "mode": "reject",
         },
     }
     gate._saturated = {model: True for model in gate.gate}
     gate._last_success = {model: 0.0 for model in gate.gate}
 
-    # Sequential code cannot pass this barrier: all four unique scrapes must be
-    # in flight together. A duplicate normal/strict scrape would make one URL's
-    # call count exceed one.
+    # All four unique scrapes must be in flight together; a duplicate would
+    # push a URL's call count past one.
     barrier = gate_module.threading.Barrier(4)
     lock = gate_module.threading.Lock()
     calls: dict[str, int] = {}
@@ -410,7 +409,7 @@ def test_poll_cycle_scrapes_shared_multi_node_endpoints_once_and_in_parallel(
     monkeypatch.setattr(gate_module, "_scrape", slow_scrape)
     gate._poll_once()
 
-    assert calls == {url: 1 for url in sorted(qwen_urls + glm_urls)}
+    assert calls == {url: 1 for url in sorted(qwen_urls + big_urls)}
     assert all(saturated is False for saturated in gate._saturated.values())
     assert all(last_success > 0 for last_success in gate._last_success.values())
 

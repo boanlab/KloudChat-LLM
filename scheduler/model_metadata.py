@@ -1,15 +1,9 @@
-"""Resolve transformer architecture metadata for KV-cache sizing.
-
-Source of truth is the model's ``config.json``. We avoid taking a hard
-dependency on the ``transformers`` library (too heavy for a scheduling tool),
-parsing the file directly instead.
+"""Architecture metadata from a checkpoint's config.json, parsed without transformers.
 
 Lookup order:
-    1. Local disk cache:  ~/.cache/kloudchat-scheduler/models/<id>.json
-    2. Probe a node:      ssh <host> cat <models_root>/<dir>/config.json
-    3. (no online lookup — air-gapped clusters need pre-populated cache)
-
-The local cache is content-addressed by ``model_id`` (e.g. ``Qwen/Qwen3.6-35B-A3B``).
+    1. Local cache:  ~/.cache/kloudchat-scheduler/models/<id>.json
+    2. Node probe:   ssh <host> cat <models_root>/<dir>/config.json
+No online lookup.
 """
 
 from __future__ import annotations
@@ -46,7 +40,7 @@ def _store_local(model_id: str, blob: dict) -> None:
 
 
 def _probe_node(host: str, remote_path: str, timeout: int = 5) -> Optional[dict]:
-    """``ssh <host> cat <remote_path>`` — returns parsed JSON or None on any error."""
+    """``ssh <host> cat <remote_path>`` as JSON; None on any error."""
     try:
         result = subprocess.run(
             ["ssh", "-o", "StrictHostKeyChecking=no",
@@ -62,31 +56,21 @@ def _probe_node(host: str, remote_path: str, timeout: int = 5) -> Optional[dict]
 
 
 def _unwrap_text_config(cfg: dict) -> dict:
-    """Some multimodal Qwen variants nest the LLM config under ``text_config``.
-
-    We promote it to the top level so the rest of the parser stays uniform.
-    Quantization metadata typically remains at the outer level, so we preserve
-    it by merging (outer takes precedence except for keys we explicitly want
-    from text_config).
-    """
+    """Promote a nested ``text_config`` (multimodal checkpoints) to the top level; outer keys win."""
     inner = cfg.get("text_config")
     if not isinstance(inner, dict):
         return cfg
     merged = dict(cfg)
     for k, v in inner.items():
         merged.setdefault(k, v)
-    # text_config's dtype is the LLM dtype, prefer it if outer didn't set one
+    # text_config's dtype is the LLM dtype
     if "torch_dtype" not in merged and "dtype" in inner:
         merged["torch_dtype"] = inner["dtype"]
     return merged
 
 
 def _parse_dtype(cfg: dict) -> Dtype:
-    """Map config.json's torch_dtype + quantization_config to our Dtype enum.
-
-    Quantized checkpoints (FP8, NVFP4) override torch_dtype, which typically
-    still reads ``bfloat16`` for the unquantized linear layers.
-    """
+    """Dtype from quantization_config, falling back to torch_dtype."""
     qcfg = cfg.get("quantization_config") or {}
     method = (qcfg.get("quant_method") or "").lower()
     fmt = (qcfg.get("fmt") or "").lower()
@@ -95,11 +79,8 @@ def _parse_dtype(cfg: dict) -> Dtype:
     if "nvfp4" in method or "nvfp4" in fmt:
         return Dtype.NVFP4
 
-    # compressed-tensors / modelopt configs name the width in
-    # config_groups.*.weights.num_bits rather than quant_method. Without it the
-    # fall-through reads torch_dtype, still "bfloat16" on a quantised checkpoint,
-    # and over-estimates weights fourfold. Smallest width wins: mixed checkpoints
-    # keep a few layers wide, but the bulk drives the footprint.
+    # compressed-tensors / modelopt: width in config_groups.*.weights.num_bits.
+    # Smallest width wins — the bulk drives the footprint.
     widths = {
         int(g["weights"]["num_bits"])
         for g in (qcfg.get("config_groups") or {}).values()
@@ -118,18 +99,11 @@ def _parse_dtype(cfg: dict) -> Dtype:
 
 
 def _count_kv_bearing_layers(cfg: dict) -> int:
-    """Number of layers that scale KV cache linearly with sequence length.
+    """Layers whose KV grows with sequence length.
 
-    Pure-MHA / GQA transformers: every layer is KV-bearing.
-    Hybrid linear/full attention (Qwen3.6-35B-A3B, Jamba, Mamba-Hybrid): only the
-    ``full_attention`` layers grow KV with sequence length; linear-attention
-    layers keep a fixed-size state that we account for separately (and which
-    is negligible at the scales we plan for).
-
-    Two spellings of the same fact: an explicit ``layer_types`` list, or a
-    ``full_attention_interval`` stride. The stride is checked only alongside the
-    linear-attention keys, so an ordinary model that happens to carry the field
-    is not mistaken for a hybrid.
+    Hybrid models declare them as a ``layer_types`` list or a
+    ``full_attention_interval`` stride (only honoured alongside linear-attention
+    keys); every other model is all layers. Encoder-decoders count the decoder.
     """
     layer_types = cfg.get("layer_types")
     if isinstance(layer_types, list) and layer_types:
@@ -137,26 +111,15 @@ def _count_kv_bearing_layers(cfg: dict) -> int:
         if full > 0:
             return full
 
-    # Qwen3-Next states the same hybrid pattern as a stride instead of a list:
-    # every ``full_attention_interval``-th layer is full attention. Without this
-    # the whole family reads as pure-attention and its KV cost comes out 4x high,
-    # which rejects placements that fit.
     total = int(cfg.get("num_hidden_layers") or 0)
     interval = int(cfg.get("full_attention_interval") or 0)
     if total and interval > 1 and cfg.get("linear_key_head_dim"):
         return max(1, total // interval)
-    # An encoder-decoder caches on its decoder stack. The encoder runs once per
-    # clip and keeps nothing between decode steps.
     return total or int(cfg.get("decoder_layers") or 0)
 
 
 def _count_sliding_layers(cfg: dict) -> tuple[int, int]:
-    """(layer count, window) for sliding-window attention, or (0, 0).
-
-    Gemma interleaves five sliding layers per full one. They are not free — each
-    holds ``window`` tokens of KV per sequence — but their cost does not grow
-    with the context, so they are charged separately.
-    """
+    """(layer count, window) for sliding-window attention, or (0, 0)."""
     layer_types = cfg.get("layer_types")
     window = int(cfg.get("sliding_window") or 0)
     if not window or not isinstance(layer_types, list):
@@ -166,15 +129,7 @@ def _count_sliding_layers(cfg: dict) -> tuple[int, int]:
 
 
 def _resolve_kv_heads(cfg: dict) -> int:
-    """GQA-aware KV head count.
-
-    For grouped-query attention, ``num_key_value_heads`` is the number we
-    actually pay for in KV cache. For multi-head attention, it equals
-    ``num_attention_heads``.
-
-    An encoder-decoder config names neither: whisper writes
-    ``decoder_attention_heads``, and it is the decoder that holds the cache.
-    """
+    """KV head count: GQA heads, else attention heads, else the decoder's (whisper)."""
     return int(cfg.get("num_key_value_heads")
                or cfg.get("num_attention_heads")
                or cfg.get("decoder_attention_heads")
@@ -182,14 +137,7 @@ def _resolve_kv_heads(cfg: dict) -> int:
 
 
 def _resolve_kv_latent_dim(cfg: dict):
-    """MLA latent width per layer, or None for ordinary MHA/GQA models.
-
-    DeepSeek-style Multi-head Latent Attention compresses K and V into a single
-    ``kv_lora_rank`` vector and keeps the rotary slice (``qk_rope_head_dim``)
-    uncompressed alongside it. Both are cached once per layer, so the per-token
-    cost is ``L · (kv_lora_rank + qk_rope_head_dim)`` — no head fan-out, no factor
-    of two. Absence of ``kv_lora_rank`` means the model is not MLA.
-    """
+    """MLA latent width per layer (``kv_lora_rank + qk_rope_head_dim``), or None for MHA/GQA."""
     rank = cfg.get("kv_lora_rank")
     if not rank:
         return None
@@ -197,12 +145,7 @@ def _resolve_kv_latent_dim(cfg: dict):
 
 
 def _resolve_head_dim(cfg: dict) -> int:
-    """Width of one attention head.
-
-    ``d_model`` and ``decoder_attention_heads`` are the encoder-decoder spelling
-    of ``hidden_size`` and ``num_attention_heads``. Without them whisper reads as
-    a zero-width model, which sizes its KV cache at nothing.
-    """
+    """Head width; ``d_model`` / ``decoder_attention_heads`` are the encoder-decoder spelling."""
     if "head_dim" in cfg:
         return int(cfg["head_dim"])
     hidden = int(cfg.get("hidden_size") or cfg.get("d_model") or 0)
@@ -212,14 +155,10 @@ def _resolve_head_dim(cfg: dict) -> int:
 
 
 def _estimate_weight_bytes(cfg: dict, dtype: Dtype) -> int:
-    """Rough analytic weight size (used when on-disk size is unknown).
+    """Analytic weight size when the on-disk size is unknown.
 
-    Counts only the dominant tensors (embed + L × per-layer) — overhead from
-    LM head, layernorms, biases is ≤ 1% for the models in our catalog.
-
-    For MoE checkpoints (Qwen3.6-35B-A3B, GLM-4.7-Flash), ``num_experts`` × ``moe_intermediate_size``
-    replaces the dense FFN term; the planner does *not* assume any sparse-routing
-    activation discount (vLLM keeps all experts resident).
+    Dominant tensors only (embed + L × per-layer). MoE: all experts counted,
+    since vLLM keeps them resident.
     """
     L = int(cfg.get("num_hidden_layers") or 0)
     H = int(cfg.get("hidden_size") or 0)
@@ -242,17 +181,15 @@ def fetch(
     probe_path: Optional[str] = None,
     on_disk_weight_bytes: Optional[int] = None,
 ) -> ModelMetadata:
-    """Resolve metadata for ``model_id``.
+    """Metadata for ``model_id`` from the cache or a node probe.
 
     Args:
-        model_id: HuggingFace-style id (e.g. ``Qwen/Qwen3.6-35B-A3B``).
-        probe_host: ssh target if local cache misses (optional).
-        probe_path: remote path to config.json (required if probing).
-        on_disk_weight_bytes: actual checkpoint size if known (overrides the
-            analytic estimate, which is approximate).
+        probe_host: ssh target on a cache miss.
+        probe_path: remote path to config.json.
+        on_disk_weight_bytes: measured size, overriding the analytic estimate.
 
     Raises:
-        FileNotFoundError: cache miss and no probe target / probe failed.
+        FileNotFoundError: cache miss and no probe target, or probe failed.
     """
     cfg = _load_local(model_id)
     if cfg is None and probe_host and probe_path:
@@ -284,13 +221,7 @@ def fetch(
 
 
 def _resolve_native_ctx(cfg: dict) -> int:
-    """The maximum position declared by config.json — the native context.
-
-    ``max_target_positions`` is the encoder-decoder spelling, and it describes
-    the decoder: whisper's 448 tokens of transcript, not the 1500 frames of audio
-    the encoder reads. Audio past one clip is split server-side, so 448 is the
-    whole window vLLM is ever asked for.
-    """
+    """Native context from config.json; ``max_target_positions`` is the decoder's (whisper: 448)."""
     for key in ("max_position_embeddings", "max_sequence_length", "n_positions",
                 "max_target_positions"):
         value = cfg.get(key)
@@ -299,12 +230,8 @@ def _resolve_native_ctx(cfg: dict) -> int:
     return 0
 
 
-#: Weights vLLM actually loads, not everything the repository ships. A HuggingFace
-#: repo may carry the same model as safetensors, a flax msgpack, a pickled .bin
-#: and an fp32 copy — whisper-large-v3 measures 24.7 GB whole and 3.1 GB as the
-#: shards vLLM reads. Charging the directory would have the planner reserve eight
-#: times the model. `du` on the whole path is the fallback for a checkpoint that
-#: ships no safetensors at all.
+#: Size of the safetensors vLLM loads (excluding fp32 copies), not the whole
+#: directory; ``du`` fallback for checkpoints without safetensors.
 _WEIGHT_BYTES = r"""
 sum=$(find %(path)s -maxdepth 1 -name '*.safetensors' ! -name '*fp32*'         -printf '%%s
 ' 2>/dev/null | awk '{t+=$1} END {print t+0}')
@@ -313,8 +240,7 @@ if [ "${sum:-0}" -gt 0 ]; then echo "$sum"; else du -sb %(path)s 2>/dev/null | c
 
 
 def measure_weight_bytes(host: str, path: str) -> Optional[int]:
-    """Measured size of the weights vLLM will load; None on failure, which falls
-    back to an analytical estimate."""
+    """Measured weight size on the node; None on failure."""
     import subprocess
     try:
         r = subprocess.run(

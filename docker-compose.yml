@@ -1,15 +1,11 @@
-# KloudChat-LLM — the backend plane the UI attaches to by URL.
+# KloudChat-LLM backend plane. The gateway is the only published port; routing
+# is in services/gateway/Caddyfile.
 #
-# The gateway is the only externally published port; every other service exists
-# on the internal network only. Path routing lives in services/gateway/Caddyfile.
-#
-#   docker compose up -d            # COMPOSE_PROFILES in .env chooses the mix
-#
-# Profiles
-#   tools     gateway + web search, document fetch, code execution, deep research
+# Profiles (COMPOSE_PROFILES in .env)
+#   tools     gateway, web search, document fetch, code execution, deep research
 #   models    LiteLLM and its database
-#   whisper   transcription shim — setup.sh enables it once a backend answers
-# Compose project name, which Docker requires in lower case.
+#   whisper   transcription shim; setup.sh adds it once a backend is placed
+#   index     retrieval index (pgvector) and its shim
 name: kloudchat-llm
 
 services:
@@ -24,7 +20,7 @@ services:
     volumes:
       - ./services/gateway/Caddyfile:/etc/caddy/Caddyfile:ro
     environment:
-      # Internal keys injected upstream; they never leave the gateway
+      # Injected into upstream requests; never reach clients
       SCRAPER_API_KEY: ${SCRAPER_API_KEY:?the document fetch shim key is required}
       CODE_INTERPRETER_API_KEY: ${CODE_INTERPRETER_API_KEY:?the code execution API key is required}
     healthcheck:
@@ -63,7 +59,6 @@ services:
       litellm-db:
         condition: service_healthy
     volumes:
-      # :ro — a container-side rewrite would leave the host file root-owned
       - ./services/litellm/config.yaml:/app/config.yaml:ro
       - ./services/litellm/callbacks:/app/callbacks:ro
     command:
@@ -98,7 +93,7 @@ services:
     image: valkey/valkey:8-alpine
     profiles: [tools]
     restart: always
-    # SearXNG worker shared state; losing it on restart is harmless
+    # SearXNG shared state; ephemeral
     command: [valkey-server, --save, '', --appendonly, 'no']
     tmpfs: [/data]
     networks: [searxng-data]
@@ -112,7 +107,6 @@ services:
     environment:
       GRANIAN_WORKERS: '4'
     volumes:
-      # :ro — a container-side write would leave the host file root-owned
       - ./services/searxng:/etc/searxng:ro
     tmpfs: [/var/cache/searxng]
     networks: [kloudchat, searxng-data]
@@ -170,7 +164,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      # Warm-up window: a probe before MinIO binds 9000 must not count.
       start_period: 20s
     networks: [code-interpreter-data]
 
@@ -225,7 +218,7 @@ services:
       S3_BUCKET: ${CODE_INTERPRETER_MINIO_BUCKET:-code-interpreter}
       S3_REGION: us-east-1
       S3_SECURE: 'false'
-    # Isolated execution of user code; the only service with these privileges
+    # Sandbox for user code; the only service with these privileges
     cap_add: [SYS_ADMIN]
     security_opt:
       - apparmor:unconfined
@@ -239,7 +232,7 @@ services:
     networks: [kloudchat, code-interpreter-data]
 
   # ── deep research ───────────────────────────────────────────────────
-  # MCP streamable-http. Models come from the LiteLLM on this network.
+  # MCP streamable-http; models through LiteLLM
   deep-research:
     container_name: kloudchat-deep-research
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-deep-research:${KLOUDCHAT_IMAGE_TAG:-latest}
@@ -260,8 +253,7 @@ services:
     networks: [kloudchat]
 
   # ── transcription ───────────────────────────────────────────────────
-  # Front end for the vllm-whisper backends, routing by in-flight count.
-  # Profile-fenced: its healthcheck passes even with no backend.
+  # Front end for the vllm-whisper backends, least-busy routing
   whisper-shim:
     container_name: kloudchat-whisper-shim
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-whisper-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
@@ -271,11 +263,10 @@ services:
     restart: always
     environment:
       WHISPER_URLS: ${WHISPER_URLS:-}
-      # Headroom for long recordings
       TRANSCRIBE_TIMEOUT_SEC: ${TRANSCRIBE_TIMEOUT_SEC:-3600}
       LOG_LEVEL: INFO
     healthcheck:
-      # /health summarises backend state as "ok" or "degraded"
+      # "ok" while at least one backend answers
       test: ["CMD", "python3", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:9000/health')); raise SystemExit(0 if d.get('status')=='ok' else 1)"]
       interval: 30s
       timeout: 5s
@@ -286,7 +277,7 @@ services:
     networks: [kloudchat]
 
   # ── retrieval index ─────────────────────────────────────────────────
-  # Vectors for RAG. Separate from litellm-db: a derived index, rebuildable.
+  # Vectors for RAG; derived data, rebuildable
   index-db:
     container_name: kloudchat-index-db
     image: pgvector/pgvector:pg16
@@ -318,19 +309,18 @@ services:
         condition: service_healthy
     environment:
       INDEX_DATABASE_URL: postgresql://${INDEX_DB_USER:-index}:${INDEX_DB_PASSWORD}@index-db:5432/index
-      # Embeddings by model name: the backend is LiteLLM's routing decision.
       LITELLM_URL: ${INDEX_LITELLM_URL:-http://litellm:8000}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
-      # Preference order. Neither available: KloudChat falls back to lexical search.
+      # Preference order; with none available KloudChat falls back to lexical search
       EMBED_MODELS: ${INDEX_EMBED_MODELS:-local/bge-m3,text-embedding-3-small}
-      # Second retrieval stage. Empty skips it; search falls back to vector order.
+      # Second retrieval stage; empty skips it
       RERANK_MODEL: ${INDEX_RERANK_MODEL-local/bge-reranker-v2-m3}
       RERANK_CANDIDATES: ${INDEX_RERANK_CANDIDATES:-5}
       RERANK_MIN_SCORE: ${INDEX_RERANK_MIN_SCORE:-0.1}
       RERANK_RECALL_DISTANCE: ${INDEX_RERANK_RECALL_DISTANCE:-0.85}
       LOG_LEVEL: INFO
     healthcheck:
-      # "ok" = the database answers. Embeddings are reported separately.
+      # "ok" = database answers; embeddings reported separately
       test: ["CMD", "python3", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8080/health')); raise SystemExit(0 if d.get('status')=='ok' else 1)"]
       interval: 30s
       timeout: 5s
@@ -339,12 +329,11 @@ services:
     networks: [kloudchat, index-data]
 
 networks:
-  # The service plane: everything the gateway fronts, plus the gateway itself.
+  # Service plane behind the gateway
   kloudchat:
     driver: bridge
 
-  # Backing stores, each with only the service that owns it. Unreachable from
-  # the rest of the stack; internal: true also denies them outbound traffic.
+  # Backing stores, reachable only by their owning service; no outbound traffic
   litellm-data:
     driver: bridge
     internal: true

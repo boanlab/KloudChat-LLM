@@ -1,14 +1,12 @@
-"""Placement decisions applied to nodes.
+"""Placement applied to nodes.
 
-One placement implies three changes:
-
-    (a) vLLM options in the node's .env — ``{env_prefix}_{MAX_LEN,GPU_UTIL}``
+Per placement:
+    (a) ``{env_prefix}_{MAX_LEN,GPU_UTIL}`` (and TP/DEVICES where set) in the node's .env
     (b) compose services started, stopped or recreated on the node
-    (c) ``{env_prefix}_URL`` in the orchestrator's .env, read by
-        gen-litellm-config.sh
+    (c) ``{env_prefix}_URL`` in the orchestrator's .env, read by gen-litellm-config.sh
 
-A ChangePlan is built first and executed after confirmation. Applying twice is a
-no-op, so a rebooted node reconverges.
+A ChangePlan is built first and executed after confirmation. Re-applying an
+unchanged plan is a no-op.
 """
 
 from __future__ import annotations
@@ -22,15 +20,11 @@ from scheduler.planner import Placement, Plan
 from scheduler.registry import ModelSpec
 from scheduler.types import NodeSpec
 
-#: Service-name prefix the scheduler manages. ``current`` holds the node's whole
-#: ``docker ps``, including the resident transcription backend and, on a
-#: single-host deployment, the stack itself — none of which may be stopped for
-#: being absent from a placement plan.
+#: Service-name prefix the scheduler manages; other containers are never stopped
 MANAGED_SERVICE_PREFIX = "vllm-"
 
-#: The transcription model. ``WHISPER_URLS`` is its URL CSV under the name
-#: whisper-shim reads, and an empty value is what makes gen-litellm-config
-#: register STT against OpenRouter instead.
+#: Transcription model. Its URL CSV is written as ``WHISPER_URLS`` (read by
+#: whisper-shim) instead of ``{env_prefix}_URL``; empty routes STT to OpenRouter.
 STT_MODEL_ID = "whisper-large-v3"
 
 
@@ -55,7 +49,7 @@ class NodeAction:
 @dataclass
 class ChangePlan:
     actions: list[NodeAction] = field(default_factory=list)
-    #: Values to write into the orchestrator's .env, key to value
+    #: Orchestrator .env values to write
     local_env: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
 
@@ -65,7 +59,7 @@ class ChangePlan:
 
 
 def _env_set(path: str, key: str, value: str) -> str:
-    """Shell expression updating one .env line, appending it when absent."""
+    """Shell expression setting one .env line, appending when absent."""
     q_path = shlex.quote(path)
     line = shlex.quote(f"{key}={value}")
     return (
@@ -77,7 +71,7 @@ def _env_set(path: str, key: str, value: str) -> str:
 
 
 def _read_env_keys(path: str, keys: Iterable[str]) -> dict[str, str]:
-    """Current values of ``keys`` in the local .env. Missing keys read empty."""
+    """Values of ``keys`` in the local .env; missing keys read empty."""
     out = {k: "" for k in keys}
     try:
         with open(path) as f:
@@ -96,19 +90,8 @@ def _read_env_keys(path: str, keys: Iterable[str]) -> dict[str, str]:
 def _url_csvs(target: Plan, specs: Sequence[ModelSpec],
               nodes: Sequence[NodeSpec],
               known: Sequence[ModelSpec] = ()) -> dict[str, str]:
-    """URL CSVs per model. Unplaced models get an empty value, never a stale URL.
-
-    ``known`` is the whole models.yaml catalogue, not just what is being
-    deployed. Dropping a model from VLLM_MODELS otherwise left its URL untouched,
-    and gen-litellm-config went on registering a route to a container that had
-    been stopped — a model that appears healthy in the picker and times out on
-    call.
-
-    ``WHISPER_URLS`` is the transcription model's own CSV under a second name,
-    because whisper-shim reads that one. It is written from the plan like every
-    other URL here: transcription is a placed model, and a node without it is a
-    node the planner did not put it on.
-    """
+    """URL CSV per model; unplaced models (including ``known`` ones outside the
+    deployment) get an empty value so no stale route survives."""
     host_of = {n.node_id: n.hostname.split("@")[-1] for n in nodes}
     by_id = {s.id: s for s in specs}
     urls: dict[str, set[str]] = {
@@ -125,7 +108,7 @@ def _url_csvs(target: Plan, specs: Sequence[ModelSpec],
     stt = next(
         (s for s in list(known) + list(specs) if s.id == STT_MODEL_ID), None
     )
-    out["WHISPER_URLS"] = out.get(f"{stt.env_prefix}_URL", "") if stt else ""
+    out["WHISPER_URLS"] = out.pop(f"{stt.env_prefix}_URL", "") if stt else ""
     return out
 
 
@@ -144,11 +127,9 @@ def compute_diff(
 
     Args:
         current: node id to the compose services running there.
-        local_env_path: the orchestrator's .env. None skips the URL update.
-        node_env: node id to that node's current .env values. What makes a
-            re-apply a no-op: without it every placed service was rewritten and
-            force-recreated on every run, so `setup.sh all` reloaded models that
-            had not changed. Omitted, the old unconditional behaviour returns.
+        local_env_path: the orchestrator's .env; None skips the URL update.
+        node_env: node id to its current .env values. Given, unchanged services
+            are left alone; omitted, every placed service is recreated.
     """
     change = ChangePlan(notes=list(target.notes))
     by_id = {s.id: s for s in specs}
@@ -166,13 +147,13 @@ def compute_diff(
         host = host_of.get(node_id, node_id)
         placements = target_by_node.get(node_id, [])
         want = {by_id[p.model_id].service for p in placements if p.model_id in by_id}
-        # Managed services only: the prefix, plus any name models.yaml declared
+        # Managed services only
         have = {
             s for s in current.get(node_id, set())
             if s.startswith(MANAGED_SERVICE_PREFIX) or s in want
         }
 
-        # (a) Options first — .env must be current before a service starts
+        # (a) .env options, before any service starts
         here = node_env.get(node_id) if node_env is not None else None
         restated: set[str] = set()
         for p in sorted(placements, key=lambda x: x.model_id):
@@ -183,21 +164,14 @@ def compute_diff(
                 (f"{spec.env_prefix}_MAX_LEN", str(p.ctx)),
                 (f"{spec.env_prefix}_GPU_UTIL", f"{p.gpu_util:.2f}"),
             ]
-            # TP 1 is the absence of sharding, and compose already defaults to
-            # it. Writing it into a node that never had the key would change
-            # nothing about the container while still costing a force-recreate —
-            # twenty minutes of weight loading to restate a default. So it is
-            # written only to undo a node that really is sharded.
+            # TP 1 is the compose default: written only to undo a sharded node,
+            # since any new key costs a recreate
             tp_key = f"{spec.env_prefix}_TP"
             if p.tp > 1 or (here or {}).get(tp_key) not in (None, "", "1"):
                 options.append((tp_key, str(p.tp)))
 
-            # Which cards this container may see, as NVIDIA_VISIBLE_DEVICES.
-            # Only written for a node with more than one, where it is the
-            # difference between two models on two cards and two models fighting
-            # over card 0; a single-card node is told nothing and keeps compose's
-            # "all". Not CUDA_VISIBLE_DEVICES — that one fails engine init on
-            # GB10 with cudaErrorNotPermitted even when it names the only card.
+            # NVIDIA_VISIBLE_DEVICES, multi-card nodes only (CUDA_VISIBLE_DEVICES
+            # fails engine init on GB10)
             dev_key = f"{spec.env_prefix}_DEVICES"
             devices = ",".join(str(d) for d in p.devices)
             node = next((n for n in nodes if n.node_id == node_id), None)
@@ -225,9 +199,7 @@ def compute_diff(
                 node_id, host, "start", f"start {service}",
                 f"{cd} && {compose} up -d {shlex.quote(service)}",
             ))
-        # Running already. Recreate only where an option actually moved: a
-        # force-recreate is a full weight reload, 20 minutes for a 78 GiB model,
-        # and doing it on every apply is what made re-running setup.sh expensive.
+        # (b) Recreate only where an option moved — a recreate reloads the weights
         for service in sorted(want & have):
             if node_env is not None and service not in restated:
                 continue
@@ -264,10 +236,7 @@ def apply(
     local_env_path: Optional[str] = None,
     runner: Callable[[str, str], tuple[int, str]] = _run,
 ) -> list[str]:
-    """Execute the changes, returning failures.
-
-    A failing node does not stop the others.
-    """
+    """Execute the changes; returns failures. A failing node does not stop the others."""
     failures: list[str] = []
     for action in change.actions:
         rc, out = runner(action.host, action.command)

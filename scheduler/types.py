@@ -1,8 +1,4 @@
-"""Core data types.
-
-Memory accounting: ``need = weights + activation + KV(ctx)``. Byte counts are
-ints throughout, so capacity comparisons are reproducible.
-"""
+"""Core data types. Memory model: ``need = weights + activation + KV(ctx)``, in bytes."""
 
 from __future__ import annotations
 
@@ -14,7 +10,7 @@ GB: int = 1024 ** 3
 
 
 class Dtype(str, Enum):
-    """Weight and KV dtype. BF16/FP16 2 B/elem, FP8 1 B/elem, NVFP4 0.5 B/elem."""
+    """Weight and KV dtype."""
 
     BF16 = "bf16"
     FP16 = "fp16"
@@ -28,49 +24,28 @@ class Dtype(str, Enum):
 
 @dataclass(frozen=True)
 class ModelMetadata:
-    """Architectural facts read from the checkpoint's config.json."""
+    """Architecture facts from the checkpoint's config.json."""
 
     model_id: str
-    #: KV-bearing (full-attention) layers, not the total — hybrid models carry
-    #: KV on only some.
+    #: KV-bearing (full-attention) layers only; hybrid models carry KV on a subset
     n_layers: int
-    #: KV head count under GQA, distinct from the attention head count
+    #: KV heads (GQA), not attention heads
     n_kv_heads: int
     head_dim: int
     weight_dtype: Dtype
     weight_bytes: int
-    #: Multi-head Latent Attention: one compressed latent per layer, replacing
-    #: the 2*H*d term.
+    #: MLA: one compressed latent per layer in place of 2*H*d
     kv_latent_dim: Optional[int] = None
-    #: max_position_embeddings from config.json — the model's native context
+    #: max_position_embeddings — native context
     native_ctx: int = 0
-    #: Sliding-window attention layers and their window. These hold KV too, but
-    #: only ``min(ctx, window)`` tokens of it, so the cost is per sequence rather
-    #: than per token. Counting them as full-attention layers overcharges by
-    #: orders of magnitude; counting them as zero undercharges a Gemma-shaped
-    #: model, where they are five layers in six.
+    #: Sliding-window layers: KV bounded at ``window`` tokens per sequence, so
+    #: charged per sequence rather than per token
     sliding_layers: int = 0
     sliding_window: int = 0
 
 
-@dataclass(frozen=True)
-class ORTwin:
-    """OpenRouter route for a model that cannot be hosted locally.
-
-    Registered under the same ``local/<id>`` name, so callers cannot tell which
-    side answered.
-    """
-
-    slug: str
-    in_price_pm: float   # USD / 1M input tokens
-    out_price_pm: float  # USD / 1M output tokens
-
-
-#: Headroom held back on a discrete card: driver context, fragmentation, and the
-#: gap between "total" and "free" on a card that also drives a display. A
-#: fraction, because a fixed 8 GiB is 8% of a 96 GiB card and 33% of a 24 GiB
-#: one — the same number meaning two different things is what kept 32 GiB cards
-#: out of the cluster.
+#: Discrete-card headroom (driver context, fragmentation, display): a fraction
+#: of the card, clamped, so small and large cards are charged proportionally.
 RESERVE_FRACTION: float = 0.08
 RESERVE_MIN_BYTES: int = 1 * GB
 RESERVE_MAX_BYTES: int = 8 * GB
@@ -89,41 +64,32 @@ class NodeSpec:
     """Capacity of a probed GPU node."""
 
     node_id: str                  # short identifier, usually the last IPv4 octet
-    hostname: str                 # host reachable over SSH
+    hostname: str                 # SSH target
     gpu_class: str                # "gb10", "pro5000", ...
-    total_vram_bytes: int         # physical capacity of a single GPU
-    #: OS and page-cache headroom, used when usable_vram_bytes is unset. None
-    #: derives it from the card size — see ``default_reserve_bytes``.
+    total_vram_bytes: int         # one GPU
+    #: Explicit headroom; None derives it from the card size
     reserved_bytes: Optional[int] = None
-    #: Explicit planner ceiling, below physical capacity on unified-memory nodes
+    #: Planner ceiling below physical capacity (unified-memory nodes)
     usable_vram_bytes: Optional[int] = None
     gpu_count: int = 1
-    #: GPU memory held by processes this stack does not manage — a desktop
-    #: session, somebody's notebook, another deployment. Subtracted from what the
-    #: planner may hand out, because vLLM's utilisation fraction is of the card's
-    #: total but the memory has to actually be free.
+    #: GPU memory held by processes outside this stack, subtracted from capacity
     foreign_vram_bytes: int = 0
-    #: "amd64" | "arm64" | "" on probe failure. Gates what the node can serve.
+    #: "amd64" | "arm64" | "" on probe failure
     arch: str = ""
-    #: Checkpoint directory names present under VLLM_MODELS_ROOT. None means the
-    #: probe did not report them and placement must not filter on it; a set is
-    #: authoritative. A bind mount of a missing path is created empty by Docker
-    #: rather than refused, so a model placed where its weights are not is a
-    #: container that restarts forever with "Invalid repository ID or local
-    #: directory specified: '/model'" — the one failure the planner can see
-    #: coming and the node cannot report.
+    #: Checkpoint directories under VLLM_MODELS_ROOT. None: not probed, no
+    #: filtering. A model placed without its weights restarts forever (Docker
+    #: creates a missing bind-mount path empty).
     checkpoints: Optional[frozenset[str]] = None
 
     @property
     def effective_reserve_bytes(self) -> int:
-        """Headroom actually held back: the declared figure, or one for this card."""
         if self.reserved_bytes is not None:
             return self.reserved_bytes
         return default_reserve_bytes(self.total_vram_bytes)
 
     @property
     def planner_vram_bytes(self) -> int:
-        """Packing capacity across every card on the node. An explicit ceiling wins."""
+        """Packing capacity across all cards; an explicit ceiling wins."""
         if self.usable_vram_bytes is not None:
             base = self.usable_vram_bytes
         else:
@@ -132,10 +98,5 @@ class NodeSpec:
 
     @property
     def per_gpu_planner_bytes(self) -> int:
-        """Packing capacity of one card.
-
-        Tensor parallelism splits a model across cards, so what has to fit is the
-        per-card share — a node pool large enough in total says nothing about
-        whether one rank's weights, activation and KV shard fit on one card.
-        """
+        """Packing capacity of one card — what a tensor-parallel rank must fit."""
         return self.planner_vram_bytes // max(1, self.gpu_count)

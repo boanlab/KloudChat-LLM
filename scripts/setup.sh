@@ -7,7 +7,6 @@
 # Roles
 #   all [--build]           install GPU nodes -> place models -> start stack -> print URLs
 #   vllm                    run install-vllm.sh on every node in NODES_VLLM
-#                           (vLLM plus transcription — a GPU node has one role)
 #   scheduler <subcommand>  forwarded to python3 -m scheduler {inventory|plan|apply}
 #   up [--build]            start the backend stack (gateway, tools, LiteLLM)
 #   urls                    print the addresses for the UI admin screen
@@ -16,9 +15,7 @@
 #
 # Options
 #   --build                 build this working tree's images instead of pulling
-#                           the published ones. For an edit that is not merged
-#                           yet — the workflow publishes an image when its
-#                           service directory changes on main.
+#                           the published ones
 #
 # Environment
 #   KLOUDCHAT_SKIP_SCHEDULER=1   skip placement in `all` (you manage VLLM_*_URL)
@@ -34,10 +31,7 @@ source "${SCRIPT_DIR}/lib.sh"
 
 GATEWAY_PORT="$(env_get GATEWAY_PORT)"; GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 
-# Whether to build images here rather than take the published ones. Off: the
-# workflow builds and pushes an image whenever its service directory changes on
-# main, so a deployment gets it by pulling, and building the same source again
-# on every host is work nobody asked for.
+# --build: build images from this working tree instead of pulling published ones
 BUILD_LOCAL=0
 
 usage() { sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'; }
@@ -69,8 +63,7 @@ step_env_validate() {
   fi
 
   local required=(LITELLM_MASTER_KEY LITELLM_DB_PASSWORD CODE_INTERPRETER_API_KEY CODE_INTERPRETER_MINIO_PASSWORD SCRAPER_API_KEY)
-  # The index database only exists when its profile is on, but then its password
-  # is as required as the others — compose refuses to start index-db without it.
+  # index-db refuses to start without its password
   [[ ",$(env_get COMPOSE_PROFILES)," == *",index,"* ]] && required+=(INDEX_DB_PASSWORD)
 
   local missing=()
@@ -82,14 +75,13 @@ step_env_validate() {
   ok "secrets are set"
 }
 
-# Every vLLM URL recorded in .env. The scheduler writes these as {env_prefix}_URL.
+# Every VLLM_<MODEL>_URL recorded in .env by the scheduler.
 vllm_urls_csv() {
   awk -F= '/^VLLM_[A-Z0-9_]+_URL=/ && $2 != "" { print $2 }' .env 2>/dev/null | paste -sd, -
 }
 
-# vLLM takes minutes to load weights and run torch.compile. Generating the config
-# before that makes the context discovery in gen-litellm-config.sh fail, falling
-# back to a conservative 32K — so a model serving 256K would be registered at 32K.
+# Weight loading takes minutes; gen-litellm-config.sh needs the backends up to
+# discover each model's context (32K fallback otherwise).
 step_wait_vllm() {
   local csv; csv="$(vllm_urls_csv)"
   [[ -n "$csv" ]] || return 0
@@ -107,10 +99,7 @@ step_wait_vllm() {
   return 0
 }
 
-# The placement step fills WHISPER_URLS wherever it put the transcription model.
-# Without the shim in front of those backends, /tools/stt is the one capability
-# left dead. This is the only place that touches the profile list, and it does
-# nothing if the profile is already there.
+# `whisper` profile (the transcription shim) once WHISPER_URLS is set.
 step_enable_stt_profile() {
   [[ -n "$(env_get WHISPER_URLS)" ]] || return 0
   local profiles; profiles="$(env_get COMPOSE_PROFILES)"
@@ -138,9 +127,8 @@ step_compose_up() {
     return 0
   fi
 
-  # Published images. --ignore-pull-failures so one unreachable tag does not
-  # stop the services whose images did arrive; --no-build then refuses to
-  # quietly substitute a local build for the image that was meant to run.
+  # --ignore-pull-failures: one unreachable tag does not stop the rest;
+  # --no-build: never substitute a local build for a missing published image.
   docker compose pull --ignore-pull-failures
   if ! docker compose up -d --no-build; then
     err "an image is missing and could not be pulled"
@@ -164,19 +152,9 @@ step_wait_gateway() {
   return 1
 }
 
-# The gateway can answer while the services behind it are still starting. Printing
-# the URL table in that window shows everything as "not started", which reads as a
-# broken deployment when it is a healthy one.
 # Capabilities behind the gateway: "<name>|<public path>|<probe>|<blocking>".
-#
-# One list, because the readiness wait and the status table have to agree. They
-# did not: the wait omitted deep research, declared every capability responding
-# while it was still booting, and the table printed "not started" for it two
-# lines later — pointing at COMPOSE_PROFILES, which was not the problem.
-#
-# blocking=0 for transcription alone. Its shim is fenced behind the `whisper`
-# profile, so a deployment with no GPU node has none, and holding the wait open
-# for it would spend the whole timeout on every run.
+# One list for both the readiness wait and the URL table. blocking=0 for
+# transcription: its shim exists only under the `whisper` profile.
 CAPABILITIES=(
   "LiteLLM|/litellm|/litellm/health/liveliness|1"
   "Web search|/tools/search|/tools/search/healthz|1"
@@ -208,9 +186,8 @@ step_wait_services() {
 
 # ───────────────────────── integration URLs ─────────────────────────
 
-# The addresses to paste into the UI admin screen (Settings → System →
-# Integrations). Per-capability status is printed alongside so a broken wire is
-# found here rather than in the UI.
+# Addresses for the UI admin screen (Settings → System → Integrations), with
+# per-capability status.
 role_urls() {
   local host; host="$(hostname -I 2>/dev/null | awk '{print $1}')"
   host="${host:-localhost}"
@@ -228,7 +205,7 @@ role_urls() {
     local code; code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "${base}${probe}" 2>/dev/null || echo 000)
     local status
     case "$code" in
-      # 4xx still means we reached it — MCP endpoints answer GET with 405
+      # 4xx = reached (MCP endpoints answer GET with 405)
       200|202|400|401|405|406) status="connected" ;;
       502|503)                 status="not started" ;;
       000)                     status="no gateway response" ;;
@@ -239,6 +216,8 @@ role_urls() {
   echo
   echo "  'not started' means that service's container is not running — check COMPOSE_PROFILES"
   echo "  The LiteLLM master key is LITELLM_MASTER_KEY in .env (enter it in the UI as well)"
+  echo "  LiteLLM's own admin UI: ${base}/litellm/ui/ — user 'admin', password the master key."
+  echo "  It is left reachable on purpose: the gateway is bound to the internal network only"
 }
 
 # ───────────────────────── node installation ─────────────────────────
@@ -276,8 +255,7 @@ dispatch_csv() {
 
 # ───────────────────────── scheduler ─────────────────────────
 
-# PyYAML is the placement step's only dependency. Install it through apt when
-# available, otherwise tell the operator what to run.
+# PyYAML, the scheduler's only dependency.
 ensure_scheduler_deps() {
   python3 -c "import yaml" 2>/dev/null && return 0
   if [[ "${KLOUDCHAT_SCHEDULER_NO_AUTOINSTALL:-0}" == "1" ]] || ! command -v apt-get &>/dev/null; then
@@ -314,21 +292,19 @@ role_all() {
   step_env_check
   step_env_validate
 
-  # 1) Install GPU nodes — vLLM and transcription are one role. A failure here
-  #    does not stop the rest: a partially installed cluster still serves.
+  # 1) GPU nodes. A failure does not stop the rest: a partial cluster still serves.
   if [[ -n "$(env_get NODES_VLLM)" ]]; then
     dispatch_csv vllm || true
   else
     warn "NODES_VLLM is empty — skipping GPU node installation"
   fi
 
-  # 2) Placement, when there are nodes and it was not skipped. Writes VLLM_*_URL
-  #    (and WHISPER_URLS) into .env.
+  # 2) Placement: writes VLLM_*_URL and WHISPER_URLS into .env.
   if [[ "${KLOUDCHAT_SKIP_SCHEDULER:-0}" != "1" && -n "$(env_get NODES_VLLM)" ]]; then
     run_scheduler apply -y || warn "placement failed — using the VLLM_*_URL values already in .env"
   fi
 
-  # 3) Transcription shim — enabled once placement has found a live backend.
+  # 3) Transcription shim profile
   step_enable_stt_profile
 
   step_wait_vllm

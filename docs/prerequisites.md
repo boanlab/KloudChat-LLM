@@ -1,63 +1,54 @@
 # Prerequisites
 
-What must be in place before bringing KloudChat up. The baseline is the single
-setup described in the [README](../README.md#quick-start): **local GPU first,
-OpenRouter as fallback**.
+What must be in place before bringing KloudChat-LLM up. The baseline is
+**local GPU first, OpenRouter as fallback**.
 
-- **Using a local GPU** — "Common: compose host" plus "GPU node requirements"
-- **OpenRouter only** — "Common: compose host" is enough
+- **Using a local GPU**: "Compose host" plus "GPU node requirements"
+- **OpenRouter only**: "Compose host" is enough
 
-## Common: compose host
+## Compose host
 
-The stack in this repository is one `docker-compose.yml`, and `COMPOSE_PROFILES`
-in `.env` decides what comes up. The UI (`KloudChat`) is a separate repository
-connected only by URL.
+The stack is one `docker-compose.yml`; `COMPOSE_PROFILES` in `.env` decides
+what comes up. The UI (`KloudChat`) is a separate repository connected only by
+URL.
 
 | Topology | Composition |
 |---|---|
-| Single node | The whole backend on one machine, which doubles as the GPU node if you serve locally |
+| Single node | The whole backend on one machine, which doubles as the GPU node when serving locally |
 | Split | Tools host (`tools`) + model host (`models`) + GPU nodes |
 
 | Requirement | Compose host | GPU node |
 |---|---|---|
 | OS | Linux amd64 or arm64 | Linux amd64 or arm64 |
 | Docker | Compose v2 | Compose v2 |
-| Utilities | `jq curl wget` | `jq curl wget` |
+| Utilities | `jq curl` | `jq curl` |
+| Python | 3.11+ with PyYAML (`setup.sh` installs `python3-yaml` through apt) | not needed |
 | Disk | 50 GB (images and runtime data) | 100 GB+ (model weights) |
 | RAM | 16 GB | 16 GB+ |
 | Open ports | `GATEWAY_PORT` (8080 by default) and nothing else | vLLM 8001–8009 and transcription 9000, reachable from the compose host |
 
-- **macOS and Windows are unsupported.**
-- **No Docker yet** — `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`
-- **RAM** scales with worker count (`LITELLM_NUM_WORKERS`, 4 by default at
-  ~600 MB each) and concurrent traffic.
-- **Automatic verification** — step 0 of `setup.sh <role>` checks the items above.
+- macOS and Windows are unsupported.
+- No Docker yet: `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`
+- RAM scales with `LITELLM_NUM_WORKERS` (4 by default, ~600 MB each) and
+  concurrent traffic.
+- `setup.sh all` checks Docker and `.env` before anything else.
 
-## GPU node requirements (vLLM)
+## GPU node requirements
 
 | Requirement | Minimum |
 |---|---|
-| NVIDIA GPU | 32 GiB usable. RTX 5090 for the default NVFP4 lineup; an FP4-less card of 48 GB or more runs the int4 aliases below |
+| NVIDIA GPU | 32 GiB usable. RTX 5090 for the default NVFP4 lineup; an FP4-less card of 48 GB or more runs the int4 build below |
+| NVIDIA Container Toolkit | every model, transcription included, is a vLLM container |
 | Model disk | 100 GB |
 
-**24 GiB cards are out of scope** — RTX 4090, RTX 3090, L4, A10. Not for want of
-a format: the int4 aliases execute there. There is nowhere to put the model.
-Measured across the catalogue on 24 GiB, exactly one entry places —
-`gemma-4-26b-a4b-awq`, at its 32K floor and 0.92 of the card, with no room to
-grow and nothing left to share the card with. The same builds on a 48 GiB
-FP4-less card place at 128K–256K. `manage-vllm.sh up` refuses below the floor, by
-usable VRAM rather than by card name.
+**24 GiB cards are out of scope** (RTX 4090, RTX 3090, L4, A10). The int4 build
+executes there, but at 26 GB of weights it does not fit. `manage-vllm.sh up`
+refuses below 32 GiB usable.
 
-**NVIDIA only.** AMD/ROCm is out of scope, and the reason is not that nobody got
-to it. `nvidia-smi` is what the inventory reads capacity, card class and
-per-process memory from; the compose services reserve `driver: nvidia`; devices
-are pinned with `CUDA_VISIBLE_DEVICES`; the MLA attention backends are CUDA
-kernels; and `gpu_supports_quant` gates on compute capability, which AMD does not
-have. Each of those has an equivalent — but the default weights are **NVFP4, a
-Blackwell format with no AMD counterpart**, so ROCm support means maintaining a
-second model lineup with its own measured weights, KV parameters and verified
-parsers. That is a project, and one that cannot be written blind: a backend
-nobody has run is worse than an honest "not supported".
+**NVIDIA only.** The inventory reads capacity and card class from `nvidia-smi`,
+compose reserves `driver: nvidia`, and the quantisation gate is written in
+compute capability. The default weights are NVFP4, a Blackwell format with no
+AMD counterpart.
 
 Quantisation is gated by compute capability, so what a card can serve is a
 property of the card rather than of its name:
@@ -65,47 +56,38 @@ property of the card rather than of its name:
 | Weights | Needs | Cards |
 |---|---|---|
 | NVFP4 (default lineup) | cc ≥ 10.0 | GB10, RTX 5090, PRO 5000/6000 |
-| FP8 | cc ≥ 8.9 | Ada and later — includes RTX 4090 |
-| AWQ / GPTQ int4 | cc ≥ 7.5 | Turing and later |
+| FP8 | cc ≥ 8.9 | Ada and later, RTX 4090 included |
+| AWQ int4 (`qwen3.6-35b-awq`) | cc ≥ 7.5 | Turing and later |
 
-`download-vllm-models.sh` refuses weights the card cannot execute, with the
-reason, rather than letting it fail at engine start. An RTX 4090 cannot run the
-default lineup and can run the `*-awq` aliases.
+`download-vllm-models.sh` refuses weights the card cannot execute or hold, with
+the reason.
 
 VRAM per model:
 
 | Model | Requirement |
 |---|---|
-| Chat (`qwen3.6-35b`) | RTX 5090 32 GB with NVFP4 minimum — placed at 128K and 2 concurrent sessions there; PRO 5000 48 GB or better recommended |
-| Chat + floor | PRO 5000 48 GB (~41 GiB of weights) |
+| Chat (`qwen3.6-35b`, 21 GiB) | RTX 5090 32 GB minimum, at a reduced context. PRO 5000 48 GB or better recommended |
+| Top chat (`qwen3.5-122b-a10b`, 78 GiB) | GB10, or PRO 6000 ×2 with tensor parallelism. Alone on its cards |
+| Coding (`qwen3-coder-next`, 75 GiB) | GB10 or PRO 6000, alone on the card |
 
-Deep research does not place a model of its own. The constraint it imposes is
-`ctx_floor: 131072` on `qwen3.6-35b` in `scheduler/models.yaml` — below 128K it
-loses accumulated context — so large nodes (PRO 6000, GB10) are recommended when
-it is used heavily. On a unified-memory node that is tight on headroom the
-planner already subtracts 12 GiB for the OS; shrink `VLLM_MODELS` if it is still
-tight.
+Deep research runs on `DEEP_RESEARCH_MODEL` (`local/qwen3.5-122b-a10b` by
+default), which the scheduler holds at a 128K context floor. Occupancy figures
+are in the [GPU memory guide](gpu-memory.md).
 
 ### What runs where
 
-- **NVIDIA Container Toolkit required** — every model a node serves, chat, floor
-  and transcription alike, is a vLLM container.
-- **Transcription backend** — `vllm-whisper`, the same vLLM image as the rest,
-  serving `openai/whisper-large-v3` (~3.1 GiB). Any architecture: there is no
-  architecture-specific step left on a GPU node.
-- **Wiring** — backends are published on their ports; the whisper-shim container
-  calls them over HTTP using `WHISPER_URLS`, which the scheduler writes from the
-  placement.
+- Every model a node serves is a vLLM container from `docker-compose.vllm.yml`.
+- Transcription is `vllm-whisper`, serving `openai/whisper-large-v3` (~3.1 GiB)
+  from the same image, on any architecture.
+- Backends publish their ports; LiteLLM reaches them through `VLLM_*_URL` and
+  whisper-shim through `WHISPER_URLS`, both written by the scheduler.
 
 ### Transcription (STT)
 
-- **What it is for** — transcribing uploaded audio, and YouTube videos without
-  subtitles.
-- **It is optional.** With no backend (`WHISPER_URLS` empty) LiteLLM registers
-  OpenRouter STT instead. GPU-less deployments, and clusters with no card free
-  for it, land here. Deploy it by adding `whisper-large-v3` to `VLLM_MODELS`.
-- **Why run it locally** — audio never leaves the network, and there is no
-  per-token billing.
+- Transcribes audio uploaded through `/tools/stt`.
+- Optional. With `WHISPER_URLS` empty, LiteLLM registers OpenRouter STT
+  instead. Deploy it by adding `whisper-large-v3` to `VLLM_MODELS`.
+- Local serving keeps audio inside the network and has no per-token billing.
 
 ### Commands to run on a GPU host
 
@@ -114,99 +96,76 @@ tight.
 ./scripts/download-vllm-models.sh       # weights this card can serve, transcription included
 ```
 
-A GPU node has one role and one image. Re-pull it with
-`./scripts/install-vllm.sh --reinstall`.
+`./scripts/install-vllm.sh --reinstall` re-pulls the base image and rebuilds
+the derived one.
 
-> `download-vllm-models.sh` inspects the card before downloading — compute
-> capability for FP4/FP8 support, usable VRAM for capacity. Weights it cannot
-> serve are skipped with the reason.
-
-- **Models served by vLLM** — chat (`qwen3.6-35b`) and floor (`glm-4.7-flash`)
-- **vLLM image per architecture**
-  - **amd64 (RTX 5090 / PRO 5000 / PRO 6000)** — `vllm/vllm-openai:cu129-nightly`
-  - **GB10 (arm64)** — `vllm/vllm-openai:nightly-aarch64`
-- **RTX 4090** — no FP4 support, so the default lineup cannot run on it. The
-  `*-awq` aliases can; see the quantisation table above.
-
-Occupancy figures are in the [GPU memory guide](gpu-memory.md).
+- vLLM base image per architecture: amd64 `vllm/vllm-openai:cu129-nightly`,
+  GB10 (arm64) `vllm/vllm-openai:nightly-aarch64`. Compose runs the derived
+  `kloudchat-vllm:local`.
+- RTX 4090: no FP4, so the default lineup cannot run on it. `qwen3.6-35b-awq`
+  can, on 48 GB cards.
 
 ## OpenRouter (no GPU required)
 
-- `OPENROUTER_API_KEY` from https://openrouter.ai/keys — **no other
-  prerequisites**. A compose host is enough.
-- Without a local GPU this alone works, serving commercial models. With one it
-  adds **automatic fallback to the same model when a node goes down**, plus the
-  commercial frontier catalogue.
+- `OPENROUTER_API_KEY` from https://openrouter.ai/keys. A compose host is
+  enough.
+- Without a local GPU this alone serves commercial models. With one it adds
+  automatic fallback to the same model when a node goes down, plus the
+  commercial catalogue.
 - Commercial models (OpenAI, Anthropic, Google, DeepSeek and others) all go
   through OpenRouter. Direct native APIs are not supported.
 
 ## Multiple nodes
 
-- **GPU nodes** — one setting: `NODES_VLLM=user@host,...` in `.env`. The
-  scheduler automates vLLM placement and records the transcription backends that
-  answered in `WHISPER_URLS`, which the shim load-balances across.
-- **Per node** — the same install and download steps apply, either by SSH-ing
-  into each node, or in one command: `./scripts/setup.sh vllm` rsyncs the
-  repository to every node in `NODES_VLLM` and runs `install-vllm.sh` there.
+- GPU nodes: `NODES_VLLM=user@host,...` in `.env`. The scheduler places models
+  and records the URLs.
+- `./scripts/setup.sh vllm` rsyncs the repository to every node in
+  `NODES_VLLM` and runs `install-vllm.sh` there.
 
 **Adding a node**
 
 1. Append the SSH target to `NODES_VLLM` in `.env`
-2. `./scripts/setup.sh vllm` — installs vLLM and the transcription backend there
+2. `./scripts/setup.sh vllm`
 3. `./scripts/setup.sh all` (or `scheduler apply` followed by
-   `docker compose restart whisper-shim`) — refreshes placement and URLs
-
-> To use a host outside `NODES_VLLM` for transcription only, add
-> `http://<node-ip>:<port>` to `WHISPER_URLS` on the compose host by hand and
-> restart the shim.
+   `docker compose restart whisper-shim`) refreshes placement and URLs
 
 **One-time setup on each remote node**
 
 ```bash
-# 1) Password-less SSH from the control node to the remote node
+# 1) Password-less SSH from the compose host to the node
 ssh-copy-id <your-user>@<gpu-node>
 
-# 2) The install and manage scripts call sudo non-interactively
+# 2) Non-interactive sudo for install-vllm.sh (model directory) and tune-host.sh
 ssh <your-user>@<gpu-node> "echo '<your-user> ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/kloudchat-<your-user>"
 ```
 
-> The installers need sudo for `apt`, `systemctl` and drop-in files. Without step
-> 2 they stop at a password prompt halfway through.
-
 **Single node (the compose host is the GPU node)**
 
-- The SSH step can be skipped, but `install-vllm.sh` (including transcription),
-  `manage-vllm.sh`, `tune-host.sh` and `setup.sh clean` still call `sudo`
-  directly.
-- Either type the password interactively, or add the same NOPASSWD line to a
-  local `/etc/sudoers.d/kloudchat-<your-user>`.
+- The SSH step can be skipped. `install-vllm.sh`, `tune-host.sh` and
+  `setup.sh clean` still call `sudo`; type the password or add the NOPASSWD
+  line locally.
 
 ### vLLM routing
 
 - The scheduler inventories GPU class and VRAM per node and places models;
-  `gen-litellm-config.sh` then registers one deployment per node holding each
-  model. What fits where is in the
-  [GPU memory guide](gpu-memory.md#per-node-class).
-- **A model on one node** — requests go only there.
-- **A model on several nodes** — the router load-balances `least-busy`.
-- **Heterogeneous GPUs** — large models on large nodes, small models everywhere,
-  works as-is.
+  `gen-litellm-config.sh` registers one deployment per node holding each model.
+- A model on one node: requests go only there.
+- A model on several nodes: the router load-balances `least-busy`.
+- Heterogeneous GPUs work as-is: large models on large nodes, small models
+  everywhere.
 
 ### Transcription routing
 
-- The shim keeps a 10-second `/health` cache to pick reachable nodes, then routes
-  by in-flight count.
-- **Same model everywhere** — every backend serves the same checkpoint, and the
-  shim names it on each request. Per-node models are not supported.
-- **No stickiness** — every call is self-contained.
+- The shim keeps a 10-second `/health` cache to pick reachable nodes, then
+  routes by in-flight count.
+- Every backend serves the same checkpoint; the shim names it on each request.
+- No stickiness. Every call is self-contained.
 
 ## DGX Spark (GB10)
 
-- **Transcription runs on the card**, like every other model: `vllm-whisper`
-  serves `whisper-large-v3` from the same aarch64 image. A ctranslate2 backend
-  could not — its aarch64 wheels are CPU-only, and CPU transcription shares
-  unified memory with vLLM at roughly a third of realtime.
-- **vLLM** uses the `*-aarch64` image (GB10 is arm64).
-- **VRAM detection** — `nvidia-smi memory.total` reports `[N/A]`, so
-  `lib.sh::gpu_usable_vram_gb` uses system RAM minus a 12 GiB OS reservation. The
-  planner budgets with the same number.
+- arm64, so vLLM uses the `*-aarch64` image.
+- Transcription runs on the card like every other model.
+- `nvidia-smi memory.total` reports `[N/A]` on unified memory, so usable VRAM
+  is system RAM minus a 12 GiB OS reservation (`lib.sh::UNIFIED_RESERVE_GB`,
+  `scheduler/inventory.py::_UNIFIED_RESERVE_BYTES`). The planner budgets with
+  the same number.

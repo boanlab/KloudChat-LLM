@@ -1,8 +1,4 @@
-"""models.yaml loader.
-
-Declared identity (id, hf_repo) and delegation path (openrouter) merged with
-facts from config.json and the checkpoint size. Declared values win.
-"""
+"""models.yaml loader: declared fields merged with config.json facts. Declared values win."""
 
 from __future__ import annotations
 
@@ -13,7 +9,7 @@ from typing import Any, Iterable, Optional
 
 import yaml
 
-from scheduler.types import ModelMetadata, ORTwin
+from scheduler.types import ModelMetadata
 
 #: Context floor: a quarter of native, never below CTX_FLOOR_MIN.
 CTX_FLOOR_DIVISOR = 4
@@ -25,14 +21,11 @@ BASE_PORT = 8001
 #: Concurrent sessions assumed when sizing the effective KV context.
 DEFAULT_CONCURRENT_SESSIONS = 4
 
-#: What kind of endpoint a model answers on. "generate" and "pooling" are vLLM's
-#: own runner names and are passed through as --runner; "transcription" is not a
-#: flag — vLLM infers it from the architecture — but it is what says the model is
-#: reached through /tools/stt rather than registered as a LiteLLM chat route.
+#: "generate" | "pooling" (vLLM --runner names); "transcription" marks the STT
+#: backend reached through /tools/stt rather than a LiteLLM chat route.
 RUNNERS = ("generate", "pooling", "transcription")
 
-#: Where a model may sit. "head" is the first node in NODES_VLLM, which carries
-#: the always-on service stack; "pool" is every other node; "any" is unconstrained.
+#: "head": first node in NODES_VLLM; "pool": every other node; "any": unconstrained
 PLACEMENTS = ("any", "head", "pool")
 
 _SIZE = re.compile(r"^\s*([\d.]+)\s*([KMGT]i?B)?\s*$", re.I)
@@ -68,41 +61,24 @@ class ModelSpec:
     served_name: str
     ctx_floor: int
     concurrent_sessions: int
-    or_twin: Optional[ORTwin]
     #: Architectures that can serve it. Empty means all.
     arches: tuple[str, ...] = ()
-    #: Placement order, highest first. Coverage otherwise seats the largest model
-    #: first, which is a packing guard and not a statement of what matters: it
-    #: only keeps a big model from being starved by the small ones ahead of it.
-    #: Declare this where the cluster cannot hold everything and the operator —
-    #: not the weight table — should decide which model keeps a card.
+    #: Placement order, highest first; ties seat the largest model first
     priority: int = 0
-    #: Which nodes may hold it: "head" for the first node in NODES_VLLM, "pool"
-    #: for every other node, "any" for no constraint. The split separates the
-    #: always-on service stack — default chat, retrieval, transcription — from
-    #: the cards the large picker models take outright, so that adding one of
-    #: those cannot evict the path every request depends on. A cluster declaring
-    #: one node has no pool, and the constraint does not apply there.
+    #: One of PLACEMENTS. Ignored on a single-node cluster.
     placement: str = "any"
-    #: Relative weight for extra instances, once every model has one. A weight
-    #: and not a percentage: 60 and 40 divide spare nodes the same way 3 and 2
-    #: do. It decides only between models that compete for the same nodes.
+    #: Relative weight for extra instances among models competing for the same nodes
     share: float = 1.0
-    #: Cards to shard this model across on one node (``--tensor-parallel-size``).
-    #: 1 is a whole model per card. Above 1 the model claims that many cards
-    #: outright: vLLM is given them, and nothing else may be packed onto them.
+    #: Cards to shard across on one node (--tensor-parallel-size). Above 1 the
+    #: model takes those cards outright.
     tensor_parallel: int = 1
-    #: What the model answers. "generate" is autoregressive; "pooling" is an
-    #: embedding or reranking model, which decodes nothing and holds no KV cache
-    #: (see `planner.kv_bytes`); "transcription" decodes like a generate model
-    #: and is sized like one, and names the models reached through /tools/stt
-    #: instead of being registered as LiteLLM chat routes.
+    #: One of RUNNERS. Pooling holds no KV cache; transcription is sized like generate.
     runner: str = "generate"
-    #: None until config.json is probed. Filled by bind().
+    #: Filled by bind()
     metadata: Optional[ModelMetadata] = None
-    #: Native context; 0 before probing.
+    #: Native context; 0 before probing
     ctx_target: int = 0
-    #: When declared, these override whatever probing found.
+    #: Declared overrides of probed values
     ctx_target_override: Optional[int] = None
     weight_override: Optional[int] = None
 
@@ -111,7 +87,7 @@ class ModelSpec:
         return self.runner == "pooling"
 
     def runs_on(self, arch: str) -> bool:
-        """Servability on an architecture. A failed probe ("") is not excluded."""
+        """Servable on ``arch``; an unknown arch ("") is never excluded."""
         return not self.arches or not arch or arch in self.arches
 
     @property
@@ -121,10 +97,10 @@ class ModelSpec:
         return self.metadata.weight_bytes if self.metadata else 0
 
     def bind(self, metadata: ModelMetadata, native_ctx: int) -> "ModelSpec":
-        """New ModelSpec carrying the probe results."""
+        """Copy with probe results bound."""
         target = self.ctx_target_override or native_ctx
         floor = self.ctx_floor or max(CTX_FLOOR_MIN, target // CTX_FLOOR_DIVISOR)
-        # Floor clamped to target, for short-context models
+        # Clamped for short-context models
         floor = min(floor, target) if target else floor
         return replace(self, metadata=metadata, ctx_target=target, ctx_floor=floor)
 
@@ -140,20 +116,6 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
     if "hf_repo" not in entry:
         raise ValueError(f"{model_id}: hf_repo is required")
 
-    twin = None
-    if entry.get("openrouter"):
-        raw = entry["openrouter"]
-        # String: slug only. Mapping: slug and prices.
-        twin = (
-            ORTwin(slug=str(raw), in_price_pm=0.0, out_price_pm=0.0)
-            if isinstance(raw, str)
-            else ORTwin(
-                slug=str(raw["slug"]),
-                in_price_pm=float(raw.get("in_price_pm") or 0.0),
-                out_price_pm=float(raw.get("out_price_pm") or 0.0),
-            )
-        )
-
     runner = str(entry.get("runner") or "generate").strip().lower()
     if runner not in RUNNERS:
         raise ValueError(
@@ -165,8 +127,7 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
             f"{model_id}: placement {placement!r} is not one of "
             f"{', '.join(PLACEMENTS)}"
         )
-    # `or 1.0` would read a declared 0 as "undeclared" and weight it 1 — the
-    # opposite of what writing 0 says.
+    # Explicit 0 is an error, not the default
     raw_share = entry.get("share")
     share = 1.0 if raw_share is None else float(raw_share)
     if share <= 0:
@@ -177,8 +138,7 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
         id=model_id,
         hf_repo=str(entry["hf_repo"]),
         dir=str(entry.get("dir") or model_id),
-        # Service name derives from env_prefix, so the .env key and the compose
-        # service cannot drift apart
+        # Derived from env_prefix so the .env key and compose service agree
         service=str(entry.get("service") or env_prefix.lower().replace("_", "-")),
         port=int(entry.get("port") or BASE_PORT + index),
         env_prefix=env_prefix,
@@ -187,7 +147,6 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
         concurrent_sessions=int(
             entry.get("concurrent_sessions") or DEFAULT_CONCURRENT_SESSIONS
         ),
-        or_twin=twin,
         priority=int(entry.get("priority") or 0),
         placement=placement,
         share=share,
@@ -203,8 +162,7 @@ def load(path: Path | str, *, only: Iterable[str] | None = None) -> list[ModelSp
     """Read models.yaml. With ``only``, keep those ids in the given order.
 
     Raises:
-        KeyError: an id in ``only`` is not defined. A swallowed typo would leave
-            the missing deployment unexplained.
+        KeyError: an id in ``only`` is not defined.
     """
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     entries = data.get("models") or []

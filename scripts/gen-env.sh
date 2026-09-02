@@ -34,7 +34,7 @@ while IFS= read -r line; do
   if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=change-me- ]]; then
     key="${BASH_REMATCH[1]}"
     case "$key" in
-      # LiteLLM key convention — both master and virtual keys carry the sk- prefix
+      # LiteLLM key convention: sk- prefix
       LITELLM_MASTER_KEY)  secret="sk-$(gen_secret 32)" ;;
       *MASTER_KEY*|JWT_*)  secret="$(gen_secret 32)" ;;
       *)                   secret="$(gen_secret 16)" ;;

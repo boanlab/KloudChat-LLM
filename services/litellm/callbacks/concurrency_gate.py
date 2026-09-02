@@ -1,35 +1,20 @@
-"""Concurrency gate — bound local-model load without crossing privacy boundaries.
+"""Concurrency gate: bound in-flight load on local vLLM models.
 
-Why this exists
----------------
-LiteLLM's fallback chain only fires on *errors / timeout / cooldown*, not on plain
-saturation: an overloaded vLLM node keeps queuing requests (no error) and `timeout`
-is a blunt, time-based proxy that can't be lowered on the Deep-Research brain (its
-calls legitimately run minutes). What we actually want is a *concurrency* signal:
-"if this local model already has N requests in flight, send the overflow to OR."
+LiteLLM's fallbacks fire on errors, not on saturation. A daemon thread polls each
+gated model's vLLM /metrics (num_requests_running, num_requests_waiting) every
+CONCURRENCY_GATE_TTL seconds and marks the model saturated when running >= cap
+or anything is waiting. The pre-call hook then:
 
-vLLM exposes exactly that at `/metrics`:
-  vllm:num_requests_running  — in-flight (decoding) sequences
-  vllm:num_requests_waiting  — queued (capacity-blocked) requests
+  local/*         rewrites the request to the OpenRouter twin (spill)
+  strict-local/*  returns strict_local_unavailable; the model id never changes
 
-How it works
-------------
-A daemon thread polls each gated model's /metrics every CONCURRENCY_GATE_TTL seconds
-and records a boolean "saturated" (running >= cap, or anything waiting). The async
-pre-call hook reads that flag (non-blocking). A normal local alias is rewritten to
-its OpenRouter fallback twin. A model whose model_info carries
-`kchat_strict_local: true` is rejected with `strict_local_unavailable` instead;
-the hook never changes its model id.
+Gate entries come from /app/config.yaml: hosted_vllm/local/* deployments give the
+metrics URLs, model_info.kchat_strict_local marks reject-only aliases, and
+router_settings.fallbacks names each spill twin. Caps: DEFAULT_CAPS, overridable
+with CONCURRENCY_GATE_CAPS ({"local/<model>": <int>}).
 
-Config is derived from /app/config.yaml: local deployments (`hosted_vllm/local/*`)
-give the metrics URL (from api_base), `model_info.kchat_strict_local` identifies
-reject-only aliases, and `router_settings.fallbacks` gives normal aliases their OR
-twin. Caps default to the measured PRO6000 saturation knees and can be overridden
-with CONCURRENCY_GATE_CAPS (JSON: {"local/<model>": <int>}).
-
-If /metrics is unreachable, normal local routing remains fail-open (keep local)
-so a metrics blip never forces paid OR egress. Strict-local is fail-closed: an
-unknown capacity state is rejected instead of entering an unbounded queue.
+Unreachable metrics: normal aliases stay local (fail-open); strict aliases are
+rejected (fail-closed).
 """
 from __future__ import annotations
 
@@ -47,42 +32,28 @@ from litellm.integrations.custom_logger import CustomLogger
 
 log = logging.getLogger("litellm-concurrency-gate")
 
-POLL_TTL = float(os.environ.get("CONCURRENCY_GATE_TTL", "1.5"))  # seconds between polls
+POLL_TTL = float(os.environ.get("CONCURRENCY_GATE_TTL", "1.5"))
 SCRAPE_TIMEOUT = float(os.environ.get("CONCURRENCY_GATE_SCRAPE_TIMEOUT", "1.0"))
-# Every unique endpoint is scraped concurrently, so a complete cycle is bounded
-# by one scrape timeout rather than by ``aliases × nodes × timeout``. Keep a
-# second timeout of scheduling/network margin before a known-good sample can be
-# called stale.
+# Age past which a strict alias's last good sample no longer counts.
 STRICT_STATE_TTL = max(POLL_TTL * 3, POLL_TTL + SCRAPE_TIMEOUT * 2)
-# In-flight caps, keyed by LiteLLM model_name. A key matching no deployment
-# silently drops that model from the gate, so `_load_gate_map` warns about it.
-#
-# The numbers are starting points, not measurements: too high queues latency, too
-# low idles the card. The ~3B-active MoEs share a cap.
-#
-# The 122B does not. Its cap is the one figure here derived rather than guessed:
-# 78 GiB of weights leaves ~22 GiB of KV on a GB10, which is ~13 requests at the
-# 128K it is deployed with. Queueing past that preempts running sequences instead
-# of adding throughput, so the gate spills to OpenRouter first.
+# In-flight caps by LiteLLM model_name. A key with no matching deployment is
+# logged by _load_gate_map. The 122B's cap follows its KV pool: ~22 GiB at 128K
+# is ~13 requests, and queueing past that preempts running sequences.
 DEFAULT_CAPS = {
     "local/qwen3.6-35b": 64,
-    "local/glm-4.7-flash": 64,
     "local/qwen3.5-122b-a10b": 12,
-    "local/gemma-4-26b-a4b": 64,
-    # 48 KiB/token, so this one's KV pool empties four times faster than the 35B's
+    # 48 KiB/token KV
     "local/qwen3-coder-30b": 24,
     "local/qwen3.6-27b": 32,
     "strict-local/qwen3.6-35b": 64,
-    "strict-local/glm-4.7-flash": 64,
     "strict-local/qwen3.5-122b-a10b": 12,
-    "strict-local/gemma-4-26b-a4b": 64,
     "strict-local/qwen3-coder-30b": 24,
     "strict-local/qwen3.6-27b": 32,
 }
 
 
 class StrictLocalUnavailableError(RuntimeError):
-    """A strict-local request cannot queue safely at the configured capacity."""
+    """Strict-local request refused: capacity saturated or unknown."""
 
     def __init__(self) -> None:
         super().__init__("strict_local_unavailable")
@@ -106,7 +77,7 @@ def _metrics_url(api_base: str) -> str:
 
 
 def _load_gate_map() -> dict:
-    """Build spill/reject gate entries from the generated LiteLLM config."""
+    """Gate entries (metrics URLs, cap, mode, twin) from the LiteLLM config."""
     caps = dict(DEFAULT_CAPS)
     env_caps = os.environ.get("CONCURRENCY_GATE_CAPS")
     if env_caps:
@@ -122,8 +93,7 @@ def _load_gate_map() -> dict:
                     continue
                 overrides[model] = cap
             caps.update(overrides)
-            # Operators historically configure local/* only. Mirror that cap to
-            # its strict alias unless they explicitly supplied a different one.
+            # A local/* cap also applies to its strict alias unless given separately.
             for model, cap in overrides.items():
                 if model.startswith("local/") and cap > 0:
                     strict_model = "strict-local/" + model.removeprefix("local/")
@@ -173,9 +143,7 @@ def _load_gate_map() -> dict:
                     "or": twin[model],
                 }
             elif cap > 0:
-                # A cap naming a model the config doesn't serve is a stale key,
-                # not a no-op: the gate quietly stops protecting that model. Say
-                # which half is missing so a rename is one log line to diagnose.
+                # Cap with no matching deployment: say which half is missing.
                 missing = []
                 if model not in metrics:
                     missing.append("no local vLLM deployment")
@@ -189,7 +157,7 @@ def _load_gate_map() -> dict:
 
 
 def _scrape(url: str) -> tuple:
-    """Return (running, waiting) for a vLLM /metrics endpoint (summed across engines)."""
+    """(running, waiting) from a vLLM /metrics endpoint, summed across engines."""
     running = waiting = 0.0
     found_running = found_waiting = False
     with urllib.request.urlopen(url, timeout=SCRAPE_TIMEOUT) as r:
@@ -211,8 +179,7 @@ def _scrape(url: str) -> tuple:
 class ConcurrencyGate(CustomLogger):
     def __init__(self):
         self.gate = _load_gate_map()
-        # Strict capacity is unknown until the first successful scrape, which is
-        # a reject state. Normal aliases keep the historic fail-open default.
+        # Strict aliases start rejected until the first successful scrape.
         self._saturated = {m: g["mode"] == "reject" for m, g in self.gate.items()}
         self._last_success = {m: 0.0 for m in self.gate}
         if self.gate:
@@ -231,11 +198,8 @@ class ConcurrencyGate(CustomLogger):
             time.sleep(POLL_TTL)
 
     def _poll_once(self, *, debug: bool = False) -> None:
-        # A backend normally appears twice (normal and strict aliases), and a
-        # multi-node deployment contributes several URLs. Scrape every unique
-        # endpoint once and in parallel: sequential polling can take longer
-        # than STRICT_STATE_TTL and falsely expire a healthy strict alias before
-        # the next cycle reaches it.
+        # Each unique endpoint scraped once, in parallel, so a cycle stays
+        # within STRICT_STATE_TTL.
         urls = sorted(
             {
                 url
@@ -254,11 +218,9 @@ class ConcurrencyGate(CustomLogger):
                     for url, future in futures.items():
                         try:
                             samples_by_url[url] = future.result()
-                        except Exception as exc:  # one node is an unknown state
+                        except Exception as exc:
                             samples_by_url[url] = exc
             except Exception as exc:
-                # Executor creation itself is rare, but strict capacity is
-                # unknown in that case just as it is for a failed HTTP scrape.
                 samples_by_url = {url: exc for url in urls}
 
         for model, g in self.gate.items():
@@ -271,9 +233,8 @@ class ConcurrencyGate(CustomLogger):
                     samples.append(sample)
                 running = sum(sample[0] for sample in samples)
                 waiting = sum(sample[1] for sample in samples)
-                # LiteLLM may choose any deployment behind this alias. One
-                # saturated node is therefore enough to make strict capacity
-                # uncertain; normal aliases conservatively spill as well.
+                # Any one saturated node saturates the alias: LiteLLM may route
+                # to any deployment behind it.
                 sat = any(
                     node_running >= g["cap"] or node_waiting > 0
                     for node_running, node_waiting in samples
@@ -281,7 +242,7 @@ class ConcurrencyGate(CustomLogger):
                 self._last_success[model] = time.monotonic()
                 prev = self._saturated.get(model, False)
                 self._saturated[model] = sat
-                if sat != prev:  # log only on transition — operator signal, not per-request spam
+                if sat != prev:  # log transitions only
                     if sat and g["mode"] == "reject":
                         state = "REJECTING strict-local"
                     elif sat:
@@ -306,10 +267,7 @@ class ConcurrencyGate(CustomLogger):
                         sat,
                     )
             except Exception as e:
-                # Capacity is part of the strict privacy contract: if it cannot
-                # be observed, reject. Normal local aliases keep their historic
-                # fail-open behavior and still point only at the requested vLLM
-                # until a known saturation state triggers the paid spill.
+                # Unobservable capacity: strict rejects, normal stays local.
                 self._saturated[model] = g["mode"] == "reject"
                 if debug:
                     log.warning(
@@ -336,9 +294,7 @@ class ConcurrencyGate(CustomLogger):
                 log.warning("gate hook: model=%s gated=%s forced=%s sat=%s",
                             model, g is not None, forced, self._saturated.get(model))
             if g is None:
-                # Generated privacy aliases use this namespace. A missing gate
-                # entry is an unknown capacity state, never permission to call
-                # the backend without the fail-closed controls.
+                # Strict alias with no gate entry: unknown capacity, rejected.
                 if _strict_request(data):
                     return StrictLocalUnavailableError()
                 return None
@@ -357,8 +313,7 @@ class ConcurrencyGate(CustomLogger):
                 return None
             if g["mode"] == "reject":
                 log.warning("concurrency gate: rejecting saturated strict-local model %s", model)
-                # Pinned LiteLLM 1.83.7's process_pre_call_hook_response raises
-                # an Exception returned by this hook before the Router runs.
+                # LiteLLM raises an Exception returned by this hook before routing.
                 return StrictLocalUnavailableError()
             data["model"] = g["or"]
             if os.environ.get("CONCURRENCY_GATE_DEBUG") == "1":
@@ -377,13 +332,12 @@ class ConcurrencyGate(CustomLogger):
         user_api_key_dict: Any,
         traceback_str: Optional[str] = None,
     ) -> Any:
-        """Normalise strict backend failures without changing normal errors."""
+        """Strict-local backend failures surface as 503 strict_local_unavailable."""
         del original_exception, user_api_key_dict, traceback_str
         if not isinstance(request_data, dict) or not _strict_request(request_data):
             return None
-        # LiteLLM 1.83.7 treats an HTTPException returned by this hook as the
-        # client-facing error. Import lazily so the callback's pure unit tests
-        # do not need the full proxy dependency graph.
+        # An HTTPException returned here becomes the client-facing error.
+        # Lazy import keeps the unit tests free of the proxy dependency graph.
         from fastapi import HTTPException
 
         return HTTPException(
@@ -400,7 +354,7 @@ class ConcurrencyGate(CustomLogger):
 
 gate_instance = ConcurrencyGate()
 
-# Self-register so the dispatcher finds us even if CONFIG only triggers the import.
+# Self-registration, in case the config only triggers the import.
 try:
     import litellm as _litellm
     if gate_instance not in _litellm.callbacks:

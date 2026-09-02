@@ -1,39 +1,29 @@
-# Models vLLM can serve. VLLM_MODELS in .env selects which of them are deployed.
+# Models vLLM can serve. VLLM_MODELS in .env selects which are deployed.
 #
-# Fields not declared here are derived from the checkpoint's config.json and its
-# size on disk — see "Derived values" at the bottom of this file.
+# Undeclared fields are derived from the checkpoint's config.json and its size
+# on disk — see "Derived values" at the bottom.
 #
-# `placement` divides the cluster in two. The head node — the first target in
-# NODES_VLLM — holds the stack every request touches: default chat, retrieval,
-# and transcription where the architecture allows it. Every other node is the
-# pool, and holds the large models a user picks by name. Packing alone cannot
-# tell the two apart, and a 78 GiB model that lands on the head node takes the
-# floor with it: the whole deployment then answers slowly, rather than one
-# picker entry being absent. A cluster of one node has no pool and no split.
+# placement: "head" is the first target in NODES_VLLM (default chat, retrieval,
+# transcription); "pool" is every other node (large picker models); unset is
+# anywhere. A single-node cluster has no pool and the field is ignored.
 
 models:
   # Unified chat and floor: default chat, titles, memory extraction, deep
-  # research, coding agents. Every default route lands here, which is what the
-  # head node is for.
+  # research, coding agents. NVFP4 build.
   - id: qwen3.6-35b
     hf_repo: Qwen/Qwen3.6-35B-A3B
-    openrouter: qwen/qwen3.6-35b-a3b
-    # NVFP4 build; an unquantised checkpoint of the same id exists separately.
     dir: qwen3.6-35b-nvfp4
     env_prefix: VLLM_QWEN35B
     port: 8001
-    # A coding agent's session accumulates context the same way a research run
-    # does, and below 128K it is truncated rather than served.
+    # Coding-agent sessions accumulate context; below 128K they truncate
     ctx_floor: 131072
     priority: 20
     placement: head
 
-  # Coding. 80B total, 3B active, hybrid attention — 12 of 48 layers hold KV, so
-  # 12 KiB/token and an affordable 262K. FP8: serves on a card without FP4.
-  # 75 GiB, so it wants a pool card to itself; two in five of them.
+  # Coding. 80B-A3B, FP8, hybrid attention (12 of 48 layers hold KV). 75 GiB,
+  # so it takes a pool card to itself.
   - id: qwen3-coder-next
     hf_repo: Qwen/Qwen3-Coder-Next-FP8
-    openrouter: qwen/qwen3-coder-next
     dir: qwen3-coder-next
     env_prefix: VLLM_CODERNEXT
     port: 8008
@@ -41,109 +31,78 @@ models:
     placement: pool
     share: 40
 
-  # Top chat and deep research: 10B active, ~3x the decode cost of the 35B. Needs
-  # a card to itself, and takes three pool cards in five — the model the pool
-  # exists for.
+  # Top chat and deep research. 122B-A10B, NVFP4, 78 GiB: a pool card to itself.
   - id: qwen3.5-122b-a10b
     hf_repo: Qwen/Qwen3.5-122B-A10B-NVFP4
-    openrouter: qwen/qwen3.5-122b-a10b
     dir: qwen3.5-122b-a10b
     env_prefix: VLLM_QWEN122B
     port: 8004
-    # 128K rather than native 262K: 78 GiB of weights leaves ~22 GiB for KV on a
-    # GB10, and at 12 KiB/token that is depth or concurrency — docs/gpu-memory.md.
+    # 128K, not the native 262K: ~22 GiB of KV remain on a GB10 after the weights
     ctx_target: 131072
     ctx_floor: 131072
-    # The card serves nothing else; size the KV pool for real concurrency.
+    # Sole tenant of its card, so the KV pool is sized for real concurrency
     concurrent_sessions: 12
-    # Cards to shard across on one node. 1 fits a 121.6 GiB GB10 whole. A 96 GiB
-    # card needs 2, which also buys back the native 256K — a sharded model takes
-    # those cards outright, so such a host serves this or qwen3.6-35b, not both.
+    # 1 fits a GB10 whole; a 96 GiB card needs 2, which then serve nothing else
     tensor_parallel: 1
     priority: 15
     placement: pool
     share: 60
 
-  # Cheap-decode floor (31.2B-A3B).
-  - id: glm-4.7-flash
-    hf_repo: zai-org/GLM-4.7-Flash
-    openrouter: z-ai/glm-4.7-flash
-    env_prefix: VLLM_GLMFLASH
-    port: 8002
-
-  # A second family: an alternative when a Qwen answer is wrong. 4B active of 26B.
-  - id: gemma-4-26b-a4b
-    hf_repo: google/gemma-4-26B-A4B-it
-    openrouter: google/gemma-4-26b-a4b-it
-    dir: gemma-4-26b
-    env_prefix: VLLM_GEMMA26B
-    port: 8005
-    # Below the derived 64K: an alternative to reach for, not a long-context
-    # workhorse. Restoration grows it where there is room.
-    ctx_floor: 32768
-
-  # Coding, smaller. FP8. Superseded by qwen3-coder-next where 75 GiB fits.
+  # Coding, smaller. FP8. Picker choice; superseded by qwen3-coder-next where
+  # 75 GiB fits.
   - id: qwen3-coder-30b
     hf_repo: Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
-    openrouter: qwen/qwen3-coder-30b-a3b-instruct
     dir: qwen3-coder-30b
     env_prefix: VLLM_CODER30B
     port: 8006
-    # 48 full-attention layers at 48 KiB/token, the most KV-expensive here.
+    # 48 full-attention layers at 48 KiB/token: the most KV-expensive model here
     ctx_floor: 32768
 
-  # The one dense model: slower per token, but it does not route.
+  # Dense model. Picker choice; nothing routes here by default.
   - id: qwen3.6-27b
     hf_repo: Qwen/Qwen3.6-27B
-    openrouter: qwen/qwen3.6-27b
     dir: qwen3.6-27b
     env_prefix: VLLM_QWEN27B
     port: 8007
     ctx_floor: 32768
 
-  # Transcription, on the engine every other model already uses. ctranslate2's
-  # aarch64 wheels are CPU-only, so a faster-whisper backend would make the arm64
-  # nodes the one place STT leaves the network.
-  # Below bge-m3: losing embeddings turns /tools/index into lexical matching,
-  # while losing this one falls back to OpenRouter and still transcribes.
+  # Transcription. Reached through whisper-shim at /tools/stt, not a LiteLLM
+  # chat route; LiteLLM registers OpenRouter STT only while WHISPER_URLS is empty.
   - id: whisper-large-v3
     hf_repo: openai/whisper-large-v3
     dir: whisper-large-v3
     env_prefix: VLLM_WHISPER
-    # 9000 rather than the 800x block: whisper-shim addresses its backends there.
+    # whisper-shim addresses its backends on 9000
     port: 9000
-    # Not a chat route: whisper-shim reaches it at /tools/stt, and LiteLLM
-    # registers OpenRouter's STT only while WHISPER_URLS is empty.
     runner: transcription
     placement: head
+    # Below bge-m3: losing this falls back to OpenRouter, losing embeddings
+    # degrades /tools/index to lexical search
     priority: 4
-    # ctx is the decoder's 448 tokens, read from the checkpoint. One clip at a
-    # time; longer audio is split by the server before it reaches the decoder.
+    # Decoder context is 448 tokens; longer audio is split server-side
     concurrent_sessions: 4
 
-  # Retrieval reranking: second stage over what the vector search returns.
+  # Retrieval reranking: second stage over vector search
   - id: bge-reranker-v2-m3
     hf_repo: BAAI/bge-reranker-v2-m3
     env_prefix: VLLM_RERANK
     port: 8009
     runner: pooling
-    # Query and passage share the window.
+    # Query and passage share the window
     ctx_floor: 8192
     placement: head
 
-  # Retrieval embeddings. No openrouter twin — OpenRouter serves no embedding
-  # model; the OpenAI fallback is wired in gen-litellm-config.sh.
+  # Retrieval embeddings. OpenAI fallback wired in gen-litellm-config.sh.
   - id: bge-m3
     hf_repo: BAAI/bge-m3
     env_prefix: VLLM_BGEM3
     port: 8003
     runner: pooling
-    # Above the optional chat models: 6 GiB, and the whole retrieval path.
-    # Delegating it does not move it elsewhere, it turns /tools/index into
-    # lexical matching. Not higher — 6 GiB must not displace a card-sized model.
+    # Above the optional chat models (6 GiB, the whole retrieval path); below
+    # the card-sized ones
     priority: 5
     placement: head
-    # One chunk at a time.
+    # One chunk at a time
     ctx_floor: 8192
 
 # ── Derived values ──────────────────────────────────────────────────────────
@@ -155,15 +114,15 @@ models:
 #   ctx_target      max_position_embeddings from config.json
 #   ctx_floor       ctx_target / 4, never below 32768
 #   service         env_prefix lowercased    service in docker-compose.vllm.yml
-#   port            sequential from 8001     declared on every entry: the derived
-#                                            value shifts when one is inserted
+#   port            sequential from 8001     declared on every entry so an
+#                                            insertion does not shift the rest
 #   served_name     local/<id>               the name LiteLLM exposes
 #   arches          all                      declare only to exclude one
 #   runner          generate                 "pooling" for embedding and reranking,
 #                                            "transcription" for the STT backend
 #   tensor_parallel 1                        cards to shard across on one node
 #   priority        0                        placement order, highest first;
-#                                            ties fall back to largest-first
+#                                            ties seat the largest first
 #   placement       any                      "head", "pool", or any node
 #   share           1                        weight for extra instances, among
 #                                            models competing for the same nodes

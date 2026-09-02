@@ -4,10 +4,10 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 The backend plane for KloudChat: a model gateway (LiteLLM) and the tools a chat
-turn calls, packaged together and exposed through **a single gateway port**.
+turn calls, packaged together and exposed through **one gateway port**.
 
-[`KloudChat`](https://github.com/boanlab/KloudChat) connects by entering
-that one address in its admin screen. No backend address is compiled into the UI.
+[`KloudChat`](https://github.com/boanlab/KloudChat) connects by entering that
+one address in its admin screen. No backend address is compiled into the UI.
 
 ```
 ┌─ KloudChat (UI) ────────┐        ┌─ KloudChat-LLM ─────────────────────────┐
@@ -24,15 +24,12 @@ that one address in its admin screen. No backend address is compiled into the UI
                                    └─────────────────────────────────────────┘
 ```
 
-`/tools/*` requires no authentication — **the gateway port must only be open
-inside a private network**, because the code execution endpoint sits behind it.
-Each backing store (the two databases, MinIO, redis, valkey) sits on an internal
-network with only the service that owns it, so nothing else in the stack can
-reach it.
-Internal service keys (code execution, document fetching) are injected by the
-gateway, so the UI never learns them and caller-supplied credentials are ignored.
-Only `/litellm/*` passes the caller's key through, alongside `/v1/*` for
-OpenAI-compatible clients that connect directly.
+`/tools/*` requires no authentication. **The gateway port must only be open
+inside a private network**: the code execution endpoint sits behind it. Each
+backing store (the two databases, MinIO, redis, valkey) is on an internal
+network shared only with the service that owns it. Internal service keys (code
+execution, document fetching) are injected by the gateway; the UI never learns
+them. Only `/litellm/*` and `/v1/*` pass the caller's key through.
 
 ## Quick start
 
@@ -42,10 +39,8 @@ $EDITOR .env                  # fill in the table below
 ./scripts/setup.sh all
 ```
 
-Images come from Docker Hub: the `Publish images` workflow rebuilds one whenever
-its service directory changes on main, and `setup.sh` pulls what is published.
-`./scripts/setup.sh all --build` builds this working tree's images instead, which
-is what an unmerged edit to a service needs.
+Images come from Docker Hub. `./scripts/setup.sh all --build` builds this
+working tree's images instead, for a service change that is not merged yet.
 
 The run ends by printing the addresses to paste into the UI admin screen. Print
 them again at any time:
@@ -59,37 +54,35 @@ them again at any time:
 | Variable | Value | Notes |
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
-| `HF_TOKEN` | optional | Hugging Face gated repositories — weight downloads |
-| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. Only when serving models locally. The first is the head node — default chat, retrieval, transcription — and the rest hold the large picker models |
+| `HF_TOKEN` | optional | Hugging Face gated repositories, for weight downloads |
+| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. The first is the head node (default chat, retrieval, transcription); the rest are the pool (large picker models) |
 | `VLLM_MODELS` | model id CSV | What to deploy. Defined in `scheduler/models.yaml` |
 
-Do not write `VLLM_*_URL` by hand — the placement step inside `setup.sh all`
-decides those and records them in `.env`. To manage them yourself, set
-`KLOUDCHAT_SKIP_SCHEDULER=1` and fill in the URLs.
+`VLLM_*_URL` is written by the placement step inside `setup.sh all`. To manage
+those by hand, run it as `KLOUDCHAT_SKIP_SCHEDULER=1 ./scripts/setup.sh all`.
 
-You need **at least one** of an OpenRouter key or a vLLM node.
+At least one of an OpenRouter key or a vLLM node is required.
 
 ### Preparing a GPU node
 
 ```bash
-./scripts/install-vllm.sh          # the vLLM image and a GPU runtime check
-./scripts/download-vllm-models.sh  # only weights this card can actually serve
+./scripts/install-vllm.sh          # vLLM image and GPU runtime check
+./scripts/download-vllm-models.sh  # only weights this card can serve
 ```
 
-A GPU node has one role, `vllm`: transcription is a vLLM service like the rest
-(`whisper-large-v3`), so a node serves it on any architecture.
-Filling in `NODES_VLLM` lets `setup.sh all` run the installer on each node over
-SSH. **Model downloads always run on the node itself.**
+A GPU node has one role, `vllm`. Transcription (`whisper-large-v3`) is a vLLM
+service like the rest, on any architecture. With `NODES_VLLM` filled in,
+`setup.sh all` runs the installer on each node over SSH. Model downloads run on
+the node itself.
 
-The downloader inspects the card first. Weights that need FP4 the card cannot
-execute, or more memory than it has, are skipped with the reason — no 20 GB
-download that ends in an engine that will not start.
+The downloader inspects the card first: weights that need a format the card
+cannot execute, or more memory than it has, are skipped with the reason.
 
 ## Layout
 
 ```
 docker-compose.yml          gateway + tools + LiteLLM (composed by profiles)
-docker-compose.vllm.yml     what a GPU node serves — every vLLM service
+docker-compose.vllm.yml     what a GPU node serves: every vLLM service
 docs/                       operator documentation
 scheduler/                  model placement (its own README inside)
 scripts/                    setup · config generation · node install · operations
@@ -104,7 +97,8 @@ services/                   one directory per service: Dockerfile, source, confi
 |---|---|
 | `tools` | gateway · web search · document fetch · code execution · deep research |
 | `models` | LiteLLM and its database |
-| `whisper` | transcription shim — `setup.sh` enables it once the model is placed |
+| `whisper` | transcription shim. `setup.sh` enables it once the model is placed |
+| `index` | retrieval index (pgvector) and its shim |
 
 The default is `tools,models`. To put tools on one machine and models on
 another, enable only the profile each machine needs: the UI accepts a different
@@ -116,7 +110,7 @@ address per capability.
 ./scripts/setup.sh up            # restart the stack only (no node install, no placement)
 ./scripts/setup.sh stop|start    # stop / resume containers, data preserved
 ./scripts/setup.sh urls          # integration addresses and per-capability status
-./scripts/setup.sh clean         # destructive — removes containers and runtime data
+./scripts/setup.sh clean         # destructive: removes containers and runtime data
 
 ./scripts/setup.sh scheduler plan     # compute placement (changes nothing)
 ./scripts/setup.sh scheduler apply    # apply it
@@ -132,34 +126,26 @@ Every script prints its usage when run without arguments.
 |---|---|
 | Linux amd64, no GPU | OpenRouter only |
 | Linux amd64 + NVIDIA GPU (RTX 5090 / PRO 5000 / PRO 6000) | Local GPU with OpenRouter fallback |
-| Linux arm64 — GB10 | Local GPU with OpenRouter fallback |
-| AMD / ROCm, Apple, anything else | Not supported — OpenRouter only |
+| Linux arm64, GB10 | Local GPU with OpenRouter fallback |
+| AMD / ROCm, Apple, anything else | Not supported. OpenRouter only |
 
-**Local serving is NVIDIA-only, deliberately.** Detection, the container runtime
-reservation, device pinning and kernel selection all go through NVIDIA
-interfaces, and the quantisation gate is written in compute capability, which has
-no AMD equivalent. Porting the probe layer is a day's work; carrying a second
-model lineup — AMD cannot run NVFP4 at all — is not, and none of it can be
-verified without the hardware. Adding ROCm is a real project, not a flag.
+Local serving is NVIDIA-only: detection, the container runtime reservation,
+device pinning and the quantisation gate all go through NVIDIA interfaces, and
+the default weights are NVFP4, a format with no AMD counterpart.
 
-**Within NVIDIA, two things decide whether a card can serve: size, then format.**
-32 GiB usable is the floor — on 24 GiB exactly one model in the catalogue places,
-at its 32K context floor and 0.92 of the card, which is a demonstration rather
-than a deployment. Above that floor, the default weights are NVFP4 and need
-compute capability 10.0 (GB10, RTX 5090, PRO 5000/6000); an FP4-less card of
-48 GiB or more runs the AWQ int4 aliases instead, at 128K–256K.
-
-`scripts/download-vllm-models.sh` refuses weights the card cannot hold or cannot
-execute, with the reason, rather than letting it fail at engine start. Where
-nothing fits, the placement step says so and delegates to OpenRouter.
+Two things decide whether a card can serve: size, then format. 32 GiB usable is
+the floor. The default weights are NVFP4 and need compute capability 10.0 (GB10,
+RTX 5090, PRO 5000/6000); an FP4-less card of 48 GiB or more runs the AWQ int4
+build of the chat model instead. Where nothing fits, the placement step says so
+and delegates to OpenRouter.
 
 ## Documentation
 
-- [`docs/`](docs/) — prerequisites, environment variables, models, tools, troubleshooting
-- [`scheduler/README.md`](scheduler/README.md) — how placement is decided
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — layout, checks, conventions
-- [`SECURITY.md`](SECURITY.md) — threat model and how to report a vulnerability
+- [`docs/`](docs/): prerequisites, environment variables, models, tools, troubleshooting
+- [`scheduler/README.md`](scheduler/README.md): how placement is decided
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): layout, checks, conventions
+- [`SECURITY.md`](SECURITY.md): threat model and how to report a vulnerability
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Apache-2.0, see [LICENSE](LICENSE).

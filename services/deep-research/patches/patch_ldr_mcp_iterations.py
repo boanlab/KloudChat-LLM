@@ -1,20 +1,10 @@
-"""Patch local-deep-research's MCP tool schema so numeric params accept strings.
+"""Widen local-deep-research's MCP `iterations` / `questions_per_iteration` params to accept strings.
 
-Why: MCP clients validate a tool_call's arguments against the tool's
-inputSchema *before* dispatching to the MCP server. LDR types the exposed
-`quick_research`/`detailed_research` params `iterations` and
-`questions_per_iteration` as ``Optional[int]``, so the generated JSON schema is
-``integer``. The Deep Research model frequently emits them as
-JSON strings ("2" instead of 2); the client then rejects the call with
-"Received tool input did not match expected schema", the deep_research engine
-never runs, and the agent silently degrades to plain web_search/fetch_url.
-
-Fix: widen the two exposed numeric tool params to ``Optional[Union[int, str]]``
-(so the schema accepts a string) and coerce numeric strings to int inside the
-validators (the schema check is at the MCP layer, so the function
-runtime must accept the string form too).
-
-Applied at image build time (Dockerfile.deep-research-mcp). Idempotent.
+MCP clients validate tool arguments against the inputSchema before dispatch, and
+models often send "2" rather than 2; with the upstream ``Optional[int]`` the call
+is rejected and research degrades to plain search. The types become
+``Optional[Union[int, str]]`` and numeric strings are coerced in the validators.
+Applied at image build time; idempotent.
 """
 import pathlib
 

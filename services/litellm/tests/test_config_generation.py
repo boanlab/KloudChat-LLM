@@ -40,8 +40,8 @@ def _fake_curl(bin_dir: Path) -> None:
             case "$url" in
               *qwen.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/qwen3.6-35b","max_model_len":65536}]}' ;;
-              *glm.test*/v1/models)
-                printf '%s\n' '{"data":[{"id":"local/glm-4.7-flash","max_model_len":32768}]}' ;;
+              *big.test*/v1/models)
+                printf '%s\n' '{"data":[{"id":"local/qwen3.5-122b-a10b","max_model_len":131072}]}' ;;
               *bge.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/bge-m3","max_model_len":8192}]}' ;;
               *whisper.test*/v1/models)
@@ -99,7 +99,7 @@ def _run_generator(
         "OPENROUTER_API_KEY": "test-openrouter-key" if with_openrouter else "",
         "OPENAI_API_KEY": "test-openai-key" if include_all_classes else "",
         "VLLM_QWEN35B_URL": "http://qwen.test:8000" if with_vllm else "",
-        "VLLM_GLMFLASH_URL": "http://glm.test:8000" if include_all_classes else "",
+        "VLLM_QWEN122B_URL": "http://big.test:8000" if include_all_classes else "",
         "VLLM_BGEM3_URL": "http://bge.test:8000" if include_all_classes else "",
         "WHISPER_URLS": (
             whisper_urls if whisper_urls is not None
@@ -147,8 +147,7 @@ def _parse_dry_run(output: str) -> tuple[list[dict], list[dict]]:
     ("with_vllm", "with_openrouter", "normal_boundary", "has_strict", "has_fallback"),
     [
         (False, False, None, False, False),
-        # No vLLM URL: nothing about the route is local, so the model registers
-        # under its OpenRouter slug instead of borrowing the local/ name.
+        # No vLLM URL: the model registers under its OpenRouter slug, not local/.
         (False, True, None, False, False),
         (True, False, "self_hosted", True, False),
         (True, True, "hybrid", True, True),
@@ -186,18 +185,14 @@ def test_local_and_strict_aliases_follow_deployment_topology(
         assert strict["model_info"]["kchat_strict_local"] is True
         assert strict["model_info"]["kchat_privacy_only"] is True
 
-    # The OpenRouter slug appears either way, but for opposite reasons: as the
-    # hidden failover twin behind a local deployment, or — with no deployment —
-    # as the model's only route, and then it belongs in the picker. Both at once
-    # would put two deployments under one name and split ordinary traffic onto
-    # the paid one.
+    # The OpenRouter slug is the hidden failover twin behind a local deployment,
+    # or the visible only route without one; never both.
     twin = by_name.get("qwen/qwen3.6-35b-a3b")
     assert (twin is not None) is with_openrouter
     if twin is not None:
         assert twin["model_info"]["kchat_data_boundary"] == "external"
         assert twin["model_info"].get("kchat_hidden", False) is with_vllm
-        # Visible route: it is what the picker offers, so it has to declare the
-        # tool support the local alias would have declared.
+        # A visible route declares the tool support the local alias would have.
         if not with_vllm:
             assert twin["model_info"]["supports_function_calling"] is True
             assert twin["model_info"]["supports_tool_choice"] is True
@@ -211,13 +206,7 @@ def test_local_and_strict_aliases_follow_deployment_topology(
 def test_local_alias_never_carries_an_external_boundary(
     tmp_path: Path, with_vllm: bool
 ) -> None:
-    """The local/ prefix states where a request starts.
-
-    A local deployment that spills to OpenRouter under load still starts local,
-    so hybrid is honest. A route that starts at OpenRouter has no claim on the
-    name, and an operator reading the catalogue must not have to check
-    model_info to find that out.
-    """
+    """A local/ alias is never registered with an external data boundary."""
     result, _ = _run_generator(
         tmp_path, with_vllm=with_vllm, with_openrouter=True, include_all_classes=True
     )
@@ -252,7 +241,7 @@ def test_every_generated_model_class_declares_its_boundary(tmp_path: Path) -> No
     by_name = {model["model_name"]: model for model in models}
     assert by_name["local/bge-m3"]["model_info"]["kchat_data_boundary"] == "self_hosted"
     assert by_name["text-embedding-3-small"]["model_info"]["kchat_data_boundary"] == "external"
-    assert by_name["strict-local/glm-4.7-flash"]["model_info"]["kchat_strict_local"] is True
+    assert by_name["strict-local/qwen3.5-122b-a10b"]["model_info"]["kchat_strict_local"] is True
 
 
 def test_regeneration_disables_existing_prompt_storage_without_losing_config(
@@ -302,7 +291,7 @@ def _stt_registered(output: str) -> bool:
 
 
 def test_a_placed_transcription_backend_keeps_stt_local(tmp_path: Path) -> None:
-    """A backend that answers is the whole reason not to register OpenRouter STT."""
+    """A live transcription backend suppresses the OpenRouter STT route."""
     result, _ = _run_generator(
         tmp_path, with_vllm=True, with_openrouter=True,
         whisper_urls="http://whisper.test:9000",
@@ -311,10 +300,7 @@ def test_a_placed_transcription_backend_keeps_stt_local(tmp_path: Path) -> None:
 
 
 def test_a_placed_but_dead_transcription_backend_still_delegates(tmp_path: Path) -> None:
-    """WHISPER_URLS says where the model was *placed*, which the scheduler writes
-    from the plan. A container that failed to start leaves the URL behind, and
-    reading that as "there is a local backend" takes dictation from delegated to
-    dead."""
+    """A placed but unreachable transcription backend still registers OpenRouter STT."""
     result, _ = _run_generator(
         tmp_path, with_vllm=True, with_openrouter=True,
         whisper_urls="http://whisper-down.test:9000",
@@ -330,14 +316,7 @@ def test_no_transcription_backend_at_all_delegates(tmp_path: Path) -> None:
 
 
 def test_every_chat_model_in_the_catalogue_is_registered() -> None:
-    """models.yaml decides what can be served; this script decides what is routed.
-
-    They are two lists of the same models, and nothing fails loudly when they
-    drift: `qwen3-coder-next` was placed on a node, came up healthy, and was
-    simply absent from the gateway — no error anywhere, just a model nobody
-    could reach. Pooling models are routed by their own emitters and are not
-    part of this list.
-    """
+    """Every generate-runner model in models.yaml has an emit_brain line and its twin named."""
     catalogue = yaml.safe_load((ROOT / "scheduler" / "models.yaml").read_text())
     generator = GENERATOR.read_text()
 
