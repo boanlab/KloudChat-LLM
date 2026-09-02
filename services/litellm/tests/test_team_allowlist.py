@@ -28,7 +28,7 @@ def test_add_strict_preserves_restricted_team_allowlists(tmp_path: Path) -> None
     env_file.write_text(
         "LITELLM_MASTER_KEY=test-master-key\n"
         "VLLM_QWEN35B_URL=http://qwen.test:8000\n"
-        "VLLM_GLMFLASH_URL=\n"
+        "VLLM_QWEN122B_URL=\n"
         "OPENROUTER_API_KEY=\n"
     )
     capture = tmp_path / "updates.jsonl"

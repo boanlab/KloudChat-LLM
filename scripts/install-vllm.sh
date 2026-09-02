@@ -1,22 +1,16 @@
 #!/usr/bin/env bash
 # Usage: install-vllm.sh [--reinstall] [--image <tag>]
 #
-# Prepares a GPU node for everything it serves. One image covers all of it,
-# transcription included: whisper is a vLLM service like the rest.
-#
-#   1. GPU runtime check and vLLM image pull
-#   2. Model directory
-#
-# Weights are downloaded by download-vllm-models.sh; services are started by
-# manage-vllm.sh.
+# Prepares a GPU node: GPU runtime check, vLLM image (pull + this repo's layer),
+# model directory. Weights: download-vllm-models.sh; services: manage-vllm.sh.
 #
 # Environment:
-#   VLLM_IMAGE        image override (default: chosen by architecture)
-#   VLLM_MODELS_ROOT  model storage location (default /var/lib/vllm/models)
+#   VLLM_BASE_IMAGE   upstream image (default: by architecture, lib.sh)
+#   VLLM_MODELS_ROOT  model storage (default /var/lib/vllm/models)
 #
 # Flags:
-#   --reinstall       re-pull the image
-#   --image <tag>     one-off override of the base image, same as VLLM_BASE_IMAGE
+#   --reinstall       re-pull the base image
+#   --image <tag>     one-off base image override
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,14 +40,11 @@ ok "GPU: $(get_gpu_name) (class=$(detect_gpu_class))"
 command -v docker &>/dev/null || { err "Docker not found."; exit 1; }
 ok "Docker $(docker --version | awk '{print $3}' | tr -d ',')"
 
-# A real `docker run --gpus all` passthrough is the gate. The Runtimes line in
-# `docker info` reports false negatives while the daemon is busy.
+# A real --gpus passthrough is the gate; `docker info` Runtimes has false negatives.
 hdr "1. GPU runtime check"
 if docker run --rm --gpus all --entrypoint nvidia-smi nvcr.io/nvidia/cuda:12.6.3-base-ubuntu24.04 -L &>/dev/null; then
   ok "GPU passthrough confirmed (--gpus all)"
 elif docker info 2>/dev/null | grep -q "Runtimes:.*nvidia"; then
-  # Registered runtime with a failed probe: most likely a CUDA base image pull.
-  # Not fatal — the vLLM container settles it.
   warn "GPU passthrough probe failed but the nvidia runtime is registered — likely a CUDA base image pull issue, continuing"
 else
   err "the nvidia container runtime is not working — install nvidia-container-toolkit and restart docker"
@@ -65,8 +56,7 @@ else
 fi
 
 hdr "2. vLLM image"
-# Base and derived are separate tags: sharing one overwrites the pulled tag with
-# a local build, which destroys the provenance the digest pin depends on.
+# Base (pulled) and derived (built here) are separate tags.
 VLLM_BASE_IMAGE="${IMAGE_OVERRIDE:-${VLLM_BASE_IMAGE:-$(vllm_default_image)}}"
 [[ -n "$VLLM_BASE_IMAGE" ]] || { err "could not determine the vLLM base image — pass --image or set VLLM_BASE_IMAGE"; exit 1; }
 VLLM_IMAGE="kloudchat-vllm:local"
@@ -78,15 +68,12 @@ if (( REINSTALL )) || ! docker image inspect "$VLLM_BASE_IMAGE" &>/dev/null; the
   docker pull "$VLLM_BASE_IMAGE"
 fi
 
-# The digest the tag actually resolved to. Recorded so a rebuild on another node,
-# or after the tag moves, is reproducible rather than "whatever nightly is today"
-# — a moving base once relocated the tool-parser registry, which leaves every
-# container healthy and every tool call silently unparsed.
+# Digest the tag resolved to, recorded for reproducible rebuilds.
 BASE_DIGEST="$(image_base_digest "$VLLM_BASE_IMAGE")"
 [[ -n "$BASE_DIGEST" ]] && echo "  digest:  $BASE_DIGEST"
 
-# This repo's layer over the base: pytest, the audio decoders the transcription
-# endpoint needs, and the GB10 MLA patch. Context is services/vllm for patches/.
+# This repo's layer over the base: pytest and the audio decoders the
+# transcription endpoint needs.
 echo "  → building services/vllm/Dockerfile onto the base"
 docker build --quiet \
   --build-arg "BASE_IMAGE=$VLLM_BASE_IMAGE" \
@@ -95,22 +82,10 @@ docker build --quiet \
 
 ok "image ready: $(docker image inspect "$VLLM_IMAGE" --format '{{.Size}}' | awk '{printf "%.1fGB",$1/1024/1024/1024}')"
 
-# Recorded in .env for docker-compose.vllm.yml. VLLM_IMAGE is what compose runs;
-# the base and its digest are recorded so the build can be reproduced.
+# .env for docker-compose.vllm.yml
 env_set VLLM_IMAGE "$VLLM_IMAGE"
 env_set VLLM_BASE_IMAGE "$VLLM_BASE_IMAGE"
 [[ -n "$BASE_DIGEST" ]] && env_set VLLM_BASE_DIGEST "$BASE_DIGEST"
-
-# MLA attention backend for this card. A hardware fact, so it is decided where
-# the hardware is, not by a default in compose that happens to suit one card.
-# Empty leaves vLLM to choose, which is what an unrecognised card should get.
-MLA_BACKEND="$(mla_attention_backend)"
-if [[ -n "$MLA_BACKEND" ]]; then
-  echo "  MLA attention backend for $(detect_gpu_class): $MLA_BACKEND"
-  env_set VLLM_GLMFLASH_ATTN_BACKEND "$MLA_BACKEND"
-else
-  warn "unrecognised card — leaving the MLA attention backend to vLLM"
-fi
 
 hdr "3. Model directory"
 echo "  VLLM_MODELS_ROOT: $VLLM_MODELS_ROOT"
@@ -130,9 +105,7 @@ cat <<EOF
   ./scripts/download-vllm-models.sh                # only weights this card can serve
   ./scripts/manage-vllm.sh up                      # placement is the scheduler's job: python3 -m scheduler apply
 
-  # Fill in VLLM_*_URL in .env, then re-run setup.sh or gen-litellm-config.sh.
-  # LiteLLM load-balances across every deployment of the same model_name.
-  # WHISPER_URLS follows the transcription model's placement, written by the
-  # scheduler; an empty value is what routes STT to OpenRouter.
+  # The scheduler writes VLLM_*_URL and WHISPER_URLS into the orchestrator's .env;
+  # gen-litellm-config.sh registers from them.
 
 EOF

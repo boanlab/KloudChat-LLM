@@ -1,5 +1,3 @@
-# No browser, no CUDA — this process chunks text, calls the gateway for vectors
-# and talks to Postgres. The slim base is the whole dependency footprint.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

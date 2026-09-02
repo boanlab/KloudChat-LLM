@@ -1,4 +1,4 @@
-# Playwright python base — ships Chromium and its system dependencies
+# Playwright base: Chromium and its system dependencies
 FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -11,7 +11,7 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install -r /app/requirements.txt
 
-# Verify the browser binaries and generate config (a no-op: the base has them)
+# Browser check and config generation
 RUN crawl4ai-setup || true
 
 COPY app.py /app/app.py

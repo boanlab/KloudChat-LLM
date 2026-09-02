@@ -35,7 +35,7 @@ require_arg() { [[ -n "$2" ]] || { err "$1 required"; exit 1; }; }
 require_email() {
   [[ "$2" =~ ^[^@]+@[^@]+\.[^@]+$ ]] || { err "$1 must be email: $2"; exit 1; }
 }
-# Safe exit under set -u when a flag's value is missing. Usage: `--foo) need_val "$@"; foo="$2"; shift 2 ;;`
+# Flag value guard: `--foo) need_val "$@"; foo="$2"; shift 2 ;;`
 need_val() { [[ -n "${2:-}" ]] || { err "$1 requires a value"; exit 1; }; }
 
 cmd_team_create() {
@@ -95,8 +95,8 @@ cmd_team_delete() {
   litellm_post "/team/delete" "{\"team_ids\":[\"$id\"]}" | jq .
 }
 
-# Sync every team's model allowlist to the current catalog. If not run after a
-# lib.sh catalog change, existing teams reject new models with 401.
+# Every team's model allowlist → the current catalogue. Run after a catalogue
+# change, or existing teams reject the new models.
 cmd_team_sync() {
   local models; models="$(litellm_chat_models_csv)"
   [[ -z "$models" ]] && { err "0 litellm chat models — run gen-litellm-config + restart first"; exit 1; }
@@ -116,11 +116,8 @@ cmd_team_sync() {
   echo "team/sync: $n_ok/$n updated, $n_fail failed (models: $(echo "$models" | tr ',' '\n' | wc -l))"
 }
 
-# Add privacy-safe aliases without replacing an existing team's restrictions.
-# An explicit local/<model> grant implies the matching strict-local/<model>
-# grant. Empty/null lists are left untouched because LiteLLM treats them as an
-# unrestricted team; teams that do not allow the normal local model get no new
-# access.
+# strict-local/<m> for every team that already allows local/<m>. Empty lists
+# (unrestricted teams) are left alone.
 cmd_team_add_strict() {
   local catalogue strict_json teams
   catalogue="$(litellm_chat_models_csv)"
@@ -168,8 +165,7 @@ cmd_user_list() {
     | "\(.user_id)\t\(.user_role)\tspend:\(.spend // 0)$"'
 }
 
-# Per-user usage (this month's spend) vs monthly budget (max_budget). --user for a single user.
-# spend resets every budget_duration (1mo) — the RESET column = next reset date.
+# Per-user spend vs monthly budget; RESET = next budget reset date.
 cmd_user_usage() {
   local user_id=""
   while [[ $# -gt 0 ]]; do case "$1" in --user) need_val "$@"; user_id="$2"; shift 2 ;; *) shift ;; esac; done
@@ -183,14 +179,12 @@ cmd_user_usage() {
           (if .max_budget == null then "unlimited" else "$" + (.max_budget|tostring) end),
           (if (.max_budget // 0) > 0 then (((.spend // 0)/.max_budget*100)|floor|tostring)+"%" else "-" end),
           ((.budget_reset_at // "-")[0:10]) ] | @tsv'; } )"
-  # Fall back to raw TSV if column is missing (rare) — a fallback on the right side of a pipe can't receive input → use a branch.
   if command -v column >/dev/null 2>&1; then printf '%s\n' "$out" | column -t -s "$(printf '\t')"
   else printf '%s\n' "$out"; fi
 }
 
-# Auto-restore expired topups (temporary budget raises). When expires_at (the budget_reset_at at
-# raise time) has passed = a budget_duration reset happened in between → restore to original_budget.
-# Runs lazily on user usage/list/topup entry (no-op if the ledger is empty). For immediacy, use a start-of-month cron.
+# Restore original_budget for topups whose expires_at (the budget_reset_at at
+# topup time) has passed. Runs lazily from user usage/topup.
 reconcile_topups() {
   local f="${DATA_DIR}/topups.json"
   [[ -s "$f" ]] || return 0
@@ -200,7 +194,7 @@ reconcile_topups() {
     uid=$(jq -r '.user_id' <<<"$e"); orig=$(jq -r '.original_budget' <<<"$e"); exp=$(jq -r '.expires_at' <<<"$e")
     exp_s=$(date -d "$exp" +%s 2>/dev/null || echo 0)
     if (( exp_s > 0 && now >= exp_s )); then
-      if [[ "$orig" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then   # prevent max_budget:null (unlimited) if the ledger is corrupted
+      if [[ "$orig" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then   # never write max_budget:null (unlimited)
         litellm_post "/user/update" "$(jq -n --arg u "$uid" --argjson b "$orig" '{user_id:$u, max_budget:$b}')" >/dev/null 2>&1 \
           && info "topup expired → restored: $uid monthly limit \$$orig"
         changed=1
@@ -216,10 +210,10 @@ reconcile_topups() {
   return 0
 }
 
-# Temporary budget topup — raise the monthly limit (max_budget) by amount. spend (actual usage)
-# is kept as-is so statistics stay accurate. Record original_budget and expiry (= current
-# budget_reset_at) in the ledger (data/ledger/topups.json) → after the monthly reset
-# reconcile_topups auto-restores the original limit (not a permanent raise). Re-topups in the same month accumulate; original keeps the first topup value.
+# Temporary raise of max_budget by --amount; spend is untouched. The ledger
+# (data/ledger/topups.json) records original_budget and expiry, and
+# reconcile_topups restores the original after the monthly reset. Repeated
+# topups in one month accumulate against the first original.
 cmd_user_topup() {
   local user_id="" amount=""
   while [[ $# -gt 0 ]]; do case "$1" in
@@ -240,7 +234,6 @@ cmd_user_topup() {
   if [[ -n "$reset" && "$reset" != "null" ]]; then expires="$reset"
   else expires="$(date -d "$(date +%Y-%m-01) +1 month" +%Y-%m-%dT00:00:00Z)"; fi
   local f="${DATA_DIR}/topups.json"; mkdir -p "$DATA_DIR"; [[ -s "$f" ]] || echo '[]' > "$f"
-  # original = the first limit of an in-progress topup (if any), otherwise the current limit.
   local original; original=$(jq -r --arg u "$user_id" 'first(.[] | select(.user_id==$u) | .original_budget) // empty' "$f")
   [[ -z "$original" || "$original" == "null" ]] && original="$curbud"
   local new; new=$(awk -v c="$curbud" -v a="$amount" 'BEGIN{printf "%.2f", c+a}')
@@ -259,9 +252,8 @@ cmd_user_delete() {
   litellm_post "/user/delete" "{\"user_ids\":[\"$id\"]}" | jq .
 }
 
-# Append the issued plaintext key to the data/ledger/keys.json ledger. LiteLLM stores only the
-# hash → this is the sole source for re-checking the plaintext after issuance. data/ is
-# gitignored, and the file is locked to 600.
+# Plaintext key ledger (data/ledger/keys.json, mode 600). LiteLLM stores only
+# the hash.
 record_issued_key() {
   local user_id="$1" key_alias="$2" team_id="$3" key="$4" budget="$5"
   mkdir -p "$DATA_DIR"
@@ -293,15 +285,12 @@ cmd_key_issue() {
 
   if [[ -n "$service" ]]; then
     local alias="${service}-service-key"
-    # LiteLLM stores only the key hash. The plaintext is hardcoded into .env at issue time.
-    # An alias clash makes reissue return HTTP 400 → skip if the .env key is still valid.
     local payload; payload=$(jq -n --arg a "$alias" --argjson b "$budget" \
       '{key_alias:$a, max_budget:$b, budget_duration:"1mo", user_role:"internal_user"}')
     local result
     if ! result=$(litellm_post "/key/generate" "$payload" 2>&1); then
       if echo "$result" | grep -q 'already exists'; then
-        # alias exists in LiteLLM but .env is out of sync — manual rotation
-        # required (DB has no plaintext to recover).
+        # No plaintext to recover from LiteLLM: rotate by hand.
         err "service key alias '$alias' already exists in LiteLLM."
         err "  → check with ./scripts/manage.sh key list, then rotate: key revoke --key <stale>"
         err "    or use a different alias: key issue --service $service --alias <new>"
@@ -338,14 +327,13 @@ cmd_key_issue() {
 cmd_key_list() {
   local user_id=""
   while [[ $# -gt 0 ]]; do case "$1" in --user) need_val "$@"; user_id="$2"; shift 2 ;; *) shift ;; esac; done
-  # Without return_full_object=true, .keys[] are hash strings → object indexing fails.
+  # return_full_object=true: .keys[] are objects rather than hash strings
   local ep="/key/list?return_full_object=true"; [[ -n "$user_id" ]] && ep+="&user_id=${user_id}"
   litellm_get "$ep" | jq -r '.keys[]
     | "\(.key_alias // "unnamed")\t\((.token // "?")[0:20])...\tuser:\(.user_id // "-")\tbudget:\(.max_budget)$\tspend:\(.spend // 0)$"'
 }
 
-# Show the plaintext keys stored in the ledger (data/ledger/keys.json). Filter with --user.
-# LiteLLM's key list only knows the hash (first 20 chars only); this shows the full plaintext.
+# Plaintext keys from the ledger; --user filters.
 cmd_key_show() {
   local user_id=""
   while [[ $# -gt 0 ]]; do case "$1" in --user) need_val "$@"; user_id="$2"; shift 2 ;; *) shift ;; esac; done
@@ -363,7 +351,6 @@ cmd_key_revoke() {
   while [[ $# -gt 0 ]]; do case "$1" in --key) need_val "$@"; key="$2"; shift 2 ;; *) shift ;; esac; done
   require_arg --key "$key"
   litellm_post "/key/delete" "{\"keys\":[\"$key\"]}" | jq .
-  # Remove from the ledger too — so a revoked key doesn't linger in key show.
   local cache="${DATA_DIR}/keys.json"
   if [[ -f "$cache" ]] && jq --arg k "$key" 'map(select(.key != $k))' "$cache" > "${cache}.tmp" 2>/dev/null; then
     mv "${cache}.tmp" "$cache"; chmod 600 "$cache"

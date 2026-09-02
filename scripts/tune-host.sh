@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Usage: tune-host.sh [--check]
 #
-# sysctl tuning for LLM-serving hosts. Model weight mmap occupies file cache by
-# the GB → with the default swappiness=60, file cache is reclaimed during idle →
-# cold start on the next inference. GB10 unified-memory nodes suffer especially
-# heavy file-cache pressure.
+# vm.swappiness=10 for LLM-serving hosts: mmap'd weights live in the file
+# cache, which the default swappiness=60 reclaims while idle.
 #
 #   --check   show current values only, without applying
 set -euo pipefail
@@ -41,8 +39,7 @@ fi
 [[ $EUID -ne 0 ]] && exec sudo "$0" "$@"
 
 cat > "$CONF" <<'EOF'
-# KloudChat host tuning — for LLM serving
-# Model weights occupy file cache via mmap, so protect file cache over anon.
+# KloudChat host tuning: keep mmap'd model weights in the file cache
 vm.swappiness = 10
 EOF
 ok "$CONF written"

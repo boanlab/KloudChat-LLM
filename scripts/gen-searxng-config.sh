@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
-# Generates services/searxng/settings.yml from the .example template.
-# Substitute the .example's __SEARXNG_SECRET_KEY__ sentinel with .env's SEARXNG_SECRET_KEY.
-# SearXNG can't override secret_key via env var (settings_loader only recognizes
-# SEARXNG_SETTINGS_PATH/SEARXNG_DISABLE_ETC_SETTINGS) → merge once on the host to
-# produce settings.yml, then bind-mount.
+# Usage: gen-searxng-config.sh [--force]
 #
-# Idempotent skip if a live file exists — preserves user customizations (engines/UI etc.). Use --force to regenerate.
+# services/searxng/settings.yml from settings.yml.example, with the
+# __SEARXNG_SECRET_KEY__ sentinel replaced by .env's SEARXNG_SECRET_KEY
+# (SearXNG takes no secret_key from the environment). An existing file is kept
+# unless --force.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# lib.sh lives in the operator repo. These three are all this script used from
-# it, and copying them is cheaper than depending on a sibling checkout — the UI
-# plane has to come up on its own.
+# Self-contained: no lib.sh dependency.
 err()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
-say()  { printf '  %s\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
 
 assert_regen_writable() {
@@ -33,10 +29,7 @@ assert_regen_writable() {
   return 0
 }
 
-hdr()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
-
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-
 
 ENV_FILE="${PROJECT_DIR}/.env"
 CONFIG_FILE="${PROJECT_DIR}/services/searxng/settings.yml"
@@ -59,27 +52,19 @@ if [[ -f "$CONFIG_FILE" && $FORCE -eq 0 ]]; then
 fi
 
 [[ -f "$ENV_FILE" ]] || { err "$ENV_FILE not found. Run ./scripts/gen-env.sh first."; exit 1; }
-# Once the container (uid 977) has run, searxng/ is owned by 977 → on --force
-# regeneration the mv gets Permission denied. Since it's a full regeneration, no
-# need to read the existing file (need_read=0); only verify directory write access.
+# Full regeneration: directory write access only (the container, uid 977, may
+# own the existing file).
 assert_regen_writable "$CONFIG_FILE" 0 || exit 1
-# Don't `source` — spaces in other values (Gmail app pw etc.) would be a syntax error. Extract the single key only.
+# Single-key extraction rather than `source` (.env values may contain spaces)
 SEARXNG_SECRET_KEY="$(grep -E '^SEARXNG_SECRET_KEY=' "$ENV_FILE" | tail -n1 | cut -d= -f2-)"
 [[ -n "$SEARXNG_SECRET_KEY" ]] || { err "SEARXNG_SECRET_KEY in .env is empty."; exit 1; }
 [[ "$SEARXNG_SECRET_KEY" != change-me-* ]] || { err "SEARXNG_SECRET_KEY is still the placeholder — re-run gen-env.sh."; exit 1; }
 
-# sed delimiter = a char that almost never appears in the secret. Just in case, avoid |, /, # all.
-# The secret is gen-env.sh's openssl rand -hex output so it's [0-9a-f] only — no collision.
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-# The secret_key line only. The sentinel is named in the comment above it as
-# well, and substituting there writes the secret into a second place and leaves
-# the comment describing a name that no longer appears in the file.
+# The secret_key line only; the sentinel also appears in a comment.
 sed "/^[[:space:]]*secret_key:/ s|${SENTINEL}|${SEARXNG_SECRET_KEY}|" "$CONFIG_EXAMPLE" > "$tmp"
 
-# Assert the result rather than the absence of the sentinel: a .example that
-# lost its secret_key line entirely would pass an absence check and ship a
-# SearXNG with no secret at all.
 if ! grep -qE "^[[:space:]]*secret_key: \"?${SEARXNG_SECRET_KEY}\"?[[:space:]]*$" "$tmp"; then
   err "secret_key was not substituted — check the ${SENTINEL} line in .example."
   exit 1

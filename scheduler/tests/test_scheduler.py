@@ -1,8 +1,4 @@
-"""Scheduler tests: the memory arithmetic and the placement policy.
-
-    pytest scheduler/tests -q
-    PYTHONPATH=. python3 scheduler/tests/test_scheduler.py   # without pytest
-"""
+"""Scheduler tests: memory arithmetic and placement policy. Runs with or without pytest."""
 
 from __future__ import annotations
 
@@ -32,7 +28,7 @@ def _spec(model_id: str, *, weight: int, ctx_floor: int = 0,
         id=model_id, hf_repo=f"org/{model_id}", dir=model_id,
         service=f"vllm-{model_id}", port=8001,
         env_prefix=f"VLLM_{model_id.upper()}", served_name=f"local/{model_id}",
-        ctx_floor=ctx_floor, concurrent_sessions=1, or_twin=None, arches=arches,
+        ctx_floor=ctx_floor, concurrent_sessions=1, arches=arches,
         priority=priority, placement=placement, share=share,
     )
     return spec.bind(_meta(weight_bytes=weight, **kw), native)
@@ -49,16 +45,14 @@ def _node(node_id: str, gib: int, arch: str = "amd64",
 
 
 def test_mla_kv_is_an_order_smaller_than_mha():
-    """Sizing MLA with the MHA formula overestimates by an order of magnitude,
-    which rejects placements that would have fit."""
+    """MLA KV per token is far below the MHA figure for the same layer count."""
     mha = kv_bytes_per_token(_meta(n_layers=47, n_kv_heads=20), Dtype.FP8)
     mla = kv_bytes_per_token(_meta(n_layers=47, n_kv_heads=20, kv_latent_dim=576), Dtype.FP8)
     assert mla * 5 < mha, f"MLA {mla} should be well below MHA {mha}"
 
 
 def test_sliding_window_layers_cost_per_sequence_not_per_token():
-    """Gemma is five sliding layers per full one. Charged as full attention they
-    dwarf the model; charged as nothing they are a gigabyte nobody budgeted."""
+    """Sliding-window layers cost a flat amount per sequence, independent of context."""
     from scheduler.kv_model import sliding_bytes_per_sequence
 
     md = _meta(n_layers=5, n_kv_heads=8, head_dim=256,
@@ -66,9 +60,8 @@ def test_sliding_window_layers_cost_per_sequence_not_per_token():
     per_seq = sliding_bytes_per_sequence(md, Dtype.FP8)
     assert per_seq == 25 * 2 * 8 * 256 * 1024
 
-    # Flat: a longer context does not move it
+    # Flat per sequence
     assert per_seq == sliding_bytes_per_sequence(md, Dtype.FP8)
-    # And a model without them pays nothing
     assert sliding_bytes_per_sequence(_meta(), Dtype.FP8) == 0
 
 
@@ -79,16 +72,13 @@ def test_sliding_layers_are_read_from_the_config():
         "layer_types": ["sliding_attention"] * 25 + ["full_attention"] * 5,
         "sliding_window": 1024,
     }) == (25, 1024)
-    # No window declared is no charge, whatever the layer names say
     assert model_metadata._count_sliding_layers(
         {"layer_types": ["sliding_attention"] * 25}
     ) == (0, 0)
 
 
 def test_a_hybrid_written_as_a_stride_is_still_a_hybrid():
-    """Qwen3-Next states the pattern as `full_attention_interval` rather than a
-    `layer_types` list. Read as pure attention it costs 4x its real KV, which is
-    the difference between fitting on a card and being delegated."""
+    """A `full_attention_interval` stride counts as hybrid only alongside linear-attention keys."""
     from scheduler import model_metadata
 
     stride = {
@@ -96,18 +86,13 @@ def test_a_hybrid_written_as_a_stride_is_still_a_hybrid():
         "linear_key_head_dim": 128, "num_key_value_heads": 2, "head_dim": 256,
     }
     assert model_metadata._count_kv_bearing_layers(stride) == 12
-    # The field alone is not enough: without linear attention every layer counts
     assert model_metadata._count_kv_bearing_layers(
         {"num_hidden_layers": 48, "full_attention_interval": 4}
     ) == 48
 
 
 def test_an_encoder_decoder_config_is_read():
-    """whisper writes d_model, decoder_layers and max_target_positions where a
-    decoder-only model writes hidden_size, num_hidden_layers and
-    max_position_embeddings. Read with the decoder-only names alone it is a
-    zero-width model with no declared context, which the binder drops entirely —
-    transcription would be delegated to OpenRouter on a card that fits it."""
+    """Encoder-decoder configs (whisper) resolve context, head width, KV heads and layers from the decoder keys."""
     from scheduler import model_metadata
 
     cfg = {
@@ -122,7 +107,6 @@ def test_an_encoder_decoder_config_is_read():
     assert model_metadata._resolve_kv_heads(cfg) == 20
     assert model_metadata._count_kv_bearing_layers(cfg) == 32
 
-    # A decoder-only config still answers from its own keys
     plain = {"hidden_size": 4096, "num_attention_heads": 32,
              "num_hidden_layers": 40, "max_position_embeddings": 131072}
     assert model_metadata._resolve_native_ctx(plain) == 131072
@@ -130,7 +114,7 @@ def test_an_encoder_decoder_config_is_read():
 
 
 def test_kv_bearing_layers_drive_cost():
-    """Hybrid models carry KV on only some layers; counting all of them overestimates."""
+    """KV cost scales with KV-bearing layers only."""
     full = kv_bytes_per_token(_meta(n_layers=40), Dtype.FP8)
     hybrid = kv_bytes_per_token(_meta(n_layers=10), Dtype.FP8)
     assert hybrid * 4 == full
@@ -145,11 +129,7 @@ def test_fp8_kv_halves_bf16():
 
 
 def test_every_model_placed_before_any_replica():
-    """Coverage first: nothing gets a second copy while another model has none.
-
-    Replication fills what is left, but never at the cost of a model that is not
-    running anywhere — the model with no instance is the one that has to queue.
-    """
+    """Every model gets one instance before any model gets a second."""
     specs = [_spec("a", weight=20 * GB), _spec("b", weight=20 * GB)]
     result = planner.plan(specs, [_node("n1", 96), _node("n2", 96)])
     counts = Counter(p.model_id for p in result.placements)
@@ -159,7 +139,7 @@ def test_every_model_placed_before_any_replica():
 
 
 def test_spare_capacity_is_filled_unless_capped():
-    """A card coverage did not need queues requests for nothing, so it is used."""
+    """Spare capacity takes replicas; `replicas` caps them and 1 disables."""
     specs = [_spec("a", weight=20 * GB), _spec("b", weight=20 * GB)]
     nodes = [_node("n1", 96), _node("n2", 96), _node("n3", 96)]
 
@@ -176,13 +156,8 @@ def test_spare_capacity_is_filled_unless_capped():
 
 
 def test_replicas_deepen_in_priority_order():
-    """Spare capacity goes to the highest-ranked model first, then down the list.
-
-    Nodes are sized to hold exactly one of these, so the question is only which
-    model the spare node gets. Without the priority tiebreak it goes to whichever
-    the catalogue lists first, which is not a decision anyone made.
-    """
-    def specs():  # plan() binds to the specs, so build them fresh per call
+    """Replicas go to the highest-priority model first."""
+    def specs():
         return [
             _spec("third", weight=20 * GB, priority=1),
             _spec("first", weight=20 * GB, priority=3),
@@ -194,7 +169,6 @@ def test_replicas_deepen_in_priority_order():
     assert ids.count("first") == 2, ids
     assert ids.count("second") == 1 and ids.count("third") == 1, ids
 
-    # One more node: the second copy of "second" follows; "third" still waits.
     five = four + [_node("n5", 32)]
     ids = [p.model_id for p in planner.plan(specs(), five, replicas=2).placements]
     assert ids.count("first") == 2 and ids.count("second") == 2, ids
@@ -202,11 +176,7 @@ def test_replicas_deepen_in_priority_order():
 
 
 def test_a_model_is_not_placed_where_its_weights_are_not():
-    """Docker creates the missing bind-mount path empty, so vLLM restarts forever.
-
-    No node carries the checkpoint, so the model is delegated — and the reason
-    says weights, not VRAM, because no VRAM upgrade would fix it.
-    """
+    """A model whose checkpoint no node holds is delegated with a weights reason, not a capacity one."""
     spec = _spec("a", weight=20 * GB)
     nodes = [_node("n1", 96, checkpoints=frozenset({"something-else"}))]
     result = planner.plan([spec], nodes)
@@ -217,11 +187,7 @@ def test_a_model_is_not_placed_where_its_weights_are_not():
 
 
 def test_the_capacity_reason_only_counts_nodes_that_could_run_it():
-    """A roomy node without the checkpoint is not room.
-
-    Quoting its free VRAM reads as "there is space" while naming the one place
-    the model can never go, which sends the reader looking for a packing bug.
-    """
+    """A capacity reason does not quote free VRAM on a node that lacks the checkpoint."""
     spec = _spec("a", weight=20 * GB)
     nodes = [
         _node("roomy", 96, checkpoints=frozenset({"something-else"})),
@@ -234,11 +200,7 @@ def test_the_capacity_reason_only_counts_nodes_that_could_run_it():
 
 
 def test_replicas_only_land_on_nodes_that_carry_the_checkpoint():
-    """Filling spare capacity must not seat a copy onto weights that are absent.
-
-    Two nodes with room, one of them without the checkpoint: the replica has
-    nowhere to go and the model stays at one instance.
-    """
+    """Replicas are seated only on nodes that hold the checkpoint."""
     spec = _spec("a", weight=20 * GB)
     nodes = [
         _node("has", 96, checkpoints=frozenset({"a"})),
@@ -251,14 +213,14 @@ def test_replicas_only_land_on_nodes_that_carry_the_checkpoint():
 
 
 def test_unreported_checkpoints_do_not_filter_anything():
-    """`checkpoints=None` is "the probe did not say", not "the node has nothing"."""
+    """`checkpoints=None` filters nothing."""
     spec = _spec("a", weight=20 * GB)
     result = planner.plan([spec], [_node("n1", 96)])
     assert [p.node_id for p in result.placements] == ["n1"]
 
 
 def test_context_restored_above_floor():
-    """Capacity left after seating at the floor goes back into context."""
+    """Leftover capacity raises the context above the floor, up to the target."""
     spec = _spec("a", weight=20 * GB, ctx_floor=16384, native=131072)
     result = planner.plan([spec], [_node("n1", 96)])
     assert result.placements[0].ctx > spec.ctx_floor
@@ -273,8 +235,7 @@ def test_small_node_delegates_with_capacity_reason():
 
 
 def test_unsupported_arch_is_not_a_capacity_message():
-    """Reporting an unsupported architecture as missing capacity invites someone
-    to fix it by adding VRAM."""
+    """An unsupported architecture is reported as such, not as missing capacity."""
     spec = _spec("a", weight=1 * GB, arches=("amd64",))
     result = planner.plan([spec], [_node("gb10", 128, arch="arm64")])
     assert not result.placements
@@ -282,9 +243,7 @@ def test_unsupported_arch_is_not_a_capacity_message():
 
 
 def test_reservation_shrinks_capacity():
-    # Sized off the activation figure rather than a literal, so a correction to
-    # it moves the fixture instead of breaking the case: the model fits the bare
-    # node (48 GiB less the 8 GiB default reserve) and not once 20 GiB is held.
+    # Fits the bare node (48 GiB less the 8 GiB reserve), not once 20 GiB is held
     node = [_node("n1", 48)]
     weight = 38 * GB - planner.ACTIVATION_BYTES
     spec = _spec("a", weight=weight, ctx_floor=16384)
@@ -293,8 +252,7 @@ def test_reservation_shrinks_capacity():
 
 
 def test_a_pooling_model_is_not_charged_decode_headroom():
-    """An embedding model captures no decode CUDA graphs and holds no KV, so the
-    generate-path figure would reserve tens of gigabytes it never touches."""
+    """A pooling runner is charged 2 GiB of activation and no KV."""
     weight = 4 * GB
     generate = _spec("gen", weight=weight, ctx_floor=8192)
     pooling = registry.replace(generate, runner="pooling")
@@ -303,20 +261,19 @@ def test_a_pooling_model_is_not_charged_decode_headroom():
 
 
 def test_tensor_parallel_splits_the_weights_but_not_the_activation():
-    """Per card: its slice of the weights and KV, plus the full activation cost —
-    that one is per process and does not divide."""
+    """Per card: weights/N and KV/N, plus the full activation cost."""
     spec = registry.replace(
         _spec("a", weight=80 * GB, ctx_floor=16384), tensor_parallel=2
     )
     per_gpu = planner.per_gpu_need_bytes(spec, 16384)
     kv = planner.kv_bytes(spec, 16384)
     assert per_gpu == 40 * GB + planner.ACTIVATION_BYTES + kv // 2
-    # Node-wide it costs more than the unsharded model: activation twice over
+    # Node-wide: activation paid twice
     assert planner.need_bytes(spec, 16384) > 80 * GB + planner.ACTIVATION_BYTES + kv
 
 
 def test_a_model_too_big_for_one_card_fits_across_two():
-    """The case this exists for: 78 GiB of weights against a 96 GB card."""
+    """A model too big for one card places at TP 2 across two, with gpu_util per card."""
     spec = _spec("big", weight=78 * GB, ctx_floor=16384)
     one_card = NodeSpec(node_id="n1", hostname="n1", gpu_class="pro6000",
                         total_vram_bytes=89 * GB, gpu_count=1, arch="amd64")
@@ -327,14 +284,11 @@ def test_a_model_too_big_for_one_card_fits_across_two():
     sharded = registry.replace(spec, tensor_parallel=2)
     placed = planner.plan([sharded], [two_cards]).placements
     assert placed and placed[0].tp == 2
-    # The flag is a fraction of one card, not of the node
     assert placed[0].gpu_util < 1.0
 
 
 def test_a_reserved_workload_does_not_make_sharding_impossible():
-    """The whole-card claim has to come out of what the node actually has. Taken
-    from the raw card size it exceeded the pool on an empty node as soon as
-    anything was reserved there, and no sharded model could ever be placed."""
+    """Per-card capacity is derived from node capacity after reservations, so sharded models still place."""
     spec = registry.replace(_spec("a", weight=40 * GB, ctx_floor=16384),
                             tensor_parallel=2)
     node = NodeSpec(node_id="n1", hostname="n1", gpu_class="pro6000",
@@ -345,8 +299,7 @@ def test_a_reserved_workload_does_not_make_sharding_impossible():
 
 
 def test_tensor_parallel_needs_the_cards_and_says_so():
-    """"Not enough memory" would send someone shopping for a bigger card when
-    what is missing is a second one."""
+    """TP wider than the node reports missing cards, not missing memory."""
     spec = registry.replace(_spec("a", weight=10 * GB, ctx_floor=16384),
                             tensor_parallel=4)
     result = planner.plan([spec], [_node("n1", 96)])
@@ -355,9 +308,7 @@ def test_tensor_parallel_needs_the_cards_and_says_so():
 
 
 def test_two_models_on_a_two_card_node_get_a_card_each():
-    """`gpu_util` is a fraction of one device. Counted as a single byte pool the
-    node seated both at 0.86 and handed them the same card, and the second died
-    at engine init with the first one's memory already in it."""
+    """Two models on a two-card node take different cards."""
     a = _spec("a", weight=30 * GB, ctx_floor=16384)
     b = _spec("b", weight=30 * GB, ctx_floor=16384)
     node = NodeSpec(node_id="n1", hostname="n1", gpu_class="pro5000",
@@ -368,8 +319,7 @@ def test_two_models_on_a_two_card_node_get_a_card_each():
 
 
 def test_no_card_is_oversubscribed():
-    """The invariant the pool could not state: whatever shares a card, the
-    fractions those containers ask vLLM for have to add up to less than all of it."""
+    """gpu_util fractions sharing a card sum to at most 1.0."""
     specs = [_spec(name, weight=12 * GB, ctx_floor=16384) for name in "abcde"]
     node = NodeSpec(node_id="n1", hostname="n1", gpu_class="pro5000",
                     total_vram_bytes=48 * GB, gpu_count=2, arch="amd64")
@@ -394,8 +344,7 @@ def test_a_sharded_model_takes_one_slice_of_each_card_it_spans():
 
 
 def test_kv_is_replicated_when_ranks_outnumber_kv_heads():
-    """KV shards by head. TP 4 over 2 KV heads halves the cache, it does not
-    quarter it, and MLA replicates its latent on every rank."""
+    """`kv_shards` is min(TP, KV heads), and 1 for MLA."""
     gqa = registry.replace(_spec("gqa", weight=10 * GB, ctx_floor=16384,
                                  n_kv_heads=2), tensor_parallel=4)
     assert planner.kv_shards(gqa) == 2
@@ -409,9 +358,7 @@ def test_kv_is_replicated_when_ranks_outnumber_kv_heads():
 
 
 def test_a_pool_model_leaves_the_head_node_alone():
-    """The head node is roomier here, and worst-fit would take it. Default chat
-    and retrieval live on it, and a card-sized picker model landing there costs
-    every request rather than one picker entry."""
+    """A pool model is not placed on the head node even when it is roomier."""
     spec = _spec("big", weight=20 * GB, ctx_floor=16384, placement="pool")
     result = planner.plan([spec], [_node("head", 96), _node("n2", 64)], head="head")
     assert [p.node_id for p in result.placements] == ["n2"]
@@ -424,29 +371,25 @@ def test_a_head_model_does_not_follow_the_room_into_the_pool():
 
 
 def test_a_full_pool_delegates_rather_than_spilling_onto_the_head():
-    """Spilling would seat the model — and take the floor's card doing it, which
-    is the outcome the split exists to prevent."""
+    """A pool model with no pool seat is delegated, with a capacity reason measured over the pool."""
     resident = _spec("resident", weight=40 * GB, ctx_floor=16384, placement="pool")
     arrival = _spec("arrival", weight=40 * GB, ctx_floor=16384, placement="pool")
     result = planner.plan([resident, arrival],
                           [_node("head", 96), _node("n2", 96)], head="head")
     assert [p.node_id for p in result.placements] == ["n2"]
     assert [d.model_id for d in result.delegations] == ["arrival"]
-    # A real capacity reason, measured over the pool rather than the cluster
     assert "GiB" in result.delegations[0].reason
 
 
 def test_one_declared_node_has_no_pool_to_be_kept_out_of():
-    """`head=None` is the one-node cluster: the distinction describes nothing
-    there, and honouring it would delegate every pool model on a working card."""
+    """`head=None` places pool models on the only node."""
     spec = _spec("big", weight=20 * GB, ctx_floor=16384, placement="pool")
     result = planner.plan([spec], [_node("only", 96)], head=None)
     assert [p.node_id for p in result.placements] == ["only"]
 
 
 def test_the_head_is_named_rather_than_taken_from_the_node_order():
-    """Nodes arrive in probe-completion order, so a positional head would move a
-    78 GiB model whenever a different SSH answered first."""
+    """Head placement follows the `head` argument, not node order."""
     def specs():
         return [_spec("floor", weight=20 * GB, ctx_floor=16384, placement="head"),
                 _spec("top", weight=20 * GB, ctx_floor=16384, placement="pool")]
@@ -461,8 +404,7 @@ def test_the_head_is_named_rather_than_taken_from_the_node_order():
 
 
 def test_a_pool_model_with_no_pool_node_answering_says_so():
-    """Not a capacity message: the head node's free card is not room this model
-    may use, and reporting it sends somebody looking for a leak."""
+    """No answering pool node yields a pool reason, not a capacity one."""
     spec = _spec("top", weight=20 * GB, ctx_floor=16384, placement="pool")
     result = planner.plan([spec], [_node("head", 96)], head="head")
     assert not result.placements
@@ -471,8 +413,7 @@ def test_a_pool_model_with_no_pool_node_answering_says_so():
 
 
 def test_extra_instances_follow_the_declared_share():
-    """60 and 40 over five pool nodes is three and two. Fewest-instances-first
-    would split them evenly and leave the odd node to a tiebreak."""
+    """Shares 60/40 over five pool nodes give three and two instances."""
     def specs():
         return [_spec("top", weight=20 * GB, placement="pool", share=60),
                 _spec("coder", weight=20 * GB, placement="pool", share=40)]
@@ -485,8 +426,7 @@ def test_extra_instances_follow_the_declared_share():
 
 
 def test_equal_shares_still_deepen_by_fewest_instances():
-    """The share is a generalisation of the old order, not a replacement: left
-    undeclared every model weighs 1 and the counts stay level."""
+    """Undeclared shares keep instance counts level."""
     specs = [_spec("a", weight=20 * GB), _spec("b", weight=20 * GB)]
     result = planner.plan(specs, [_node(f"n{i}", 32) for i in range(1, 5)])
     counts = Counter(p.model_id for p in result.placements)
@@ -494,29 +434,20 @@ def test_equal_shares_still_deepen_by_fewest_instances():
 
 
 # ── across card sizes ───────────────────────────────────────────────────
-#
-# Every case above this line runs on a 96 GiB node, which is how three sizing
-# figures drifted into large-card absolutes without anyone noticing: a fixed
-# 8 GiB reserve is 8% of a 96 GiB card and 33% of a 24 GiB one, and a 10 GiB
-# activation charge is 42% of that same small card. The cluster this was written
-# on had no small card to fail on.
 
-#: Marketing size to what the card really reports, in GiB.
 CARD_SIZES = [24, 32, 48, 80, 96]
 
 
 def _narrow_kv_spec(*, sessions: int, weight: int = 21 * GB):
-    """A 21 GiB model with the hybrid lineup's KV shape: 10 KiB per token."""
+    """A 21 GiB model at 10 KiB of KV per token."""
     spec = _spec("a", weight=weight, ctx_floor=131072,
                  n_layers=10, n_kv_heads=2, head_dim=256)
     return registry.replace(spec, concurrent_sessions=sessions)
 
 
-# Looped rather than parametrized: this module also runs without pytest
-# (see the docstring), and that harness calls every test_* with no arguments.
+# Looped, not parametrized: the module also runs without pytest
 def test_headroom_never_eats_the_card():
-    """Reserve plus activation has to leave room for a model on every card, or
-    the planner is rejecting hardware that works."""
+    """Reserve plus activation stays under 45% of every card size."""
     spec = _spec("a", weight=1 * GB, ctx_floor=16384)
     for gib in CARD_SIZES:
         node = _node("n1", gib)
@@ -529,8 +460,7 @@ def test_headroom_never_eats_the_card():
 
 
 def test_a_card_seats_a_model_that_fits_its_weights():
-    """The floor test: a model whose weights take half the card must be
-    placeable, narrowing its session count if that is what it takes."""
+    """A model whose weights take half the card places on every card size."""
     for gib in CARD_SIZES:
         weight = int(gib * GB * 0.5)
         spec = _spec("a", weight=weight, ctx_floor=16384)
@@ -551,11 +481,7 @@ def test_util_stays_within_bounds_on_every_card():
 
 
 def test_a_tight_card_narrows_sessions_instead_of_delegating():
-    """concurrent_sessions is a sizing assumption, not a capability. Treating it
-    as inviolable made a card that could serve one conversation serve none."""
-    # Shaped like the models actually deployed — 10 of 40 layers KV-bearing at
-    # 2 heads — rather than the module's dense default, whose 80 KiB/token would
-    # not fit a 32 GiB card at any session count and would prove nothing.
+    """A tight card halves `concurrent_sessions`, keeps the context floor, and notes it."""
     result = planner.plan([_narrow_kv_spec(sessions=8)], [_node("n1", 32)])
     assert result.placements, result.delegations[0].reason
     assert result.placements[0].sessions < 8
@@ -571,43 +497,34 @@ def test_a_roomy_card_is_not_narrowed():
 
 
 def test_gpu_class_names_agree_with_the_shell_side():
-    """gpu_class is looked up in per-class tables on both sides. Returning the raw
-    marketing name for an unrecognised card matched nothing the shell would have
-    matched, while the docstring said the vocabulary was shared."""
+    """`_classify_gpu_name` uses lib.sh::detect_gpu_class vocabulary, with "unknown" for an empty probe."""
     from scheduler import inventory
 
     assert inventory._classify_gpu_name("NVIDIA GB10") == "gb10"
     assert inventory._classify_gpu_name("NVIDIA RTX PRO 6000 Blackwell") == "pro6000"
-    # lib.sh::detect_gpu_class answers "nvidia-other" for anything it cannot name
     assert inventory._classify_gpu_name("NVIDIA A100-SXM4-80GB") == "nvidia-other"
-    # A failed probe is a different thing from a card we could not name
     assert inventory._classify_gpu_name("") == "unknown"
 
 
 def test_a_mixed_box_is_sized_by_its_smallest_card():
-    """A model runs on one card, so every card has to hold what the planner
-    promised. "First card times how many" handed a 4090-plus-5090 box a capacity
-    neither device has."""
+    """Per-card capacity on a mixed box is the smallest card."""
     from scheduler import inventory
 
     sizes = (24 * GB, 32 * GB)
-    assert min(sizes) * len(sizes) < sum(sizes)  # the difference the old form lost
+    assert min(sizes) * len(sizes) < sum(sizes)
     node = NodeSpec(node_id="n1", hostname="n1", gpu_class="mixed",
                     total_vram_bytes=min(sizes), gpu_count=len(sizes))
-    # Per-card capacity is the small card's, not the average of the two
     assert node.per_gpu_planner_bytes <= 24 * GB
     assert inventory.MANAGED_PREFIX == "vllm-"
 
 
 def test_memory_someone_else_holds_is_not_offered():
-    """vLLM's utilisation fraction is of the card's total, but the memory has to
-    be free. A card with a desktop session on it has less to give than its size."""
+    """Foreign GPU memory is subtracted from planner capacity and changes placement."""
     clean = _node("n1", 48)
     busy = NodeSpec(node_id="n2", hostname="n2", gpu_class="pro5000",
                     total_vram_bytes=48 * GB, foreign_vram_bytes=10 * GB)
     assert busy.planner_vram_bytes == clean.planner_vram_bytes - 10 * GB
 
-    # And it changes placement, which is the point of measuring it
     spec = _spec("a", weight=30 * GB, ctx_floor=16384)
     assert planner.plan([spec], [clean]).placements
     assert not planner.plan([spec], [busy]).placements
@@ -616,7 +533,7 @@ def test_memory_someone_else_holds_is_not_offered():
 def test_the_reserve_scales_with_the_card():
     small, large = _node("s", 24), _node("l", 96)
     assert small.effective_reserve_bytes < large.effective_reserve_bytes
-    # An explicit figure still wins — that is what the field is for
+    # An explicit figure wins
     explicit = NodeSpec(node_id="e", hostname="e", gpu_class="x",
                         total_vram_bytes=96 * GB, reserved_bytes=2 * GB)
     assert explicit.effective_reserve_bytes == 2 * GB
@@ -626,13 +543,11 @@ def test_activation_is_capped_by_the_card_not_the_constant():
     spec = _spec("a", weight=1 * GB, ctx_floor=16384)
     assert planner.activation_bytes(spec, 96 * GB) == planner.ACTIVATION_BYTES
     assert planner.activation_bytes(spec, 24 * GB) < planner.ACTIVATION_BYTES
-    # Unknown hardware keeps the conservative figure
     assert planner.activation_bytes(spec, None) == planner.ACTIVATION_BYTES
 
 
 def test_priority_outranks_size_when_only_one_fits():
-    """Largest-first is a starvation guard, not a ranking. On a cluster that
-    cannot hold both, which model keeps the card is the operator's call."""
+    """`priority` decides which model keeps the card; size is only the tiebreak."""
     big = _spec("big", weight=40 * GB, ctx_floor=16384)
     small = _spec("small", weight=30 * GB, ctx_floor=16384)
     node = [_node("n1", 96)]
@@ -647,8 +562,7 @@ def test_priority_outranks_size_when_only_one_fits():
 
 
 def test_priority_ties_still_seat_the_largest_first():
-    """Within one level the packing guard has to survive, or small models seated
-    first leave a big one nowhere to go."""
+    """Equal priority seats the largest model first."""
     big = registry.replace(_spec("big", weight=40 * GB, ctx_floor=16384), priority=5)
     small = registry.replace(_spec("small", weight=10 * GB, ctx_floor=16384), priority=5)
     result = planner.plan([small, big], [_node("n1", 60)])
@@ -656,20 +570,17 @@ def test_priority_ties_still_seat_the_largest_first():
 
 
 def test_a_near_tie_does_not_move_a_running_model():
-    """Two identical cards reported usable capacity 4 KiB apart. Under a strict
-    maximum that was enough to migrate a model — a reload, and a window of paid
-    OpenRouter fallback, bought with nothing."""
+    """Within the tie band the incumbent node wins."""
     spec = _spec("a", weight=10 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96), _node("n2", 96)]
-    # n2 fractionally roomier, well inside the tie band
+    # n2 fractionally roomier, inside the tie band
     nodes[1] = NodeSpec(**{**nodes[1].__dict__, "total_vram_bytes": 96 * GB + 4096})
     result = planner.plan([spec], nodes, deployed={"a": frozenset({"n1"})})
     assert result.placements[0].node_id == "n1"
 
 
 def test_a_real_capacity_difference_still_moves_it():
-    """Staying put is a tie-break, not a pin: a model that no longer fits where
-    it sits has to move, or the plan is a wish."""
+    """A model that no longer fits its incumbent node moves."""
     spec = _spec("a", weight=10 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96), _node("n2", 96)]
     result = planner.plan(
@@ -681,8 +592,7 @@ def test_a_real_capacity_difference_still_moves_it():
 
 
 def test_the_plan_does_not_depend_on_node_order():
-    """Nodes arrive in probe-completion order, so an unstable tie-break made the
-    same inputs produce different plans from one run to the next."""
+    """The same inputs give the same plan regardless of node order."""
     specs = [_spec("big", weight=40 * GB, ctx_floor=16384),
              _spec("small", weight=4 * GB, ctx_floor=16384)]
     nodes = [_node("n1", 96), _node("n2", 96)]
@@ -693,21 +603,21 @@ def test_the_plan_does_not_depend_on_node_order():
 
 
 def test_models_spread_across_nodes():
-    """Models are spread out: the node with the most capacity left wins."""
+    """Worst fit spreads models across nodes."""
     specs = [_spec(name, weight=10 * GB, ctx_floor=16384) for name in ("a", "b", "c")]
     result = planner.plan(specs, [_node("n1", 96), _node("n2", 96), _node("n3", 96)])
     assert len({p.node_id for p in result.placements}) == 3
 
 
 def test_gpu_util_stays_below_one():
-    """At 1.0 vLLM swallows the driver's share too and dies during engine init."""
+    """gpu_util never exceeds MAX_GPU_UTIL."""
     spec = _spec("a", weight=40 * GB, ctx_floor=16384)
     result = planner.plan([spec], [_node("n1", 96)])
     assert 0 < result.placements[0].gpu_util <= planner.MAX_GPU_UTIL
 
 
 def test_node_reserve_is_respected():
-    """Placing past the reservation would claim the OS's share."""
+    """A placement never exceeds the node reserve."""
     node = _node("n1", 48)
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     result = planner.plan([spec], [node])
@@ -749,7 +659,7 @@ def test_ctx_floor_derived_from_native():
 
 
 def test_unknown_model_id_is_an_error():
-    """Swallowing a typo leaves nobody able to explain the missing model."""
+    """An id in `only` that models.yaml lacks raises KeyError."""
     path = _write_yaml("models:\n  - id: foo\n    hf_repo: org/Foo\n")
     try:
         registry.load(path, only=["typo"])
@@ -771,8 +681,7 @@ def test_placement_and_share_are_declared_values():
 
 
 def test_an_unknown_placement_is_an_error():
-    """A typo would silently widen the model to the whole cluster, which is the
-    one outcome the field exists to rule out."""
+    """An unknown `placement` raises ValueError."""
     path = _write_yaml("models:\n  - id: foo\n    hf_repo: org/Foo\n    placement: haed\n")
     try:
         registry.load(path)
@@ -783,8 +692,7 @@ def test_an_unknown_placement_is_an_error():
 
 
 def test_an_unknown_runner_is_an_error():
-    """The runner decides KV accounting and whether the model is a chat route.
-    A typo would size an embedding model as a generate one and register it."""
+    """An unknown `runner` raises ValueError."""
     path = _write_yaml("models:\n  - id: foo\n    hf_repo: org/Foo\n    runner: polling\n")
     try:
         registry.load(path)
@@ -795,8 +703,7 @@ def test_an_unknown_runner_is_an_error():
 
 
 def test_transcription_is_sized_like_a_generate_model():
-    """It decodes, so it is charged decode headroom and a KV cache. Only the
-    routing differs — /tools/stt rather than a LiteLLM chat route."""
+    """A transcription runner is not pooling."""
     path = _write_yaml(
         "models:\n  - id: foo\n    hf_repo: org/Foo\n    runner: transcription\n"
     )
@@ -806,8 +713,7 @@ def test_transcription_is_sized_like_a_generate_model():
 
 
 def test_a_share_of_zero_is_an_error():
-    """It reads as "never replicate", divides as a crash, and is one careless
-    `or` away from being read as the default weight of 1."""
+    """A share of 0 or below raises ValueError."""
     for value in ("0", "-1"):
         path = _write_yaml(
             f"models:\n  - id: foo\n    hf_repo: org/Foo\n    share: {value}\n"
@@ -829,7 +735,7 @@ def test_size_suffixes():
 
 
 def test_no_change_when_already_converged():
-    """Applying twice must be a no-op the second time (the URLs are recorded)."""
+    """A converged node gets no start action."""
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
     result = planner.plan([spec], nodes)
@@ -852,9 +758,7 @@ def test_stops_services_no_longer_planned():
 
 
 def test_leaves_containers_this_stack_does_not_place_alone():
-    """``current`` is the node's whole ``docker ps``. A single-host deployment
-    runs the stack on the same box, and stopping what the plan does not name
-    would take the gateway down with it."""
+    """Containers outside the `vllm-` prefix are never stopped."""
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
     result = planner.plan([spec], nodes)
@@ -873,29 +777,21 @@ def _stt_spec(**kw):
 
 
 def test_whisper_urls_follow_the_transcription_placement():
-    """WHISPER_URLS is the transcription model's own URL under a second name.
-
-    Deriving it from the node list instead would name a node the planner never
-    put whisper on, and a non-empty value stops gen-litellm-config from
-    registering the OpenRouter STT fallback. That is the path by which the
-    microphone disappears.
-    """
+    """WHISPER_URLS is the transcription model's URL, and its `{env_prefix}_URL` is not written."""
     stt = _stt_spec()
     nodes = [_node("n1", 96), _node("n2", 96)]
     result = planner.plan([stt], nodes, replicas=1, head="n1")
 
     urls = applier._url_csvs(result, [stt], nodes)
     assert urls["WHISPER_URLS"] == f"http://n1:{stt.port}"
-    assert urls["WHISPER_URLS"] == urls[f"{stt.env_prefix}_URL"]
+    assert f"{stt.env_prefix}_URL" not in urls
 
 
 def test_whisper_urls_empty_when_transcription_is_delegated():
-    """The empty value is the OpenRouter switch, so an unplaced model must clear
-    it rather than leave the last host that ran one."""
+    """An unplaced transcription model clears WHISPER_URLS."""
     stt = _stt_spec()
     other = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
-    # A cluster with no room for it: placed nowhere, so no URL and no CSV.
     result = planner.plan([other], nodes)
     assert applier._url_csvs(result, [other], nodes, [stt])["WHISPER_URLS"] == ""
 
@@ -914,8 +810,7 @@ def test_url_csv_written_for_placed_models():
 
 
 def test_re_applying_an_unchanged_plan_does_nothing():
-    """`setup.sh all` runs apply every time. Force-recreating regardless is a
-    full weight reload — twenty minutes for a 78 GiB model, for nothing."""
+    """A node whose .env already matches the plan gets no actions."""
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
     result = planner.plan([spec], nodes)
@@ -934,9 +829,7 @@ def test_re_applying_an_unchanged_plan_does_nothing():
 
 
 def test_an_unsharded_model_does_not_get_a_tp_line():
-    """TP 1 is the absence of sharding and compose defaults to it. Writing it
-    into a node that never had the key would force-recreate — twenty minutes of
-    weight loading — to restate a default."""
+    """TP 1 is written only to undo a node that has TP set."""
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
     result = planner.plan([spec], nodes)
@@ -948,7 +841,7 @@ def test_an_unsharded_model_does_not_get_a_tp_line():
         node_env=settled,
     ).actions == []
 
-    # But a node that really is sharded has to be told to stop
+    # A sharded node is told to stop
     was_sharded = {**settled["n1"], "VLLM_A_TP": "2"}
     change = applier.compute_diff(
         target=result, current={"n1": {"vllm-a"}}, specs=[spec], nodes=nodes,
@@ -959,7 +852,7 @@ def test_an_unsharded_model_does_not_get_a_tp_line():
 
 
 def test_a_changed_option_still_recreates():
-    """Idempotence must not become inertia: a new context has to reach vLLM."""
+    """A changed option recreates the service exactly once."""
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
     result = planner.plan([spec], nodes)
@@ -972,7 +865,7 @@ def test_a_changed_option_still_recreates():
 
 
 def test_an_unreadable_node_env_recreates_rather_than_assuming():
-    """A node whose .env could not be read is not a node known to be current."""
+    """An empty node .env recreates the service."""
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
     result = planner.plan([spec], nodes)
@@ -984,9 +877,7 @@ def test_an_unreadable_node_env_recreates_rather_than_assuming():
 
 
 def test_dropping_a_model_clears_its_url():
-    """A model removed from VLLM_MODELS is no longer in `specs`, so nothing used
-    to touch its URL — and gen-litellm-config went on registering a route to the
-    container the same apply had just stopped."""
+    """A model in `known` but not in `specs` has its URL cleared."""
     kept = _spec("a", weight=20 * GB, ctx_floor=16384)
     dropped = _spec("b", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
@@ -1038,7 +929,7 @@ if __name__ == "__main__":
         try:
             fn()
             print(f"  ok   {name}")
-        except Exception as exc:  # noqa: BLE001 — the harness tallies after every test runs
+        except Exception as exc:  # noqa: BLE001
             failed += 1
             print(f"  FAIL {name}: {exc}")
     print(f"\n{str(failed) + ' failed' if failed else 'all passed'}")

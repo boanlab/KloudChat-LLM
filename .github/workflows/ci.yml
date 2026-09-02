@@ -26,8 +26,7 @@ jobs:
             bash -n "$f" || exit 1
           done
 
-      # Settings live in .shellcheckrc. SC1091 is excluded here because the
-      # scripts source lib.sh at runtime.
+      # SC1091: scripts source lib.sh at runtime
       - name: ShellCheck
         run: |
           command -v shellcheck >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck; }
@@ -61,7 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Real secrets, since compose interpolation rejects the placeholders.
+      # Compose interpolation rejects the change-me-* placeholders
       - name: Generate .env
         run: ./scripts/gen-env.sh
 
@@ -84,10 +83,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # An image is named in four places: the compose file, BUILD_TABLE in
-      # build-push-images.sh, the publish workflow's catalogue, and its manual
-      # dropdown. Drift is silent — an image stops being built, or cannot be
-      # selected.
+      # Images are named in the compose files, build-push-images.sh, and the
+      # publish workflow's catalogue and dropdown
       - name: Compare the lists
         run: |
           python3 - <<'EOF'
@@ -108,9 +105,7 @@ jobs:
 
           script = table("BUILD_TABLE")
 
-          # kloudchat-vllm is upstream, built on the GPU nodes from ${VLLM_IMAGE}
-          # and never pushed; keying on the namespace variable is what tells a
-          # published image apart from that one.
+          # kloudchat-vllm is built on the GPU nodes and never pushed
           compose = sorted({
               m.group(1)
               for f in ("docker-compose.yml", "docker-compose.vllm.yml")
@@ -136,7 +131,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Relative links and anchors only. External URLs are not fetched.
+      # Relative links and anchors only
       - name: Check internal links
         run: |
           python3 - <<'EOF'

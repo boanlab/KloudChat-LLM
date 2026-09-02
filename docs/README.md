@@ -1,12 +1,12 @@
 # Operator documentation
 
 What you need to bring the backend plane up and keep it running. This page is
-the index: it points at where each thing is changed.
+the index.
 
 ## Starting out
 
-1. [Prerequisites](prerequisites.md) — hardware and software checklist
-2. [Environment variables](env-reference.md) — filling in `.env`
+1. [Prerequisites](prerequisites.md): hardware and software checklist
+2. [Environment variables](env-reference.md): filling in `.env`
 3. Bring it up with `./scripts/setup.sh all`
 4. Paste the addresses from `./scripts/setup.sh urls` into the UI admin screen
 5. If something is wrong, go to [Troubleshooting](troubleshooting.md)
@@ -25,43 +25,37 @@ One gateway port is exposed. Behind it, seven capabilities are split by path.
 | `/tools/stt/*` | whisper-shim | `whisper` |
 | `/tools/index/*` | index-shim + pgvector | `index` |
 
-GPU nodes live outside this stack — there is one node list, `NODES_VLLM` — and
-LiteLLM and whisper-shim call them at the URLs recorded in `.env`. Every one of
-those URLs comes from the [scheduler](../scheduler/README.md)'s placement result,
-transcription included: it is `openai/whisper-large-v3` on vLLM, placed like any
-other model. A cluster with no room for it leaves `WHISPER_URLS` empty, and STT
-goes to OpenRouter.
+GPU nodes live outside this stack. There is one node list, `NODES_VLLM`, and
+LiteLLM and whisper-shim call the nodes at the URLs the
+[scheduler](../scheduler/README.md) records in `.env`. Transcription is
+`openai/whisper-large-v3` on vLLM, placed like any other model; a cluster with no
+room for it leaves `WHISPER_URLS` empty and STT goes to OpenRouter.
 
 `/tools/*` is unauthenticated. The gateway port must only be open inside a
 private network.
 
-Compose puts the backing stores on their own networks, each shared with exactly
-the one service that owns it: `litellm-db` with LiteLLM, `index-db` with
-index-shim, MinIO and redis with code-interpreter, valkey with SearXNG. None of
-them publish a port, and their networks are `internal`, so the databases are
-reachable only through the service in front of them — not from the rest of the
-stack, and not from the host. That matters most for code-interpreter: it runs
-user-supplied code on the service plane, and cannot open a socket to a database
-it does not own.
+Each backing store is on its own internal network, shared with exactly the one
+service that owns it: `litellm-db` with LiteLLM, `index-db` with index-shim,
+MinIO and redis with code-interpreter, valkey with SearXNG. None publish a port.
 
 ## Documents
 
 **Setup and when something breaks**
 
-- [Prerequisites](prerequisites.md) — hardware, multi-node SSH
-- [Troubleshooting](troubleshooting.md) — first checks, restart loops, vLLM cold-start failures, where the logs are
-- [Environment variables](env-reference.md) — every `.env` key and the generated secrets
+- [Prerequisites](prerequisites.md): hardware, multi-node SSH
+- [Troubleshooting](troubleshooting.md): first checks, restart loops, vLLM cold-start failures, where the logs are
+- [Environment variables](env-reference.md): every `.env` key and the generated secrets
 
 **Models and nodes**
 
-- [Model configuration](models.md) — routing, adding models, OpenRouter fallback
-- [Scheduler](../scheduler/README.md) — which model lands on which node
-- [GPU memory](gpu-memory.md) — what fits on each node class, and the vLLM tuning knobs
+- [Model configuration](models.md): routing, adding models, OpenRouter fallback
+- [Scheduler](../scheduler/README.md): which model lands on which node
+- [GPU memory](gpu-memory.md): what fits on each node class, and the vLLM tuning knobs
 
 **Tools**
 
-- [Tools](tools.md) — what the six services are and how requests reach them
-- [Deep research internals](internal/deep-research.md) — the LDR sidecar
+- [Tools](tools.md): the services behind the gateway and how requests reach them
+- [Deep research internals](internal/deep-research.md): the LDR sidecar
 
 ## Where to change what
 
@@ -76,5 +70,5 @@ it does not own.
 | Choose which services run | `COMPOSE_PROFILES` in `.env` |
 | Diagnose something that will not start | [troubleshooting](troubleshooting.md) |
 
-Agent instructions, MCP connectors and user management belong to the UI — change
+Agent instructions, MCP connectors and user management belong to the UI. Change
 those in the `KloudChat` admin screen, not in this repository.

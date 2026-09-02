@@ -1,23 +1,15 @@
 """Retrieval index for KloudChat's RAG: chunk, embed, store, search.
 
-Here rather than in KloudChat because the embedding model is here — indexing is
-one hop to the GPU instead of two across a network boundary, and KloudChat stays
-deployable with no GPU stack, falling back to lexical search.
-
 Endpoints:
   PUT    /documents            index or replace one document
   POST   /search               nearest passages within one collection
   DELETE /documents/{doc_id}   forget one document
-  DELETE /collections/{name}   forget a whole shelf
-  GET    /health               readiness, including whether embeddings answer
+  DELETE /collections/{name}   forget a whole collection
+  GET    /health               readiness, embedding availability
 
-**Collections are the permission.** A collection name is an opaque id minted by
-KloudChat per (owner, agent). Every operation is scoped to the one named in the
-request; nothing lists collections or searches across them.
-
-**KloudChat owns the text.** What is stored here is derived — chunks and their
-vectors, rebuildable from the source rows. Losing this volume costs a re-index,
-not a document.
+A collection is an opaque id minted by KloudChat per (owner, agent) and scopes
+every operation; nothing lists or searches across collections. Stored data is
+derived (chunks and vectors), rebuildable from KloudChat's source rows.
 """
 from __future__ import annotations
 
@@ -35,62 +27,37 @@ from pydantic import BaseModel, Field
 log = logging.getLogger("index-shim")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
-#: No fallback: a default with credentials in it is a credential in the source
-#: tree, and compose always supplies this one.
+#: Required; compose supplies it. No default with credentials in the source tree.
 DATABASE_URL = os.environ["INDEX_DATABASE_URL"]
-#: The model gateway. Embeddings are requested by name, so which backend answers
-#: — local vLLM or a commercial fallback — is LiteLLM's decision, not ours.
+#: Model gateway. Embeddings and reranking are requested by model name; LiteLLM
+#: decides which backend answers.
 LITELLM_URL = os.getenv("LITELLM_URL", "http://litellm:8000")
 LITELLM_KEY = os.getenv("LITELLM_MASTER_KEY", "")
-#: In order of preference. The first that answers is used, and its name is stored
-#: on every row so a later change can be re-indexed incrementally instead of
-#: silently mixing two vector spaces.
-#: Reranker, empty to skip the second stage. A vector search compares question
-#: and passage in one shared space; a reranker reads the pair together, which is
-#: why 2.2 GiB of it separates a relevant passage from an irrelevant one far more
-#: sharply than cosine distance does — the gap the `max_distance` note below had
-#: to be tuned by hand.
+#: Reranker model. Empty skips the second stage.
 RERANK_MODEL = os.getenv("RERANK_MODEL", "local/bge-reranker-v2-m3").strip()
-#: Candidates pulled from pgvector per requested passage before reranking. The
-#: reranker can only reorder what the vector stage returned, so this is the recall
-#: it gets to work with; past a point it costs latency for passages that were
-#: never close.
+#: Vector candidates fetched per requested passage before reranking.
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "5"))
-#: Reranked passages below this are dropped. The two stages cut on different
-#: scales: cosine distance is the coarse recall filter deciding what the reranker
-#: sees, the reranker's score decides the answer. Marginal candidates are what
-#: the reranker is for, so the recall filter must stay loose.
-#:
-#: Measured reranker scores against a four-passage shelf:
-#:
-#:   question the shelf answers      0.73 – 0.94
-#:   loosely related, no answer      0.0005 – 0.025
-#:   topic not on the shelf at all   <= 0.0002
-#:
-#: 0.1 sits in the empty band between the first two. "Loosely related" is dropped
-#: deliberately: a retrieval layer that always answers teaches the model that the
-#: shelf is relevant when it is not.
+#: Reranker score floor. Measured with bge-reranker-v2-m3: passages that answer
+#: the question score 0.73–0.94, loosely related ones <= 0.025.
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.1"))
-#: Cosine cut used while reranking is on. Deliberately loose: it exists to bound
-#: how much the reranker reads, not to decide relevance.
+#: Cosine distance bound on reranker candidates. Loose on purpose: a recall
+#: filter, not a relevance decision.
 RERANK_RECALL_DISTANCE = float(os.getenv("RERANK_RECALL_DISTANCE", "0.85"))
 
+#: Embedding models in preference order. The first that answers is used and its
+#: name is stored on every row, so vector spaces never mix.
 EMBED_MODELS = [
     m.strip() for m in os.getenv("EMBED_MODELS", "local/bge-m3,text-embedding-3-small").split(",")
     if m.strip()
 ]
-#: bge-m3 and text-embedding-3-small are both 1024 and 1536 respectively, so the
-#: column is sized for the largest and shorter vectors are padded. Declared once:
-#: changing it is a migration, not a setting.
+#: Vector column width: the widest model in EMBED_MODELS (text-embedding-3-small
+#: is 1536, bge-m3 is 1024 and zero-padded). Changing it is a migration.
 EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))
 
-#: Characters per chunk, and how much each repeats of the one before. Matches
-#: KloudChat's lexical chunker so a passage cited by one path looks the same
-#: coming from the other.
+#: Chunk size and overlap in characters. Matches KloudChat's lexical chunker.
 CHUNK = int(os.getenv("INDEX_CHUNK_CHARS", "900"))
 OVERLAP = int(os.getenv("INDEX_CHUNK_OVERLAP", "150"))
-#: A ceiling on one document. Past this the tail is dropped and said so in the
-#: response, rather than silently indexing a prefix.
+#: Per-document ceiling; the tail past it is dropped.
 MAX_CHARS = int(os.getenv("INDEX_MAX_DOC_CHARS", "2000000"))
 
 _SCHEMA = """
@@ -109,14 +76,13 @@ CREATE TABLE IF NOT EXISTS chunks (
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
--- Every read is "within one collection", so the collection leads every index.
+-- Every read is scoped to one collection.
 CREATE INDEX IF NOT EXISTS ix_chunks_collection ON chunks (collection);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_chunks_doc_ordinal
     ON chunks (collection, doc_id, ordinal);
 """
 
-#: Built separately: an HNSW build on an empty table is instant, but it must come
-#: after the column exists and it names the operator class explicitly.
+#: HNSW index, created after the table exists.
 _ANN_INDEX = """
 CREATE INDEX IF NOT EXISTS ix_chunks_embedding
     ON chunks USING hnsw (embedding vector_cosine_ops)
@@ -124,10 +90,7 @@ CREATE INDEX IF NOT EXISTS ix_chunks_embedding
 
 
 def chunk_text(text: str) -> list[str]:
-    """Overlapping windows ending at a paragraph or sentence break where near.
-
-    Hard cut when a document has neither — extracted tables.
-    """
+    """Overlapping windows, cut at a nearby paragraph or sentence break."""
     body = re.sub(r"\n{3,}", "\n\n", (text or "").strip())[:MAX_CHARS]
     if not body:
         return []
@@ -138,8 +101,7 @@ def chunk_text(text: str) -> list[str]:
         if end < len(body):
             window = body[start:end]
             cut = max(window.rfind("\n\n"), window.rfind(". "), window.rfind("다.\n"))
-            # Only honour a break in the back half; one at character 20 would
-            # produce a chunk that is a heading and nothing else.
+            # Breaks in the front half would yield heading-only chunks.
             if cut > CHUNK // 2:
                 end = start + cut
         piece = body[start:end].strip()
@@ -152,12 +114,7 @@ def chunk_text(text: str) -> list[str]:
 
 
 class _Embedder:
-    """Calls the gateway, caching which model answered.
-
-    The preference list is tried in order, so a deployment with no local model
-    uses the commercial fallback and one with neither fails at the first index
-    rather than storing rows with no vectors.
-    """
+    """Embeds through the gateway, remembering which model answered."""
 
     def __init__(self) -> None:
         self.model: Optional[str] = None
@@ -187,18 +144,14 @@ class _Embedder:
                 except (httpx.HTTPError, KeyError, ValueError, TypeError) as exc:
                     last = f"{model}: {exc}"
                     log.info("embedding via %s failed: %s", model, exc)
-                    # A cached model that just failed must not be preferred again.
+                    # Failed model loses its cached preference.
                     if self.model == model:
                         self.model = None
         raise HTTPException(status_code=503, detail=f"embeddings unavailable ({last})")
 
 
 def _to_pgvector(values: list[float]) -> str:
-    """pgvector literal, zero-padded to the column width.
-
-    Cosine distance over a zero-padded tail is unchanged within one model, and
-    the search filters on `embed_model` so models never mix.
-    """
+    """pgvector literal, zero-padded to the column width."""
     padded = list(values[:EMBED_DIM]) + [0.0] * max(0, EMBED_DIM - len(values))
     return "[" + ",".join(f"{v:.7g}" for v in padded) + "]"
 
@@ -206,9 +159,8 @@ def _to_pgvector(values: list[float]) -> str:
 embedder = _Embedder()
 
 
-#: Width of the existing `embedding` column. pgvector stores the declared
-#: dimension in `atttypmod` directly — unlike varchar, there is no length header
-#: to subtract, and subtracting one anyway reports every table as four short.
+#: Declared width of the existing `embedding` column (pgvector stores it in
+#: atttypmod directly, no header offset).
 _COLUMN_DIM = """
 SELECT a.atttypmod
   FROM pg_attribute a
@@ -220,15 +172,12 @@ SELECT a.atttypmod
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=8)
-    #: Set when the table's vector width does not match EMBED_DIM. Reported by
-    #: /health and refused by the write path, rather than left to surface as an
-    #: asyncpg DataError on every single insert.
+    #: Set when the table's vector width differs from EMBED_DIM; reported by
+    #: /health and refused by the write path.
     app.state.dim_error = ""
     async with app.state.pool.acquire() as conn:
         await conn.execute(_SCHEMA % {"dim": EMBED_DIM})
-        # CREATE TABLE IF NOT EXISTS does not widen an existing column, so a
-        # changed EMBED_DIM leaves the old width and every insert fails with an
-        # error naming neither the setting nor the fix. Checked once, in words.
+        # CREATE TABLE IF NOT EXISTS does not widen an existing column.
         found = await conn.fetchval(_COLUMN_DIM)
         if found and int(found) != EMBED_DIM:
             app.state.dim_error = (
@@ -239,9 +188,7 @@ async def lifespan(app: FastAPI):
         try:
             await conn.execute(_ANN_INDEX)
         except asyncpg.PostgresError as exc:
-            # A missing ANN index costs speed, not correctness — the search still
-            # runs as an exact scan. Refusing to start over it would take
-            # retrieval down for a tuning problem.
+            # Without the ANN index the search runs as an exact scan.
             log.warning("HNSW index unavailable, falling back to exact scan: %s", exc)
     log.info("index-shim ready (dim=%s, models=%s)", EMBED_DIM, ",".join(EMBED_MODELS))
     yield
@@ -263,21 +210,14 @@ class Query(BaseModel):
     collection: str = Field(min_length=1, max_length=200)
     query: str = Field(min_length=1, max_length=4000)
     limit: int = Field(default=4, ge=1, le=20)
-    #: Passages further than this in cosine distance are dropped.
-    #:
-    #: Measured against bge-m3: a question the shelf answers scores 0.50–0.55
-    #: similarity, one it does not scores 0.31–0.32. The cut sits between them at
-    #: 0.42 similarity — 0.58 distance.
+    #: Cosine distance cut when no reranker runs. Measured with bge-m3: answered
+    #: questions score 0.50–0.55 similarity, unanswered 0.31–0.32.
     max_distance: float = Field(default=0.58, ge=0.0, le=2.0)
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    """Readiness and embedding availability, reported separately.
-
-    A shim whose database is up but whose embedding backend is gone still serves
-    deletes, and the caller decides whether to fall back.
-    """
+    """Database readiness and embedding availability, reported separately."""
     ok_db = False
     try:
         async with app.state.pool.acquire() as conn:
@@ -303,11 +243,7 @@ async def health() -> dict[str, Any]:
 
 @app.put("/documents")
 async def put_document(doc: Document) -> dict[str, Any]:
-    """Index one document, replacing any earlier version.
-
-    Replace, not append: a re-uploaded file would otherwise keep answering from
-    text it no longer contains.
-    """
+    """Index one document, replacing any earlier version."""
     if app.state.dim_error:
         raise HTTPException(status_code=503, detail=app.state.dim_error)
     pieces = chunk_text(doc.text)
@@ -319,8 +255,7 @@ async def put_document(doc: Document) -> dict[str, Any]:
                 doc.doc_id,
             )
             if not pieces:
-                # Empty document: a successful delete, not an error. Extraction
-                # produced nothing and the caller already knows.
+                # Empty document: a successful delete.
                 return {"chunks": 0, "model": ""}
 
             vectors, model = await embedder.embed(pieces)
@@ -349,12 +284,7 @@ async def put_document(doc: Document) -> dict[str, Any]:
 
 
 async def _rerank(query: str, passages: list[dict]) -> Optional[list[dict]]:
-    """Passages reordered by the reranker, or None if it could not be used.
-
-    None rather than an exception on purpose: retrieval that silently degrades to
-    vector order is worse than no reranking, but a shelf that stops answering
-    because its second stage is down is worse still.
-    """
+    """Passages reordered by the reranker, or None when it is off or unreachable."""
     if not RERANK_MODEL or len(passages) < 2:
         return None
     headers = {"Authorization": f"Bearer {LITELLM_KEY}"} if LITELLM_KEY else {}
@@ -371,7 +301,7 @@ async def _rerank(query: str, passages: list[dict]) -> Optional[list[dict]]:
             )
             r.raise_for_status()
             results = r.json().get("results") or []
-    except Exception as exc:  # noqa: BLE001 — any failure falls back to vector order
+    except Exception as exc:  # noqa: BLE001
         log.warning("rerank unavailable, falling back to vector order: %s", exc)
         return None
 
@@ -380,22 +310,15 @@ async def _rerank(query: str, passages: list[dict]) -> Optional[list[dict]]:
         idx = int(item.get("index", -1))
         score = float(item.get("relevance_score", 0.0))
         if 0 <= idx < len(passages) and score >= RERANK_MIN_SCORE:
-            # The reranker's score replaces the cosine one. They are not the same
-            # quantity and blending them would mean nothing.
+            # Reranker score replaces the cosine score; the two are not comparable.
             ordered.append({**passages[idx], "score": round(score, 4)})
-    # An empty list is an answer — nothing on the shelf was relevant — so it is
-    # returned rather than falling back to vector order, which would answer anyway.
+    # Empty is an answer (nothing relevant), not a fallback trigger.
     return ordered
 
 
 @app.post("/search")
 async def search(q: Query) -> dict[str, Any]:
-    """Nearest passages inside one collection.
-
-    Filtered by `embed_model` as well: after a model change the index holds two
-    vector spaces, and comparing across them returns confident nonsense. Old
-    rows stay invisible until re-indexed.
-    """
+    """Nearest passages inside one collection, from rows in the current model's vector space."""
     if app.state.dim_error:
         raise HTTPException(status_code=503, detail=app.state.dim_error)
     vectors, model = await embedder.embed([q.query])
@@ -415,14 +338,10 @@ async def search(q: Query) -> dict[str, Any]:
             q.collection,
             literal,
             model,
-            # Over-fetch so the reranker has something to choose between. It can
-            # only reorder what this stage returned, so asking for exactly `limit`
-            # would make the second stage decorative.
+            # Over-fetch so the reranker has candidates to reorder.
             q.limit * RERANK_CANDIDATES if RERANK_MODEL else q.limit,
         )
-    # While reranking, the cosine cut is loosened to a recall bound. Precision is
-    # the reranker's job, and the tuned 0.58 was chosen for a stage that has to
-    # decide alone.
+    # With a reranker the cosine cut is only a recall bound.
     cut = RERANK_RECALL_DISTANCE if RERANK_MODEL else q.max_distance
     passages = [
         {
@@ -430,8 +349,7 @@ async def search(q: Query) -> dict[str, Any]:
             "index": r["ordinal"],
             "text": r["body"],
             "source_url": r["source_url"],
-            # Reported as a similarity, so the caller can blend it with a lexical
-            # score without knowing that pgvector counts the other way.
+            # Similarity, not distance, so callers can blend it with lexical scores.
             "score": round(max(0.0, 1.0 - float(r["distance"])), 4),
         }
         for r in rows
@@ -439,8 +357,7 @@ async def search(q: Query) -> dict[str, Any]:
     ]
     reranked = await _rerank(q.query, passages)
     if reranked is None:
-        # No reranker, or it could not be reached. Fall back to vector order and
-        # to the cut that stage was tuned for.
+        # Vector order with the cut tuned for it.
         passages = [p for p in passages if p["score"] >= 1.0 - q.max_distance]
     else:
         passages = reranked
@@ -459,8 +376,7 @@ async def delete_document(doc_id: str, collection: str) -> dict[str, int]:
 
 @app.delete("/collections/{collection}")
 async def delete_collection(collection: str) -> dict[str, int]:
-    """Forget a whole shelf. Triggered by agent deletion — without it the
-    vectors stay searchable by anyone holding the collection id."""
+    """Forget a whole collection (agent deletion)."""
     async with app.state.pool.acquire() as conn:
         tag = await conn.execute("DELETE FROM chunks WHERE collection = $1", collection)
     return {"deleted": int(tag.rsplit(" ", 1)[-1] or 0)}

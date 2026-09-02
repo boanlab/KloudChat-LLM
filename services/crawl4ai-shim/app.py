@@ -1,39 +1,15 @@
-"""Firecrawl-compatible scrape API powered by Crawl4AI.
+"""Firecrawl-compatible scrape API over Crawl4AI, for KloudChat's document fetch.
 
-KloudChat doesn't have a Firecrawl Cloud subscription and uploading internal
-queries to a third-party service is off-limits. The client's web_search only
-natively supports a small set of scrapers (firecrawl / serper / jina / cohere),
-so this shim implements the firecrawl HTTP surface using Crawl4AI underneath.
-
-Endpoints implemented:
-  POST /v2/scrape, /v1/scrape, /v0/scrape   ← firecrawl-compatible clients post here
+Endpoints:
+  POST /v2/scrape, /v1/scrape, /v0/scrape
   GET  /health
 
-Request body (firecrawl v2 schema, partial — only the fields clients actually send):
-  {
-    "url":            "https://...",
-    "formats":        ["markdown", "rawHtml"],
-    "timeout":        7500,                  // ms
-    "onlyMainContent": true,
-    "waitFor":        0,                     // ms after load before extracting
-    "headers":        {...},                 // optional extra request headers
-    "skipTlsVerification": false,
-    "mobile":         false,
-    "blockAds":       false,
-    "parsePDF":       true,
-    ...
-  }
+Request (firecrawl v2, the fields honoured): url, formats ["markdown", "html",
+"rawHtml"], timeout (ms), waitFor (ms), onlyMainContent.
+Response: {"success": true, "data": {"markdown", "html", "rawHtml", "metadata"}}
+or {"success": false, "error"}.
 
-Response body:
-  {"success": true, "data": {"markdown": "...", "html": "...", "rawHtml": "...",
-                              "metadata": {"title", "description", "language",
-                                            "sourceURL", "statusCode"}}}
-  {"success": false, "error": "..."}
-
-The shim warms up one persistent AsyncWebCrawler at startup (single Chromium
-context) and serializes requests through it. For low-volume use that
-is sufficient; if we ever need concurrency we can run multiple replicas or
-fork off an async pool.
+One persistent headless Chromium crawler, shared by every request.
 """
 from __future__ import annotations
 
@@ -57,16 +33,13 @@ logging.basicConfig(level=LOG_LEVEL,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
 LOG = logging.getLogger("crawl4ai-shim")
 
-# Tuneables (env-overridable).
 DEFAULT_TIMEOUT_MS = int(os.environ.get("DEFAULT_TIMEOUT_MS", "30000"))
 USER_AGENT = os.environ.get(
     "USER_AGENT",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 KloudChat/1.0",
 )
 
-# The gateway injects this on every proxied request and it never leaves that hop.
-# Empty disables the check — the shim stays runnable on its own, which is how the
-# healthcheck and a local `docker run` reach it.
+# Bearer token the gateway injects. Empty disables the check.
 API_KEY = os.environ.get("SCRAPER_API_KEY", "")
 
 crawler: AsyncWebCrawler | None = None
@@ -161,9 +134,7 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
 
     markdown_obj = getattr(result, "markdown", None)
     if markdown_obj is not None:
-        # crawl4ai returns a MarkdownGenerationResult: .raw_markdown is the plain
-        # html→md conversion, .fit_markdown is the same after main-content filter.
-        # Prefer fit when available (cleaner for LLM context).
+        # fit_markdown: after the main-content filter; raw_markdown: plain html→md.
         if hasattr(markdown_obj, "fit_markdown") and markdown_obj.fit_markdown:
             data["markdown"] = markdown_obj.fit_markdown
         elif hasattr(markdown_obj, "raw_markdown"):

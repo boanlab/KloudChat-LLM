@@ -43,15 +43,10 @@ def _csv(value: str) -> list[str]:
 
 
 def _remote_workdir() -> str:
-    """Repository path on a node — the directory scripts/lib.sh rsyncs to.
-
-    Must match ``KLOUDCHAT_REMOTE_DIR``: running compose somewhere other than the
-    synced checkout applies stale options. ``NODE_WORKDIR`` is an alias.
-    """
+    """Repository path on a node (``KLOUDCHAT_REMOTE_DIR``), the directory lib.sh rsyncs to."""
     return (
         os.environ.get("KLOUDCHAT_REMOTE_DIR")
         or _env("KLOUDCHAT_REMOTE_DIR")
-        or _env("NODE_WORKDIR")
         or "KloudChat-LLM"
     )
 
@@ -62,14 +57,7 @@ def _resolve_hosts(arg: Optional[str]) -> dict[str, str]:
 
 
 def _head_node(hosts: dict[str, str]) -> Optional[str]:
-    """Node id of the head node — the first target in NODES_VLLM.
-
-    Declared order, not probe order: reading it off the probe results would make
-    which SSH answered first decide where a 78 GiB model lives.
-
-    None for a cluster of one node, which has no pool for ``placement`` to keep
-    anything out of.
-    """
+    """Head node id: the first target in NODES_VLLM. None for a single-node cluster."""
     return next(iter(hosts), None) if len(hosts) > 1 else None
 
 
@@ -79,11 +67,7 @@ def _load_specs(arg: Optional[str]) -> list[registry.ModelSpec]:
 
 
 def _bind(specs, probes, models_root: str):
-    """config.json and checkpoint size bound onto each ModelSpec.
-
-    Models whose probe failed are dropped with a reason: without metadata the KV
-    arithmetic is meaningless.
-    """
+    """Bind config.json and checkpoint size onto each spec; unprobeable models are dropped with a reason."""
     alive = [p for p in probes if p.alive]
     bound, failed = [], []
     for spec in specs:
@@ -126,9 +110,6 @@ def _probe(hosts: dict[str, str], specs) -> list:
     return inventory.probe_cluster(
         hosts,
         services=_services(specs),
-        # So placement can tell "this node has no room" from "this node does not
-        # have the weights" — the second is not a capacity problem and no
-        # amount of VRAM fixes it.
         models_root=_env("VLLM_MODELS_ROOT", "/var/lib/vllm/models"),
     )
 
@@ -154,11 +135,7 @@ def cmd_inventory(args) -> int:
 
 
 def _deployed(probes, specs) -> dict[str, frozenset[str]]:
-    """Model id to the node ids already running its container.
-
-    Read from `docker ps`, not from the .env: a node whose container died is not
-    a home to stay at.
-    """
+    """Model id to the node ids running its container (from ``docker ps``)."""
     by_service = {s.service: s.id for s in specs}
     out: dict[str, set[str]] = {}
     for probe in probes:
@@ -191,18 +168,14 @@ def _build_plan(args):
 
 def _print_plan(result, head: Optional[str] = None) -> None:
     if result.placements:
-        # Which node is the head is a placement input, and every "why is it
-        # there" question starts with it.
         print("Placements" + (f"   head node: {head}" if head else ""))
         for p in sorted(result.placements, key=lambda x: (x.node_id, x.model_id)):
-            # Cards and TP width only when they say something: on the common
-            # single-card node "gpu 0, TP 1" is noise in every row.
+            # Cards and TP only when not the single-card default
             extra = ""
             if p.devices and p.devices != (0,):
                 extra += f"  gpu {','.join(str(d) for d in p.devices)}"
             if p.tp > 1:
                 extra += f"  TP{p.tp}"
-            # Whisper's 448 is a real context, and 448 // 1024 printed "0K"
             ctx = f"{p.ctx // 1024}K" if p.ctx >= 1024 else str(p.ctx)
             print(f"  {p.node_id:<8} {p.model_id:<18} ctx {ctx:>5}  "
                   f"util {p.gpu_util:<5.2f} {p.charge / GB:>5.1f} GiB{extra}")
@@ -236,11 +209,9 @@ def cmd_apply(args) -> int:
         nodes=[p.spec for p in probes if p.alive],
         layout=applier.RemoteLayout(workdir=_remote_workdir()),
         local_env_path=str(ENV_FILE),
-        # The whole catalogue, so a model dropped from VLLM_MODELS has its URL
-        # cleared rather than left pointing at a container that is now stopped
+        # Whole catalogue, so a model dropped from VLLM_MODELS has its URL cleared
         known=registry.load(MODELS_YAML),
-        # Each node's current options, so an apply that changes nothing does
-        # nothing instead of reloading every model's weights
+        # Current node options, so an unchanged plan recreates nothing
         node_env={
             p.spec.node_id: inventory.read_env(
                 p.spec.hostname, f"{_remote_workdir()}/.env"

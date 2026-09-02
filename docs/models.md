@@ -2,122 +2,91 @@
 
 Which models are registered where, and how requests are routed to them.
 
-> If you are bringing the stack up for the first time, start with the
+> Bringing the stack up for the first time: start with the
 > [README](../README.md).
 
 ## Where models are defined
 
 Two catalogues, with different jobs.
 
-`scheduler/models.yaml` — **local models**: what vLLM can serve, and everything
-placement needs (port, env prefix, context floor, priority, and which half of the
-cluster the model belongs to). `VLLM_MODELS` in `.env` selects which of them are
-deployed, and the order of `NODES_VLLM` names the head node.
+`scheduler/models.yaml`: **local models**. What vLLM can serve, and everything
+placement needs (port, env prefix, context floor, priority, and which half of
+the cluster the model belongs to). `VLLM_MODELS` in `.env` selects which of them
+are deployed, and the order of `NODES_VLLM` names the head node.
 
-`scripts/lib.sh` — **commercial models** routed through OpenRouter, and the
+`scripts/lib.sh`: **commercial models** routed through OpenRouter, and the
 per-checkpoint download table `download-vllm-models.sh` uses.
 
 | Variable in `lib.sh` | Role |
 |---|---|
-| `OPENAI_MODELS` / `ANTHROPIC_MODELS` / `GOOGLE_MODELS` / `XAI_MODELS` / `PERPLEXITY_MODELS` | Frontier tier, all through OpenRouter — no direct native APIs |
-| `TENCENT_MODELS` / `DEEPSEEK_MODELS` / `ZAI_MODELS` / `XIAOMI_MODELS` / `MOONSHOTAI_MODELS` | Open-weight tier — 295B to 2.8T, far too large to self-host, which is exactly where renting beats owning |
-| `VLLM_MODELS` | Checkpoint alias → HF repo, for downloading. What each demands of a card is in `VLLM_MODEL_QUANT` and `VLLM_MODEL_WEIGHT_GB` |
+| `OPENAI_MODELS` / `ANTHROPIC_MODELS` / `GOOGLE_MODELS` / `XAI_MODELS` / `PERPLEXITY_MODELS` | Frontier tier, all through OpenRouter |
+| `TENCENT_MODELS` / `DEEPSEEK_MODELS` / `ZAI_MODELS` / `XIAOMI_MODELS` / `MOONSHOTAI_MODELS` / `QWEN_MODELS` / `MINIMAX_MODELS` | Open-weight and hosted tier, too large to self-host |
+| `OR_IMAGE_MODELS` / `OR_AUDIO_MODELS` | Image and audio generation through OpenRouter |
+| `VLLM_MODELS` | Checkpoint alias to HF repo, for downloading. Card demands are in `VLLM_MODEL_QUANT` and `VLLM_MODEL_WEIGHT_GB` |
 | `OPENAI_EMBED_CATALOG` | OpenAI embeddings, the fallback when no local one is deployed |
-| `MODEL_PRICE_IN_PM` / `MODEL_PRICE_OUT_PM` | USD per 1M tokens, for LiteLLM spend tracking |
+| `MODEL_PRICE_IN_PM` / `MODEL_PRICE_OUT_PM` / `OR_TWIN_PRICE_*` | Declared USD per 1M tokens, the fallback when the live catalogue is unreachable |
 
-**Pricing policy**
+**Pricing**
 
-- **Commercial** — the OpenRouter catalogue price.
-- **Local** (`local/*` and `strict-local/*`) — **free (0)**. Self-hosted GPU,
-  no per-token billing.
-- **When the OpenRouter fallback fires** (node down or overloaded) — billed at
-  the price of the deployment that actually served it.
+- Commercial: the OpenRouter catalogue price.
+- Local (`local/*` and `strict-local/*`): free (0).
+- When the OpenRouter fallback fires: billed at the price of the deployment
+  that served it. LiteLLM computes cost against the deployment it fell back to.
+- `text-embedding-3-small`: paid, through OpenAI.
 
-  > LiteLLM computes cost against the deployment it fell back to, so local (0)
-  > and OpenRouter (paid) separate themselves. The twin's price is baked into the
-  > `emit_or_fallback` arguments in `gen-litellm-config.sh` — the fallback table
-  > below carries the same numbers.
-
-- **`text-embedding-3-small`** — through OpenRouter, so it is paid.
-
-> Prices move, and the same model differs by provider. The catalogue is the
-> source of truth, and `gen-litellm-config.sh` reads it directly: every price it
-> emits is the live figure, fetched once per run.
-
-The tables in `lib.sh` are the **fallback**, for a run with no OpenRouter key or
-no network. They are not what a normal deployment bills against: a figure that
-only changes when somebody commits rots silently. Generation prints how many it
-read and how many differed:
+`gen-litellm-config.sh` fetches the OpenRouter catalogue once per run and emits
+the live price for every route. The tables in `lib.sh` are the fallback for a
+run with no key or no network. Generation prints how many prices it read and
+how many differed:
 
 ```
 [INFO] prices: 25 read from the catalogue, 1 differ from the declared fallback
 ```
 
-**`--check-prices`** compares the fallbacks against the catalogue and writes
-nothing. It reports when the fallbacks have rotted far enough to be worth
-refreshing, covering chat, the local models' OpenRouter twins, and image and
-audio rates. A declared id that has left the catalogue is reported as `GONE` —
-that one 404s on first call.
-
-Per-clip models are the awkward case for both the live read and the check:
-OpenRouter leaves their `pricing` block empty and states the figure in the model
-description instead ("30 second duration clips are priced at $0.04 per clip"), so
-that one is read from the description and stays a declared value.
+`./scripts/gen-litellm-config.sh --check-prices` compares the declared
+fallbacks against the catalogue and writes nothing. A declared id that has left
+the catalogue is reported as `GONE`. Per-clip audio models have no `pricing`
+block on OpenRouter; their figure is read from the model description and stays
+a declared value.
 
 **Generated configuration**
 
-`gen-litellm-config.sh` combines the definitions above with the environment and
-regenerates the block between markers.
+`gen-litellm-config.sh` combines the definitions above with `.env` and
+regenerates the block between markers in `services/litellm/config.yaml`
+(`KLOUDCHAT_AUTOGEN` for `model_list`, `KLOUDCHAT_FALLBACKS` for
+`router_settings.fallbacks`). The model picker reads LiteLLM's `/v1/models`
+directly; nothing is generated on the UI side.
 
-| Generator | Target | Marker |
-|---|---|---|
-| `gen-litellm-config.sh` | `services/litellm/config.yaml` | `KLOUDCHAT_AUTOGEN` |
-
-The model picker reads LiteLLM's `/v1/models` directly, so there is nothing to
-generate on the UI side.
-
-Every generated deployment carries an explicit KloudChat boundary contract in
-`model_info`. Consumers must treat a missing or unknown value as external rather
-than deriving trust from the model name.
+Every generated deployment carries a KloudChat boundary contract in
+`model_info`. Consumers treat a missing or unknown value as external.
 
 | Field | Meaning |
 |---|---|
-| `kchat_data_boundary` | `self_hosted`, `hybrid`, or `external` for the generated route |
+| `kchat_data_boundary` | `self_hosted`, `hybrid`, or `external` |
 | `kchat_strict_local` | `true` only for a no-egress `strict-local/*` alias |
 | `kchat_privacy_only` | Keeps the strict alias out of ordinary default selection |
+| `kchat_hidden` | Fallback twins and the STT route: registered, not shown in the picker |
 
-The normal `local/*` alias is `hybrid` when an OpenRouter fallback exists and
-`self_hosted` without one. It is never `external`: the prefix states where a
-request starts, and a deployment that spills to OpenRouter under load or on
-failure still starts local. Where no GPU URL exists there is no local alias at
-all — the model registers under its OpenRouter slug instead. Only
-`strict-local/*` has both boolean flags set.
+A `local/*` alias is `hybrid` when an OpenRouter fallback exists and
+`self_hosted` without one. It is never `external`: with no GPU URL there is no
+local alias at all, and the model registers under its OpenRouter slug.
 
 ## The model set
 
 vLLM is the only local LLM backend, on two architectures:
 
-- **amd64** — discrete cards (RTX 5090 / PRO 5000 / PRO 6000), base image
-  `vllm/vllm-openai:cu129-nightly`.
-- **arm64** — GB10 with 128 GB of unified memory, base image
-  `vllm/vllm-openai:nightly-aarch64`.
+- amd64 (RTX 5090 / PRO 5000 / PRO 6000): base image `vllm/vllm-openai:cu129-nightly`
+- arm64 (GB10, 128 GB unified memory): base image `vllm/vllm-openai:nightly-aarch64`
 
-**Compose does not run the base image directly, and the pin is per node.**
-`install-vllm.sh` pulls the base, builds this repo's layer over it as
-`kloudchat-vllm:local`, and records `VLLM_IMAGE`, `VLLM_BASE_IMAGE` and
-`VLLM_BASE_DIGEST` in that node's `.env`. Pin rebuilds to `VLLM_BASE_DIGEST`: a
-floating `nightly` fails silently — a moved tool-parser registry leaves every
-container healthy and every tool call unparsed.
-
-Base and derived are separate tags, which is what makes the recorded digest
-resolvable. Rebuilding the derived layer over the pulled tag would overwrite it
-with a local build, and a digest read back from that is an image id `docker pull`
-cannot resolve.
+Compose runs `kloudchat-vllm:local`, this repo's layer over the base.
+`install-vllm.sh` pulls the base, builds the layer, and records `VLLM_IMAGE`,
+`VLLM_BASE_IMAGE` and `VLLM_BASE_DIGEST` in the node's `.env`. A rebuild pins to
+the digest, so `nightly` moving upstream does not change a node.
 
 The catalogue below is what vLLM *can* serve. `VLLM_MODELS` selects what is
 deployed, `placement` says which half of the cluster a model belongs to, and
 `priority` ranks the models within that half when the cards cannot hold
-everything — the lowest-ranked is delegated to OpenRouter rather than squeezed
+everything. The lowest-ranked is delegated to OpenRouter rather than squeezed
 in.
 
 **Node** is `placement` in `models.yaml`. The **head** node is the first target
@@ -127,72 +96,59 @@ means the model is placed wherever it fits.
 
 | Model (alias) | Container | Port | Quant | Node | Priority | Role |
 |---|---|---|---|---|---|---|
-| `local/qwen3.6-35b` | `vllm-qwen35b` | 8001 | NVFP4 | head | 20 | Unified chat and floor — conversation, artifacts, vision, coding, titles, memory extraction |
-| `local/qwen3.5-122b-a10b` | `vllm-qwen122b` | 8004 | NVFP4 | pool (share 60) | 15 | Top chat and deep research — 10B active, 128K here. Needs the card to itself |
-| `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | pool (share 40) | 10 | Coding (Qwen3-Coder-Next-80B-A3B). Hybrid attention — 12 of 48 layers hold KV — so 12 KiB/token at 262K |
+| `local/qwen3.6-35b` | `vllm-qwen35b` | 8001 | NVFP4 | head | 20 | Unified chat and floor: conversation, artifacts, vision, coding, titles, memory extraction |
+| `local/qwen3.5-122b-a10b` | `vllm-qwen122b` | 8004 | NVFP4 | pool (share 60) | 15 | Top chat and deep research. 10B active, 128K here. Needs the card to itself |
+| `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | pool (share 40) | 10 | Coding (Qwen3-Coder-Next-80B-A3B). Hybrid attention, 12 of 48 layers hold KV, 12 KiB/token at 262K |
 | `local/bge-m3` | `vllm-bgem3` | 8003 | BF16 | head | 5 | Retrieval embeddings. Pooling runner |
 | `local/bge-reranker-v2-m3` | `vllm-rerank` | 8009 | BF16 | head | 0 | Retrieval reranking, second stage over vector search |
-| `local/whisper-large-v3` | `vllm-whisper` | 9000 | FP16 | head | 4 | Transcription. Reached through `/tools/stt`, not registered as a LiteLLM chat route |
-| `local/gemma-4-26b-a4b` | `vllm-gemma26b` | 8005 | NVFP4 | — | 0 | Second family — vision, tool calling, 256K. 4B active of 26B |
-| `local/qwen3-coder-30b` | `vllm-coder30b` | 8006 | FP8 | — | 0 | Coding, smaller. 48 KiB/token. Superseded by `qwen3-coder-next` where 75 GiB fits |
-| `local/qwen3.6-27b` | `vllm-qwen27b` | 8007 | NVFP4 | — | 0 | The one dense model — no routing, a different kind of answer |
-| `local/glm-4.7-flash` | `vllm-glmflash` | 8002 | NVFP4 | — | 0 | Cheap-decode floor (31.2B-A3B) |
-| `strict-local/<model>` | same backend as its `local/` twin | — | — | — | — | Privacy-only alias; fails rather than leaving vLLM |
+| `local/whisper-large-v3` | `vllm-whisper` | 9000 | FP16 | head | 4 | Transcription. Reached through `/tools/stt`, not a LiteLLM chat route |
+| `local/qwen3-coder-30b` | `vllm-coder30b` | 8006 | FP8 | any | 0 | Coding, smaller. 48 KiB/token. Superseded by `qwen3-coder-next` where 75 GiB fits |
+| `local/qwen3.6-27b` | `vllm-qwen27b` | 8007 | NVFP4 | any | 0 | The one dense model |
+| `strict-local/<model>` | same backend as its `local/` twin | | | | | Privacy-only alias; fails rather than leaving vLLM |
 
-**Why this split**
+**The split.** Qwen3.6-35B-A3B covers vision, a 262K context and agentic coding
+on its own, and at 3B active it is cheap enough to carry the high-volume
+internal calls (titles, memory extraction, query rewriting). Qwen3.5-122B-A10B
+is the quality end: 10B active decodes at roughly a third the rate, and 78 GiB
+of weights leaves ~22 GiB of KV on a GB10, about 13 concurrent requests at
+128K. Volume goes to the 35B; the 122B is chosen when the answer is worth the
+wait.
 
-Qwen3.6-35B-A3B covers vision, a 262K context and agentic coding on its own, and
-at 3B active it is cheap enough to also carry the high-volume internal calls
-(titles, memory extraction, query rewriting). It is the workhorse.
-
-Qwen3.5-122B-A10B is the quality end, and it is not a substitute for the 35B in
-any of those roles: 10B active puts its decode at roughly a third the rate, and
-78 GiB of weights leaves ~22 GiB of KV on a GB10 — about 13 concurrent requests
-at 128K, against the 35B's several times that. Point volume at the 35B and choose
-the 122B when the answer is worth the wait.
-
-A model in the catalogue but not in `VLLM_MODELS` gets no `local/` alias at all;
-it is reachable under its OpenRouter slug — see [Registration](#vllm-local).
+A model in the catalogue but not in `VLLM_MODELS` gets no `local/` alias; it is
+reachable under its OpenRouter slug. See [Registration](#vllm-local).
 
 **Quantisation**
 
-- Default is **NVFP4** (GB10 / RTX 5090 / PRO 5000 / PRO 6000).
-- **A card without FP4** cannot run the default lineup, and the catalogue carries
-  AWQ int4 aliases for it — `gemma-4-26b-a4b-awq`, `qwen3.6-27b-awq`,
-  `qwen3.6-35b-awq`, which execute from compute capability 7.5. Point the model's
-  `*_DIR` at one; the served entry does not change.
-- Those aliases are for **large** FP4-less cards. On 48 GiB they place at
-  128K–256K; on 24 GiB one of them places at its 32K floor and 0.92 of the card,
-  which is why 32 GiB usable is the floor and `manage-vllm.sh up` refuses below it
-  ([gpu-memory.md](gpu-memory.md)).
+- Default is NVFP4 (GB10 / RTX 5090 / PRO 5000 / PRO 6000).
+- A card without FP4 cannot run the default lineup. The catalogue carries an
+  AWQ int4 build of the chat model, `qwen3.6-35b-awq`, executable from compute
+  capability 7.5. Point `VLLM_QWEN35B_DIR` at it; the served entry does not
+  change.
+- That build is for large FP4-less cards: on 48 GiB it places at 128K–256K, and
+  at 26 GB of weights it does not fit a 24 GiB card. 32 GiB usable is the floor
+  and `manage-vllm.sh up` refuses below it ([gpu-memory.md](gpu-memory.md)).
 
 **Parsers**
 
 | Model | Tool parser | Reasoning parser | Notes |
 |---|---|---|---|
-| `qwen3-coder-next` | `qwen3_coder` | — | Same XML dialect as the 30B — the checkpoint's chat template emits `<tool_call><function=…><parameter=…>`, which is what this parser reads |
-| `qwen3-coder-30b` | `qwen3_coder` | — | Qwen3-Coder has its own XML dialect; `qwen3_xml` is a different format and silently yields no tool calls. No thinking mode, so no reasoning parser |
+| `qwen3.6-35b` | `qwen3_xml` | `qwen3` | Thinking off by default via `--default-chat-template-kwargs '{"enable_thinking": false}'`. The hybrid Gated-DeltaNet needs `--max-num-seqs` for cudagraph capture |
+| `qwen3.5-122b-a10b` | `qwen3_xml` | `qwen3` | Same family and chat-template controls. `--max-num-seqs` is set low for KV |
 | `qwen3.6-27b` | `qwen3_xml` | `qwen3` | Same family plumbing as `qwen3.6-35b` |
-| `gemma-4-26b-a4b` | `gemma4` | `gemma4` | Gemma states tool calls in its own `<\|tool>` form, which no generic parser reads. Without `gemma4` the model falls back to ReAct text and the client cannot execute anything |
-| `qwen3.6-35b` | `qwen3_xml` | `qwen3` | Thinking is on by default upstream and turned off with `--default-chat-template-kwargs '{"enable_thinking": false}'`. Hybrid Gated-DeltaNet requires `--max-num-seqs` (cudagraph OOM without it) |
-| `qwen3.5-122b-a10b` | `qwen3_xml` | `qwen3` | Same architecture family (`Qwen3_5MoeForConditionalGeneration`) and the same chat-template controls, so the same parsers. `--max-num-seqs` is set low here for KV rather than for cudagraph capture |
-| `glm-4.7-flash` | `glm45` | `glm47` | Without the reasoning parser, chain-of-thought leaks into `content` |
+| `qwen3-coder-next` | `qwen3_coder` | none | Qwen3-Coder's XML dialect (`<tool_call><function=…><parameter=…>`). `qwen3_xml` yields no tool calls |
+| `qwen3-coder-30b` | `qwen3_coder` | none | Same dialect. No thinking mode |
 
 ## Free models
 
 Whatever OpenRouter offers for free is queried at config-generation time and
-registered. The list is not hard-coded because the free tier changes often — a
-model that disappeared would still show in the picker and 404 on call. If the
-query fails, nothing is added and the config is built from paid models alone.
+registered. If the query fails, nothing is added.
 
-The filter lives in `or_free_models` in `scripts/lib.sh`: zero input and output
-price, text output, `:free` suffix. Guardrail models (content-safety, guard,
-moderation) are excluded — they emit text but classify their input, so picking
-one as a chat partner returns a verdict instead of an answer.
+The filter is `or_free_models` in `scripts/lib.sh`: zero input and output
+price, text output, `:free` suffix. Guardrail models (guard, safety,
+moderation) are excluded; they classify their input rather than answer.
 
-The UI hides models priced at 0 by default, as a guard against mistaking a
-missing price for a free model. The `:free` suffix is the one exception, because
-there the provider stated the price.
+The UI hides models priced at 0 by default. The `:free` suffix is the exception,
+because there the provider stated the price.
 
 ## Routing
 
@@ -203,46 +159,42 @@ there the provider stated the price.
 | Present | One route per model, named `<provider>/<id>` |
 | Absent | Not registered |
 
-`model_name` is canonical (`openai/gpt-5.6-sol`) while `litellm_params.model` is
-`openrouter/<provider>/<id>:floor`.
-
-- **`:floor` provider routing** — `gen-litellm-config.sh` appends an OpenRouter
-  variant to chat and agent routes. The default `:floor` picks the cheapest
-  provider for that model. `KC_OR_VARIANT` changes it: `:nitro` for throughput,
-  or empty for the OpenRouter default. It does not apply to embeddings.
+`model_name` is canonical (`openai/gpt-5.6-sol`) while `litellm_params.model`
+is `openrouter/<provider>/<id>:floor`. `:floor` picks the cheapest provider for
+that model. `KC_OR_VARIANT` changes the suffix: `:nitro` for throughput, empty
+for the OpenRouter default. It does not apply to embeddings.
 
 ### vLLM (local)
 
-- **Registration** — filling in the URL registers it under the same model name.
+- **Registration**: a non-empty URL registers the model under its `local/`
+  name.
 
   | `model_name` | URL variable |
   |---|---|
   | `local/qwen3.6-35b` | `VLLM_QWEN35B_URL` |
   | `local/qwen3.5-122b-a10b` | `VLLM_QWEN122B_URL` |
-  | `local/gemma-4-26b-a4b` | `VLLM_GEMMA26B_URL` |
+  | `local/qwen3-coder-next` | `VLLM_CODERNEXT_URL` |
   | `local/qwen3-coder-30b` | `VLLM_CODER30B_URL` |
   | `local/qwen3.6-27b` | `VLLM_QWEN27B_URL` |
-  | `local/glm-4.7-flash` | `VLLM_GLMFLASH_URL` |
+  | `local/bge-m3` | `VLLM_BGEM3_URL` |
+  | `local/bge-reranker-v2-m3` | `VLLM_RERANK_URL` |
 
-- **No URL** — no `local/*` name is created. With an OpenRouter key the model is
-  still reachable, but under its own slug (`qwen/qwen3.6-35b-a3b`,
-  `z-ai/glm-4.7-flash`) and priced as the paid route it is. A surface that names
-  `local/<m>` therefore stops resolving on a GPU-less install and must pick from
-  the catalogue — see **Naming a model from outside** below.
-
-- **Discovery** — `gen-litellm-config.sh` polls `/v1/models` at each URL and
+- **No URL**: no `local/*` name. With an OpenRouter key the model is reachable
+  under its own slug (`qwen/qwen3.6-35b-a3b`, `qwen/qwen3.5-122b-a10b`) and
+  priced as the paid route it is. A surface that names `local/<m>` stops
+  resolving on a GPU-less install; see **Naming a model from outside**.
+- **Discovery**: `gen-litellm-config.sh` polls `/v1/models` at each URL and
   registers only the nodes that answer.
-- **Multi-node** — one deployment per node under the same model name. The
+- **Multi-node**: one deployment per node under the same model name. The
   LiteLLM router picks with `least-busy`.
-- **Strict aliases** — each configured chat vLLM also registers a
-  `strict-local/<model>` alias over the same backend. An empty URL never creates
-  that alias, and never creates the plain `local/*` one either.
+- **Strict aliases**: each registered chat vLLM also gets a
+  `strict-local/<model>` alias over the same backend.
 
 **Operations**
 
-- **Normally** — the placement step of `setup.sh all` (`scheduler apply`) decides
+- Normally: the placement step of `setup.sh all` (`scheduler apply`) decides
   what runs where, at which context, and starts it.
-- **By hand** — `./scripts/manage-vllm.sh up <service>`.
+- By hand: `./scripts/manage-vllm.sh up <service>` on the node.
 
 What fits on which card is in the
 [GPU memory guide](gpu-memory.md#per-node-class).
@@ -250,179 +202,144 @@ What fits on which card is in the
 | Model | Node class | Notes |
 |---|---|---|
 | `qwen3.6-35b` | Any single NVFP4-capable GPU | Unified chat and floor |
-| `qwen3.5-122b-a10b` | GB10 or PRO 6000, **alone on the card** | Top chat |
-| `gemma-4-26b-a4b` | Any single NVFP4-capable GPU | Second family; shares a card |
-| `qwen3-coder-30b` | Any single GPU (FP8 — no FP4 needed) | Coding |
+| `qwen3.5-122b-a10b` | GB10, or 2 × PRO 6000 (`tensor_parallel: 2`), alone on the cards | Top chat |
+| `qwen3-coder-next` | GB10 or PRO 6000, alone on the card | Coding (FP8, 75 GiB) |
+| `qwen3-coder-30b` | Any single GPU (FP8, no FP4 needed) | Coding |
 | `qwen3.6-27b` | Any single NVFP4-capable GPU | Dense |
-| `qwen3-coder-next` | GB10 or PRO 6000, **alone on the card** | Coding (FP8, 75 GiB) |
-| `glm-4.7-flash` | PRO 5000 and up | Cheap-decode floor |
 
 **Roles**
 
-- **`qwen3.6-35b`** — default chat, and the deployment volume is pointed at.
-  Artifacts and coding run here, as do the high-volume internal calls — titles,
-  memory extraction, query rewriting — whose call sites the UI names
-  (`KCHAT_TITLE_MODEL`). The scheduler holds a 128K context floor on it: a long
-  conversation with a coding agent accumulates context the same way a research
-  run does. It sits on the head node with retrieval, and nothing card-sized may
-  join it there.
-- **`qwen3.5-122b-a10b`** — top chat, chosen from the picker when the answer is
-  worth the latency, and what the pool exists for: three pool nodes in five hold
-  it. `DEEP_RESEARCH_MODEL` points here, which is the one route that reaches it
-  without a user choosing it by name — a research run is a handful of long,
-  sequential calls where the answer per round is what the run is made of, and
-  it is the shape of traffic this model is worth its latency for. Interactive
-  volume is a different matter: at 10B active it decodes roughly three times
-  slower, and its KV pool admits 12 concurrent sessions against the 35B's 128,
-  so nothing else is routed here by default.
-- **`qwen3-coder-next`** — coding, and a picker choice rather than a default
-  route. 75 GiB of FP8 weights, so it wants a pool card to itself; two pool nodes
-  in five, and on a pool of one it is the model that yields.
-- **`qwen3-coder-30b`** and **`qwen3.6-27b`** — specialisations for a cluster
-  with cards to spare. Neither is routed to; both are picker choices. Check
-  `scheduler plan` before adding them to `VLLM_MODELS`.
-- **`gemma-4-26b-a4b`** — the second opinion. Nothing routes here either; it
-  exists because when a Qwen answer is wrong it tends to be wrong the same way
-  twice, and a different lineage fails differently. 4B active, so it costs about
-  what the 35B costs to run.
+- `qwen3.6-35b`: default chat and the deployment volume points at. Artifacts,
+  coding and the high-volume internal calls (titles, memory extraction, query
+  rewriting) run here; the UI names those call sites (`KCHAT_TITLE_MODEL`). The
+  scheduler holds a 128K context floor on it for coding-agent sessions. It sits
+  on the head node with retrieval.
+- `qwen3.5-122b-a10b`: top chat, chosen from the picker, and what the pool
+  exists for (three pool nodes in five). `DEEP_RESEARCH_MODEL` points here, the
+  one route that reaches it without a user choosing it. Nothing else is routed
+  here by default: its KV pool admits 12 concurrent sessions.
+- `qwen3-coder-next`: coding, a picker choice. 75 GiB of FP8 weights, so it
+  wants a pool card to itself (two pool nodes in five). On a pool of one it
+  yields to the 122B.
+- `qwen3-coder-30b` and `qwen3.6-27b`: picker choices for a cluster with cards
+  to spare. Check `scheduler plan` before adding them to `VLLM_MODELS`.
 
-**Ranking.** `placement` decides *which* cards a model may compete for, and
+**Ranking.** `placement` decides which cards a model may compete for, and
 `priority` decides who wins among the models competing for the same ones:
-`qwen3.6-35b` (20) then `bge-m3` (5) on the head node, `qwen3.5-122b-a10b` (15)
-then `qwen3-coder-next` (10) in the pool. Without a priority, coverage seats the
-largest model first — a packing guard, not a judgement about what the cluster
-needs.
-
-The head node is ranked separately rather than ranked highest, because the two
-sets are not comparable. Default chat, titles, memory extraction and the coding
-agents all land on the 35B, so losing it degrades every path at once; losing a
-pool model costs deep research or a picker choice. Ranking them on one scale would
-mean a pool card could be won by the floor and a head card by a picker model,
-and both are the wrong trade.
+`qwen3.6-35b` (20) then `bge-m3` (5) on the head node, `qwen3.5-122b-a10b`
+(15) then `qwen3-coder-next` (10) in the pool. Without a priority, coverage
+seats the largest model first. The head node is ranked separately from the
+pool: losing the 35B degrades every path at once, losing a pool model costs
+deep research or a picker choice.
 
 **Sharing the pool.** `share` divides the pool nodes once every model has one:
 60 to `qwen3.5-122b-a10b` and 40 to `qwen3-coder-next`, so a pool of five holds
-three and two. It is a weight rather than a percentage — 60 and 40 divide exactly
-as 3 and 2 do — and with a pool of one it decides nothing, because coverage seats
-by priority before any share is consulted.
-- **Artifacts** — no separate model. The client produces code and document
-  artifacts on the chat deployment and the server extracts them from the
-  response.
-- **Media** — no local backend. Images, audio and video pass through to
+three and two. It is a weight, not a percentage, and with a pool of one it
+decides nothing.
+
+- **Artifacts**: no separate model. The client produces code and document
+  artifacts on the chat deployment and the server extracts them.
+- **Media**: no local backend. Images, audio and video pass through to
   OpenRouter.
 
 ### Local to OpenRouter fallback
 
-Local vLLM chat models fail over to the **same model on OpenRouter** through two
+Local vLLM chat models fail over to the same model on OpenRouter through two
 independent paths:
 
-- **Node down or erroring** — `router_settings.fallbacks`, after `num_retries` is
-  exhausted by errors, timeouts or cooldown.
-- **Overload** — the `concurrency_gate` callback. When vLLM in-flight requests
-  exceed the per-model cap, traffic spills to the same OpenRouter twin
-  (`services/litellm/callbacks/concurrency_gate.py`). Plain queueing never
-  triggers `fallbacks`, which is why this gate exists.
+- **Node down or erroring**: `router_settings.fallbacks`, after `num_retries`
+  is exhausted by errors, timeouts or cooldown.
+- **Overload**: the `concurrency_gate` callback
+  (`services/litellm/callbacks/concurrency_gate.py`). When vLLM in-flight
+  requests exceed the per-model cap, traffic spills to the OpenRouter twin.
+  Plain queueing never triggers `fallbacks`.
 
-`router_settings.fallbacks`:
+`router_settings.fallbacks`, with the declared fallback prices in `lib.sh`
+(live catalogue prices override them at generation):
 
-| Local (primary) | OpenRouter fallback (paid) |
+| Local (primary) | OpenRouter fallback (paid, $/1M in / out) |
 |---|---|
-| `local/qwen3.6-35b` | `qwen/qwen3.6-35b-a3b` ($0.14 / $1.00) |
-| `local/qwen3.5-122b-a10b` | `qwen/qwen3.5-122b-a10b` ($0.26 / $2.08) |
-| `local/gemma-4-26b-a4b` | `google/gemma-4-26b-a4b-it` ($0.07 / $0.34) |
-| `local/qwen3-coder-30b` | `qwen/qwen3-coder-30b-a3b-instruct` ($0.07 / $0.28) |
-| `local/qwen3.6-27b` | `qwen/qwen3.6-27b` ($0.30 / $2.00) |
-| `local/glm-4.7-flash` | `z-ai/glm-4.7-flash` ($0.06 / $0.40) |
+| `local/qwen3.6-35b` | `qwen/qwen3.6-35b-a3b` (0.14 / 1.00) |
+| `local/qwen3.5-122b-a10b` | `qwen/qwen3.5-122b-a10b` (0.26 / 2.08) |
+| `local/qwen3-coder-next` | `qwen/qwen3-coder-next` (live price) |
+| `local/qwen3-coder-30b` | `qwen/qwen3-coder-30b-a3b-instruct` (0.07 / 0.28) |
+| `local/qwen3.6-27b` | `qwen/qwen3.6-27b` (0.60 / 3.60) |
 
-> These prices must match the `emit_brain` and `emit_or_fallback` arguments in
-> `gen-litellm-config.sh`. When they change, verify against
-> `https://openrouter.ai/api/v1/models` and update both.
-
-- **Emission condition** — `emit_or_fallback` emits the twin only when the local
-  primary is deployed (its URL is set), under the OpenRouter slug as model name.
-  With no local primary, `emit_brain` registers that same slug as an ordinary
-  visible route. The two are mutually exclusive on purpose: both firing would put
-  two deployments under one `model_name` and the router would split ordinary
-  traffic onto the paid one.
-- **Hidden from the picker** — the twin keeps the OpenRouter slug, so it is
-  distinct from the local alias and is used only as a fallback.
-- **Cost** — a fallback is **paid OpenRouter egress**. A node that dies often
-  leaks money.
+- **Emission condition**: `emit_or_fallback` emits the twin only when the local
+  primary is deployed (its URL is set). With no local primary, `emit_brain`
+  registers that same slug as an ordinary visible route. The two never both
+  fire: two deployments under one `model_name` would split ordinary traffic
+  onto the paid one.
+- **Hidden from the picker**: the twin keeps the OpenRouter slug and
+  `kchat_hidden: true`.
+- **Cost**: a fallback is paid OpenRouter egress.
 
 ### Naming a model from outside
 
-A caller that hard-codes `local/<m>` is asserting the install has that GPU
+A caller that hard-codes `local/<m>` asserts the install has that GPU
 deployment. Where it might not, read the catalogue and fall back:
 
 | Setting | Behaviour when the name is absent |
 |---|---|
-| `DEEP_RESEARCH_MODEL` (this repo) | Passed through to the deep-research service as-is; set it to a model the install actually serves |
+| `DEEP_RESEARCH_MODEL` (this repo) | Passed through to the deep-research service as-is; set it to a model the install serves |
 | `KCHAT_DEFAULT_CHAT_MODEL` (UI) | Blanked against the live catalogue; the picker falls back to its cheapest |
 | `KCHAT_TITLE_MODEL` (UI) | Blanked against the live catalogue; title and memory extraction use the session's own model |
 
 ### Strict-local fail-closed routing
 
 `strict-local/*` is the route for requests that must not leave the self-hosted
-vLLM deployment. It has two independent fail-closed controls:
+vLLM deployment. Two independent fail-closed controls:
 
-- The generated `router_settings.fallbacks` table never contains a strict alias,
-  so node errors, timeouts and cooldown do not select OpenRouter.
-- The concurrency gate reads `model_info.kchat_strict_local`. At the same
-  saturation threshold used to spill a normal local alias, it returns
+- The generated `router_settings.fallbacks` table never contains a strict
+  alias, so node errors, timeouts and cooldown never select OpenRouter.
+- The concurrency gate reads `model_info.kchat_strict_local`. At the
+  saturation threshold that spills a normal alias, it returns
   `strict_local_unavailable` without rewriting the model id.
 
 A `/metrics` scrape failure marks strict capacity unavailable and rejects the
-request; normal aliases retain their existing fail-open behavior. If vLLM fails
-after a healthy capacity check, LiteLLM retries only the deployments registered
-under the strict alias and then returns an error. It has no external target to
-try.
+request; normal aliases keep their fail-open behaviour. If vLLM fails after a
+healthy capacity check, LiteLLM retries only the strict alias's own deployments
+and then returns an error.
 
-After introducing strict aliases into an existing LiteLLM installation, run
-`./scripts/manage.sh team add-strict`. It preserves each team's current
-allowlist and adds a strict alias only where that team already has the matching
-`local/*` model. Do not use `team sync` solely for this rollout: that command
-intentionally replaces a team's allowlist with the full generated catalogue.
+`./scripts/manage.sh team add-strict` adds a strict alias to each team's
+allowlist only where that team already has the matching `local/*` model.
+`team sync` replaces a team's allowlist with the full generated catalogue.
 
 ### Spend-log privacy
 
-`general_settings.store_prompts_in_spend_logs` is `false`. LiteLLM continues to
-record token usage and cost attribution, but spend rows do not retain prompt or
-response bodies. Clients may additionally suppress message logging per request;
-that signal is defence in depth, not a substitute for the server default.
+`general_settings.store_prompts_in_spend_logs` is `false`, enforced by
+`gen-litellm-config.sh` on every run. Token usage and cost attribution are
+recorded; prompt and response bodies are not.
 
 ### Per-model `max_model_len`
 
-- **Discovery** — `gen-litellm-config.sh` reads `max_model_len` from each
-  deployment's `/v1/models` and emits it as LiteLLM's `max_input_tokens`, which
-  keeps unified-memory nodes from swapping their KV cache.
-- **Fallback** — if a node is unreachable, the single fallback `CTX_FALLBACK`
-  (32768) is used.
+- **Discovery**: `gen-litellm-config.sh` reads `max_model_len` from each
+  deployment's `/v1/models` and emits it, minus `KC_PRE_CALL_HEADROOM` (4096),
+  as LiteLLM's `max_input_tokens`.
+- **Fallback**: if a node is unreachable, `CTX_FALLBACK` (32768) is used.
 
-The values below are what this cluster discovers today; they change with the
-nodes.
+Contexts as deployed here for the placed models, and the `.env.example`
+defaults for the rest. They change with the nodes.
 
-| Model | Context (this cluster) | Purpose |
+| Model | Context | Purpose |
 |---|---|---|
 | `qwen3.6-35b` | 256K (262K native) | Chat, coding, internal calls |
-| `qwen3.5-122b-a10b` | **128K** (262K native) | Top chat and deep research. Capped by KV, not by the model |
-| `gemma-4-26b-a4b` | 256K | Second opinion — a different family's failure modes |
-| `qwen3-coder-30b` | 128K | Coding. Capped by KV: 48 KiB/token is 4.8× the 35B |
-| `qwen3.6-27b` | 256K | Dense |
+| `qwen3.5-122b-a10b` | 128K (262K native) | Top chat and deep research. Capped by KV, not by the model |
+| `qwen3-coder-next` | 256K (262K native) | Coding |
+| `qwen3-coder-30b` | 128K | Coding. Capped by KV: 48 KiB/token |
+| `qwen3.6-27b` | 128K | Dense |
 
 ### Embeddings
 
 `bge-m3` (`BAAI/bge-m3`, 1024 dimensions, 8K context, multilingual) serves
-KloudChat's retrieval index through `/tools/index`. It is a **pooling** runner,
-not a chat one: no tool parser, no reasoning parser, and no KV cache — so
-`scheduler/planner.py` charges it weights and activation only. About 2 GiB, so
-it rides along on a card already serving a chat model.
+KloudChat's retrieval index through `/tools/index`. It is a pooling runner: no
+tool parser, no reasoning parser, no KV cache, so the planner charges it
+weights and activation only. Registered with `mode: embedding`, which keeps it
+out of the model picker.
 
-Add it to `VLLM_MODELS` like any other. Registered with `mode: embedding`,
-which keeps it out of KloudChat's model picker.
-
-With no local deployment and an OpenAI key, `text-embedding-3-small` is
-registered as the fallback (~$0.02 per 1M). OpenRouter serves no embedding
-models. With neither, KloudChat falls back to lexical retrieval.
+With no local deployment and an `OPENAI_API_KEY`, `text-embedding-3-small` is
+registered as the fallback. OpenRouter serves no embedding models. With
+neither, KloudChat falls back to lexical retrieval.
 
 ## Commercial defaults
 
@@ -441,27 +358,25 @@ QWEN_MODELS=(qwen3.8-max qwen3.7-flash qwen3-coder-plus)
 MINIMAX_MODELS=(minimax-m3)
 ```
 
-By use case, where the catalogue would otherwise leave a gap:
+By use case:
 
-| Need | Model | Price /1M |
+| Need | Model | Declared price /1M |
 |---|---|---|
 | Bulk work where cost dominates | `qwen/qwen3.7-flash` (1M ctx) | $0.03 / $0.13 |
 | Commercial coding | `openai/gpt-5.3-codex`, `qwen/qwen3-coder-plus` | $1.75/$14, $0.65/$3.25 |
 | Search that reads more than a snippet | `perplexity/sonar-pro` | $3 / $15 |
-| Speech at a tenth the cost | `openai/gpt-audio-mini` | $0.60 / $2.40 audio |
+| Speech generation | `openai/gpt-audio-mini` | $0.60 / $2.40 audio |
 
-`sonar-pro` does not replace the stack's own deep-research service, which drives
-a local model over SearXNG instead of paying per search.
-
-> External coding clients (Claude Code, Codex) use `local/qwen3.6-35b` as well.
+`sonar-pro` does not replace the stack's own deep-research service, which
+drives a local model over SearXNG.
 
 ## Setup flow
 
 ```bash
-# 1. .env — OPENROUTER_API_KEY and NODES_VLLM (URLs are recorded by the scheduler)
+# 1. .env: OPENROUTER_API_KEY and NODES_VLLM (URLs are recorded by the scheduler)
 ./scripts/gen-env.sh && $EDITOR .env
 
-# 2. Download vLLM weights on the GPU node (skip if you have no local GPU)
+# 2. Download vLLM weights on the GPU node (skip without a local GPU)
 ./scripts/download-vllm-models.sh           # what this card can serve
 ./scripts/download-vllm-models.sh --help    # aliases and special targets
 
@@ -471,27 +386,27 @@ a local model over SearXNG instead of paying per search.
 
 ## Media
 
-Images, audio and video are all produced by passing through to **OpenRouter** via
-LiteLLM. There is no local media GPU backend; the user picks the model in the UI.
+Images, audio and video pass through to OpenRouter via LiteLLM. There is no
+local media backend; the user picks the model in the UI.
 
 | Kind | Path |
 |---|---|
-| Images and audio | `modalities` on `chat/completions` |
-| Video | `/api/v1/videos` passthrough — it does not appear in `/model/info`, so the model list is declared in the UI repository |
-| Transcription (STT) | `whisper-shim` to the GPU nodes' `vllm-whisper`, or OpenRouter when the model is not placed |
+| Images and audio | `modalities` on `chat/completions` (`OR_IMAGE_MODELS`, `OR_AUDIO_MODELS` in `lib.sh`) |
+| Video | `/api/v1/videos` passthrough. Not in `/model/info`; the model list is declared in the UI repository |
+| Transcription (STT) | `whisper-shim` to the GPU nodes' `vllm-whisper`, or OpenRouter (`STT_OR_MODEL`) when no local backend answers |
 
 Per-tool paths are in [tools.md](tools.md).
 
 ### MCP and built-in tools
 
-- **Built-in** — `web_search` (SearXNG), `fetch_url` (Crawl4AI),
-  `execute_code` (sandbox), `create_artifact`, `create_chart`
-- **MCP** — `time`, `youtube` (stdio) and `deep-research` (HTTP). The catalogue
-  holds only sets that have actually been started and verified.
+- Built-in: `web_search` (SearXNG), `fetch_url` (Crawl4AI), `execute_code`
+  (sandbox), `create_artifact`, `create_chart`
+- MCP: `deep-research` (HTTP) is the connector this repository provides; other
+  connectors are configured in the UI
 
-**There is no limit on tool count, and that is the problem.** Every active tool
-ships its whole schema on every turn, and model selection accuracy degrades well
-before twenty of them. Watch that number when adding connectors.
+Every active tool ships its whole schema on every turn, and model selection
+accuracy degrades well before twenty of them. Watch that number when adding
+connectors.
 
 ## Retrieval
 
@@ -500,27 +415,19 @@ Two stages, both local, both through the gateway.
 | Stage | Model | Job |
 |---|---|---|
 | Recall | `local/bge-m3` (`mode: embedding`) | Nearest passages by cosine distance in pgvector |
-| Precision | `local/bge-reranker-v2-m3` (`mode: rerank`) | Reads each (query, passage) pair and scores it |
+| Precision | `local/bge-reranker-v2-m3` (`mode: rerank`) | Scores each (query, passage) pair |
 
-An embedding compares question and passage in one shared space; a reranker reads
-the pair together. That is why 2.2 GiB of reranker separates a relevant passage
-from an irrelevant one far more sharply than a much larger embedding model does,
-and it is the cheapest quality left on the table for a retrieval layer.
+`index-shim` over-fetches `limit × INDEX_RERANK_CANDIDATES` from pgvector under
+a loose distance bound (`INDEX_RERANK_RECALL_DISTANCE`), reranks, and keeps the
+top `limit` above `INDEX_RERANK_MIN_SCORE`. The recall cut is loose on purpose:
+precision is the second stage's job.
 
-`index-shim` over-fetches `limit × RERANK_CANDIDATES` from pgvector, reranks, and
-keeps the top `limit`. **The cuts belong to different stages**: cosine distance
-is loosened to a recall bound (`RERANK_RECALL_DISTANCE`) while reranking, because
-precision is now the second stage's job. Applying the tuned cosine cut first was
-the obvious arrangement and the wrong one — the reranker then only ever saw
-passages that had already passed, and marginal candidates are exactly what it is
-good at.
+Both stages degrade rather than fail. No reranker, or one that cannot be
+reached, and search falls back to vector order; the response says which
+(`"reranked": true|false`). No embedding deployment and an OpenAI key registers
+`text-embedding-3-small`; with neither, KloudChat falls back to lexical
+retrieval.
 
-Both stages degrade rather than fail. No reranker deployed, or one that cannot be
-reached, and search falls back to vector order and the cut that stage was tuned
-for — the response says which happened (`"reranked": true|false`). No embedding
-deployment and an OpenAI key registers `text-embedding-3-small` as the fallback;
-with neither, KloudChat falls back to lexical retrieval.
-
-Adding a stage takes three pieces: an entry in `scheduler/models.yaml`, a service
-in `docker-compose.vllm.yml`, and an `emit_vllm_embed` / `emit_vllm_rerank` call
-in `gen-litellm-config.sh`.
+Adding a stage takes three pieces: an entry in `scheduler/models.yaml`, a
+service in `docker-compose.vllm.yml`, and an `emit_vllm_embed` /
+`emit_vllm_rerank` call in `gen-litellm-config.sh`.

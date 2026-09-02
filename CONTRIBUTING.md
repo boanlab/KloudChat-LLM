@@ -1,98 +1,102 @@
 # Contributing
 
-Thanks for taking the time. This document covers how the repository is laid out,
-how to run what you changed, and the conventions the codebase holds itself to.
+How the repository is laid out, how to run what you changed, and the
+conventions the codebase holds itself to.
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| `docker-compose.yml` | The backend stack: gateway, tools, LiteLLM. Composed by profiles. |
-| `docker-compose.vllm.yml` | What a GPU node serves: vLLM models plus the transcription backend. |
-| `docs/` | Operator documentation. |
-| `scheduler/` | Python package that decides which model runs on which node. |
-| `scripts/` | Setup, config generation, node installation, day-2 operations. |
-| `services/` | One directory per service: Dockerfile, source, config templates. |
-| `.github/workflows/` | CI (shell, scheduler, compose, docs) and Docker Hub publishing. |
+| `docker-compose.yml` | The backend stack: gateway, tools, LiteLLM. Composed by profiles |
+| `docker-compose.vllm.yml` | What a GPU node serves: every vLLM model, transcription included |
+| `docs/` | Operator documentation |
+| `scheduler/` | Python package that decides which model runs on which node |
+| `scripts/` | Setup, config generation, node installation, day-2 operations |
+| `services/` | One directory per service: Dockerfile, source, config templates |
+| `.github/workflows/` | CI and Docker Hub publishing |
 
-Nothing outside `scripts/` writes to `.env`, and nothing outside
-`scripts/gen-*-config.sh` writes generated service configs. Keeping those two
-rules makes a broken deployment traceable to a single writer.
+Nothing outside `scripts/` and `scheduler/applier.py` writes to `.env`, and
+nothing outside `scripts/gen-*-config.sh` writes generated service configs.
 
 ## Development setup
 
-You do not need a GPU to work on most of this repository.
+No GPU is needed for most of this repository.
 
 ```bash
-./scripts/gen-env.sh          # creates .env with generated secrets
-python3 -m pip install pyyaml # the scheduler's only runtime dependency
+./scripts/gen-env.sh                  # .env with generated secrets
+python3 -m pip install pyyaml pytest ruff
 ```
 
-Without an `OPENROUTER_API_KEY` or a reachable vLLM node, `setup.sh` stops early
-by design — that check lives in `step_env_validate`.
+Without an `OPENROUTER_API_KEY` or a reachable vLLM node, `setup.sh` stops
+early by design (`step_env_validate`).
 
 ## Running the checks
 
 CI runs exactly these. Run them before opening a pull request:
 
 ```bash
-pytest scheduler/tests -q                  # or: PYTHONPATH=. python3 scheduler/tests/test_scheduler.py
-ruff check scheduler services              # rules pinned in pyproject.toml
-shellcheck -S warning -e SC1091 scripts/*.sh   # settings in .shellcheckrc; bash -n also works
+bash -n scripts/*.sh
+shellcheck -S warning -e SC1091 scripts/*.sh          # settings in .shellcheckrc
+ruff check scheduler services                         # rules in pyproject.toml
+pytest scheduler/tests services/litellm/tests -q
 docker compose -f docker-compose.yml config --quiet
 docker compose -f docker-compose.vllm.yml config --quiet
 ```
 
-No shellcheck installed? `docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable
--S warning -e SC1091 scripts/*.sh` runs the same check.
+No shellcheck installed?
+`docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -S warning -e SC1091 scripts/*.sh`.
 
-The scheduler tests need no GPU, no network, and no Docker: they exercise the
-memory arithmetic and the placement policy against synthetic nodes.
+CI additionally verifies the pinned LiteLLM image redacts spend logs
+(`services/litellm/tests/verify_spend_log_redaction.py`), checks that the
+image list agrees across the compose file, `build-push-images.sh` and the
+publish workflow, and checks every relative link and anchor in `*.md`.
+
+The tests need no GPU, no network and no Docker: they exercise the memory
+arithmetic, the placement policy and the LiteLLM config generation against
+synthetic inputs.
 
 ## Conventions
 
-**Comments explain why, not what.** The codebase is dense with constants that
-look arbitrary and are not — a 12 GiB reservation, `max_num_seqs = 128`, a
-specific attention backend. Every one of those carries the failure that produced
-it. When you change such a value, move its explanation with it; when you add one,
-write down what happens if it is wrong in either direction.
+**Comments state the current fact, briefly.** A comment says what a value is
+for or what breaks without it, in a phrase rather than a paragraph. No history,
+no rejected alternatives, no work log: the repository describes its present
+state, and `git log` holds the rest.
 
-**Measured values say so.** Weights, KV sizes and throughput numbers in the docs
-are measurements from a real cluster, and they are labelled as such. If you copy a
-number from a model card or a blog post, mark it as an estimate.
+**Measured values say so.** Weights, KV sizes and throughput numbers in the
+docs are measurements from a real cluster and are labelled as such. A number
+copied from a model card is an estimate; mark it.
 
-**Prices are load-bearing.** The per-token figures in `scripts/lib.sh` and
-`scripts/gen-litellm-config.sh` drive user billing. Verify them against
-`https://openrouter.ai/api/v1/models` — the live catalogue, not documentation —
+**Prices are load-bearing.** The declared figures in `scripts/lib.sh` are the
+fallback for `gen-litellm-config.sh`, which reads the live OpenRouter catalogue
+on every run. Check drift with `./scripts/gen-litellm-config.sh --check-prices`
 and update `docs/models.md` in the same commit.
 
-**Shell scripts are the operator interface.** They run under `set -euo pipefail`,
-print progress through the `hdr`/`info`/`ok`/`warn`/`err` helpers in
-`scripts/lib.sh`, and send every diagnostic to stderr so that command
+**Shell scripts are the operator interface.** They run under
+`set -euo pipefail`, print progress through the `hdr`/`info`/`ok`/`warn`/`err`
+helpers in `scripts/lib.sh`, and send diagnostics to stderr so that command
 substitution stays clean. A script invoked with no arguments prints its usage.
 
-**Documentation is part of the change.** A flag, environment variable or default
-that moves without its documentation moving is an incomplete change. `docs/` is
-written for an operator who is looking at a broken deployment, so prefer the
+**Documentation is part of the change.** A flag, environment variable or
+default that moves without its documentation moving is an incomplete change.
+`docs/` is written for an operator looking at a broken deployment: prefer the
 concrete command over the general principle.
 
 ## Publishing images
 
 `.github/workflows/publish-images.yml` owns the five `boanlab/kloudchat-*`
-images. What it builds depends on how it was triggered:
+images: `crawl4ai-shim`, `whisper-shim`, `code-interpreter`, `deep-research`,
+`index-shim`. vLLM is upstream, pulled by the GPU nodes.
 
 | Trigger | Builds | Tags |
 |---|---|---|
 | Push to `main` | Only images whose `services/<name>/` directory changed | `latest` |
-| Tag `v*` | All of them | `v1.2.3`, `1.2.3`, `1.2`, `latest` — one build, one digest |
+| Tag `v*` | All of them | `v1.2.3`, `1.2.3`, `1.2`, `latest` |
 | Manual run | All, or one chosen image | The tag you type, plus `latest` |
 
-Selection compares the pushed range with each image's build context, so a change
-under `services/whisper-shim/` rebuilds that image alone. A change outside
-`services/` — docs, scheduler, scripts — publishes nothing.
-
-Adding an image means one entry in the `catalogue` in the `select` job; the
-context path is also the path watched for changes.
+A change outside `services/` publishes nothing. Adding an image means one entry
+in the `catalogue` in the `select` job, one in the manual dropdown, one in
+`BUILD_TABLE` in `scripts/build-push-images.sh`, and the compose `image:`; CI
+fails when the four disagree.
 
 ## Commit and pull request style
 
@@ -105,15 +109,14 @@ docker ps returns every container on a node, including ones the planner
 never placed. Stopping those took the node's STT backend down.
 ```
 
-Pull requests should say how the change was verified. For anything that only
-runs on GPU hardware, say plainly that it was not verified there — an untested
-claim is worse than an acknowledged gap.
+Pull requests say how the change was verified. For anything that only runs on
+GPU hardware, say plainly when it was not verified there.
 
 ## Reporting bugs
 
 Open an issue with the command you ran, the output you got, and your OS,
 architecture and GPU. Redact credentials: `.env` contains live LiteLLM and
-OpenRouter keys, and they leak easily through pasted logs.
+OpenRouter keys.
 
-For security issues, follow [SECURITY.md](SECURITY.md) instead — do not open a
+For security issues, follow [SECURITY.md](SECURITY.md) instead of opening a
 public issue.

@@ -1,17 +1,13 @@
 """Model placement across GPU nodes.
 
-Three phases:
-
-1. Coverage — one instance of each model at its context floor, largest first,
-   onto the node with the most capacity left. Seating at target context first
-   would let a large model claim a node and starve the next one.
+1. Coverage — one instance per model at its context floor, by priority then
+   size, onto the roomiest eligible node.
 2. Restoration — leftover capacity raises contexts toward their targets.
-3. Replication — capacity coverage did not need is filled with extra instances,
-   deepening models by ``share``. ``replicas`` caps it; 1 turns it off.
+3. Replication — remaining capacity takes extra instances, weighted by
+   ``share``; ``replicas`` caps it, 1 turns it off.
 
-A model's ``placement`` narrows the nodes it may use to the head node or to the
-pool before any of the three run. Unplaced models are delegated to OpenRouter
-with a reason.
+``placement`` restricts a model to the head node or the pool before any phase.
+Unplaced models are delegated to OpenRouter with a reason.
 """
 
 from __future__ import annotations
@@ -28,38 +24,22 @@ from scheduler.kv_model import (
 from scheduler.registry import ModelSpec, replace
 from scheduler.types import GB, Dtype, NodeSpec
 
-#: --gpu-memory-utilization bounds. 1.0 swallows the driver and context share,
-#: failing engine init.
+#: --gpu-memory-utilization bounds; 1.0 fails engine init
 MAX_GPU_UTIL = 0.95
 MIN_GPU_UTIL = 0.05
 
-#: Activation, cudagraph capture, the hybrid models' per-sequence conv state and
-#: non-torch buffers. Measured on GB10 by subtracting weights and the KV cache
-#: vLLM reports at startup from the budget it was given: 9.7 GiB for
-#: qwen3.6-35b at util 0.30, 8.5 GiB for glm-4.7-flash at 0.39.
-#:
-#: The old 4 GiB was not conservative, it was wrong in the direction that hurts:
-#: the gap comes out of the KV cache, so a placement asking for four concurrent
-#: sessions delivered 2.17. It goes unnoticed while weights are small and the
-#: node has slack; at 78 GiB of weights it is most of the KV pool.
+#: Runtime headroom for a generate runner: activation, CUDA-graph capture, hybrid
+#: conv state (GB10 measurement: budget minus weights minus reported KV cache)
 ACTIVATION_BYTES = 10 * GB
 
-#: A pooling runner captures no CUDA graphs for a decode batch and keeps no
-#: per-sequence state. Charging it the generate-path figure would reserve tens of
-#: gigabytes it never touches — the same mistake in the other direction.
+#: Pooling runners capture no decode graphs and keep no per-sequence state
 POOLING_ACTIVATION_BYTES = 2 * GB
 
-#: Ceiling on activation as a share of the card. The 10 GiB above was measured
-#: where a card can run 128 sequences at once; a 24 GiB card runs a handful, and
-#: most of that figure — CUDA-graph capture and per-sequence conv state — scales
-#: with concurrency rather than with the card. Charging the large-card number to
-#: a small card said a 32 GiB card could not hold a 21 GiB model it can in fact
-#: hold, and the planner delegated it to OpenRouter instead.
+#: Activation ceiling as a fraction of the card; the figure above scales with
+#: concurrency, which a small card never reaches
 ACTIVATION_MAX_FRACTION: float = 0.12
 
-#: Capacity differences below this are not a packing signal. Two GB10s reported
-#: usable capacity 4 KiB apart — enough, under a strict maximum, to move a 78 GiB
-#: model to the other node on a re-run for no gain whatsoever.
+#: Capacity differences below this do not decide placement
 CAPACITY_TIE_BYTES = 1 * GB
 
 
@@ -68,19 +48,15 @@ class Placement:
     model_id: str
     node_id: str
     ctx: int
-    #: Fraction of *one* card, which is what vLLM's flag means
+    #: Fraction of one card (vLLM's --gpu-memory-utilization)
     gpu_util: float
-    #: Bytes this placement occupies on the node. For a sharded model this is
-    #: whole cards, not the model's need — see `_claim_bytes`.
+    #: Bytes occupied on the node, summed over the cards used
     charge: int
     #: --tensor-parallel-size
     tp: int = 1
-    #: Concurrent sessions this placement was sized for. Below the model's
-    #: declared figure when the card could not hold the declared one.
+    #: Concurrent sessions sized for; below the declared figure on a tight card
     sessions: int = 0
-    #: Card indices on the node this occupies, as CUDA device ordinals. What
-    #: makes two models on a multi-card node land on different cards instead of
-    #: both claiming most of card 0.
+    #: CUDA device ordinals occupied on the node
     devices: tuple[int, ...] = ()
 
 
@@ -101,15 +77,7 @@ class Plan:
 
 
 def kv_bytes(spec: ModelSpec, ctx: int) -> int:
-    """KV bytes to hold context ``ctx`` for every concurrent session.
-
-    Two terms: the full-attention layers, whose cost grows with ``ctx``, and the
-    sliding-window layers, whose cost does not — they keep a bounded window per
-    sequence whatever the context.
-
-    Zero for a pooling runner: an embedding model keeps nothing between tokens,
-    so the ``2 · L · H · d · ctx`` reservation is memory it never touches.
-    """
+    """KV bytes for ``ctx`` across every concurrent session; zero for pooling runners."""
     if spec.metadata is None:
         raise ValueError(f"{spec.id}: no metadata — bind() must run first")
     if spec.is_pooling:
@@ -121,12 +89,7 @@ def kv_bytes(spec: ModelSpec, ctx: int) -> int:
 
 
 def activation_bytes(spec: ModelSpec, card_bytes: Optional[int] = None) -> int:
-    """Runtime headroom on top of the weights, by runner and card size.
-
-    ``card_bytes`` is what one card has to give. Without it the large-card figure
-    applies unchanged, which is what every caller that does not know the hardware
-    should get: it is the conservative direction.
-    """
+    """Runtime headroom by runner, capped by card size; the full figure without ``card_bytes``."""
     base = POOLING_ACTIVATION_BYTES if spec.is_pooling else ACTIVATION_BYTES
     if card_bytes and card_bytes > 0:
         return min(base, max(1 * GB, int(card_bytes * ACTIVATION_MAX_FRACTION)))
@@ -134,14 +97,7 @@ def activation_bytes(spec: ModelSpec, card_bytes: Optional[int] = None) -> int:
 
 
 def kv_shards(spec: ModelSpec) -> int:
-    """How many ways the KV cache actually divides under tensor parallelism.
-
-    Not always ``tensor_parallel``. KV is sharded by head, so a model with fewer
-    KV heads than ranks has them replicated instead — TP 4 over 2 KV heads halves
-    the cache, it does not quarter it. MLA is worse: one compressed latent per
-    layer, replicated on every rank, so the per-card cost does not fall at all
-    and the node-wide total rises with TP.
-    """
+    """Ways the KV cache divides under TP: ``min(tp, kv_heads)``; 1 for MLA (latent replicated per rank)."""
     tp = max(1, spec.tensor_parallel)
     if spec.metadata is not None and spec.metadata.kv_latent_dim:
         return 1
@@ -151,8 +107,7 @@ def kv_shards(spec: ModelSpec) -> int:
 
 def per_gpu_need_bytes(spec: ModelSpec, ctx: int,
                        card_bytes: Optional[int] = None) -> int:
-    """What one card has to hold: its slice of the weights and KV, plus the
-    activation cost, which is per-process and does not divide."""
+    """Per-card need: weight and KV slice plus the full (per-rank) activation cost."""
     tp = max(1, spec.tensor_parallel)
     return (
         spec.weight_bytes // tp
@@ -162,24 +117,12 @@ def per_gpu_need_bytes(spec: ModelSpec, ctx: int,
 
 
 def need_bytes(spec: ModelSpec, ctx: int, card_bytes: Optional[int] = None) -> int:
-    """weights + activation + KV across every card the model occupies.
-
-    With TP 1 this is what vLLM claims on the one card it uses. Above 1 it is the
-    node-wide total, which exceeds the single-card figure: activation is paid per
-    rank, and an under-sharded KV cache is paid more than once.
-    """
+    """Node-wide need across every card the model occupies."""
     return per_gpu_need_bytes(spec, ctx, card_bytes) * max(1, spec.tensor_parallel)
 
 
 def gpu_util_for(charge: int, node: NodeSpec) -> float:
-    """Fraction of one card to request, in vLLM's --gpu-memory-utilization terms.
-
-    ``charge`` is the per-card figure: vLLM applies the fraction to each rank's
-    device, so passing the node-wide total would ask every card for the whole
-    model. Rounded up to two decimals: rounding down under-claims and fails engine
-    init, and one decimal is a 10%-of-card step, too coarse to fit two models on
-    one.
-    """
+    """--gpu-memory-utilization for a per-card ``charge``, rounded up to two decimals."""
     denom = node.total_vram_bytes or node.planner_vram_bytes
     if denom <= 0:
         return MIN_GPU_UTIL
@@ -190,14 +133,9 @@ def gpu_util_for(charge: int, node: NodeSpec) -> float:
 
 def _fit_sessions(spec: ModelSpec, node: NodeSpec, free: Sequence[int],
                   card_capacity: int) -> Optional[tuple[ModelSpec, list[int]]]:
-    """The spec as it can actually be seated here, or None.
+    """The spec as seatable on this node, or None.
 
-    ``concurrent_sessions`` is a sizing assumption, not a capability: halving it
-    costs concurrency, not context or correctness, so it is narrowed to fit.
-
-    The context floor is a capability claim and is left alone — deep research
-    below 128K loses what it accumulated, and a model quietly seated under its
-    floor is worse than one that is honestly absent.
+    ``concurrent_sessions`` is halved down to fit; the context floor is never traded away.
     """
     sessions = max(1, spec.concurrent_sessions)
     while sessions >= 1:
@@ -210,24 +148,13 @@ def _fit_sessions(spec: ModelSpec, node: NodeSpec, free: Sequence[int],
 
 
 def _per_card(node: NodeSpec, capacity: int) -> int:
-    """One card's share of what this node actually has to give.
-
-    Derived from ``capacity`` — the pool left after resident workloads such as
-    transcription are subtracted — not from the raw card size, so a node with
-    something already resident on it does not promise cards it cannot give.
-    """
+    """One card's share of ``capacity`` (node capacity after reservations)."""
     return capacity // max(1, node.gpu_count)
 
 
 def _assign_cards(spec: ModelSpec, node: NodeSpec, free: Sequence[int], ctx: int,
                   card_capacity: int) -> Optional[list[int]]:
-    """Which cards on this node can hold the model, or None.
-
-    Per card, not per node: ``gpu_util`` is a fraction of one device, so a node
-    treated as a single byte pool would seat two models on the same card.
-
-    Emptiest card first, leaving the most room for a later context increase.
-    """
+    """Cards on this node that can hold the model (emptiest first), or None."""
     if not spec.runs_on(node.arch):
         return None
     tp = max(1, spec.tensor_parallel)
@@ -255,19 +182,11 @@ def plan(
     Args:
         specs: models to deploy, with metadata bound.
         nodes: probed nodes.
-        reserved: per-node bytes held by resident, unplaced workloads such as
-            transcription. Subtracted before packing.
-        replicas: cap on instances per model. None fills whatever capacity is
-            left after coverage, deepening by share; 1 disables replication.
-        deployed: model id to the node ids already running it. A model that fits
-            where it is stays there; without this the plan is free to migrate it
-            on a capacity difference too small to matter.
-        head: node id of the head node, which carries the always-on service
-            stack. Named rather than taken from ``nodes[0]``, because nodes
-            arrive in probe-completion order and a plan that moved a 78 GiB
-            model on that would be a plan that depends on which SSH answered
-            first. None means the cluster declares one node, so there is no
-            pool and ``placement`` constrains nothing.
+        reserved: per-node bytes held by resident workloads, subtracted first.
+        replicas: cap on instances per model; None fills spare capacity, 1 disables.
+        deployed: model id to node ids already running it; a near-tie keeps it there.
+        head: head node id (first in NODES_VLLM). None on a single-node cluster,
+            where ``placement`` constrains nothing.
     """
     result = Plan()
     reserved = reserved or {}
@@ -278,28 +197,22 @@ def plan(
             result.delegations.append(Delegation(spec.id, "no GPU node available"))
         return result
 
-    #: One card's share of what a node has to give, fixed for this plan.
+    # Per-card capacity, fixed for this plan
     card_capacity = {
         n.node_id: _per_card(
             n, max(0, n.planner_vram_bytes - reserved.get(n.node_id, 0))
         )
         for n in nodes
     }
-    #: Free bytes per card, indexed by CUDA device ordinal. Shrinks as models are
-    #: seated. A node is a list of cards, not a byte pool: the pool version could
-    #: not tell "two models, one card each" from "two models, both on card 0".
+    # Free bytes per card, by CUDA device ordinal
     free = {n.node_id: [card_capacity[n.node_id]] * max(1, n.gpu_count) for n in nodes}
     by_id = {n.node_id: n for n in nodes}
 
-    # ── 1. Coverage: one each at the context floor, by priority then size ──
-    #
-    # Largest-first within a priority level is a starvation guard: seat the small
-    # models first and a big one finds every node partly used.
+    # 1. Coverage: one each at the context floor, by priority then size
     ordered = sorted(
         specs, key=lambda s: (s.priority, need_bytes(s, s.ctx_floor)), reverse=True
     )
     for spec in ordered:
-        # Each node reports what it can seat, narrowing sessions where it must.
         allowed = _eligible(spec, nodes, head)
         holders = [n for n in allowed if _carries(n, spec)]
         seatable = {
@@ -331,14 +244,12 @@ def plan(
                       tuple(cards))
         )
 
-    # ── 2. Restoration: grow contexts toward their targets ────────────────
+    # 2. Restoration
     _restore_context(result, specs, by_id, free, card_capacity)
 
-    # ── 3. Replication: fill what coverage left ───────────────────────────
-    # `replicas=1` is how a caller asks for one of each and no more.
+    # 3. Replication, then restoration again for the replicas
     if replicas is None or replicas > 1:
         _replicate(result, specs, nodes, free, card_capacity, replicas, head)
-        # Replicas seat at the floor too — redistribute the remainder
         _restore_context(result, specs, by_id, free, card_capacity)
 
     return result
@@ -350,40 +261,17 @@ def _worst_fit(
     *,
     incumbent: Optional[frozenset[str]] = None,
 ) -> NodeSpec:
-    """The roomiest node, with near-ties resolved in favour of staying put.
-
-    Worst fit spreads models across nodes and leaves room for restoration. Within
-    ``CAPACITY_TIE_BYTES`` it decides nothing, so two tiebreaks apply in order: a
-    node already running this model, avoiding a reload and a window of paid
-    fallback; then the node id, which makes the plan reproducible — nodes arrive
-    in probe-completion order.
-
-    Deliberately not a preference strong enough to survive a real capacity
-    difference: a model that no longer fits where it sits has to move.
-    """
+    """Roomiest node; within ``CAPACITY_TIE_BYTES`` the incumbent wins, then the lowest node id."""
     total = {n.node_id: sum(free[n.node_id]) for n in candidates}
     best = max(total.values())
     tied = [n for n in candidates if best - total[n.node_id] <= CAPACITY_TIE_BYTES]
     home = [n for n in tied if incumbent and n.node_id in incumbent]
-    # Within the band, order by node id alone: ranking by remaining bytes first
-    # would just re-admit the noise the band exists to ignore.
     return sorted(home or tied, key=lambda n: n.node_id)[0]
 
 
 def _eligible(spec: ModelSpec, nodes: Sequence[NodeSpec],
               head: Optional[str]) -> list[NodeSpec]:
-    """The nodes this model's ``placement`` allows it on.
-
-    The head node carries the stack every request touches — default chat,
-    retrieval, transcription — and the pool carries the models a user picks. The
-    split exists because packing alone cannot tell the two apart: a 78 GiB model
-    is worth a card of its own right up until it takes the one holding the floor,
-    and then the whole deployment answers slowly instead of one picker entry
-    being absent.
-
-    ``head is None`` is a cluster of one node, where the distinction says
-    nothing, so nothing is filtered.
-    """
+    """Nodes allowed by ``placement``; unfiltered when ``head`` is None (single-node cluster)."""
     if head is None or spec.placement == "any":
         return list(nodes)
     if spec.placement == "head":
@@ -392,25 +280,15 @@ def _eligible(spec: ModelSpec, nodes: Sequence[NodeSpec],
 
 
 def _carries(node: NodeSpec, spec: ModelSpec) -> bool:
-    """Whether the node holds this model's checkpoint.
-
-    ``checkpoints is None`` means the probe did not report them, and placement
-    does not filter. Docker creates a missing bind-mount path as an empty
-    directory rather than refusing it, so a model placed where its weights are
-    not restarts forever on a missing config.json.
-    """
+    """Node holds the checkpoint, or checkpoints were not probed."""
     return node.checkpoints is None or spec.dir in node.checkpoints
 
 
 def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[int]],
              card_capacity: dict[str, int]) -> str:
-    """Delegation reason, separating "no capacity" from "cannot serve".
+    """Delegation reason: no eligible node, architecture, missing checkpoint, cards, or capacity.
 
-    Blurring the two invites a VRAM upgrade that cannot fix an architecture.
-
-    ``nodes`` is what ``placement`` left, not the cluster: reporting the emptiest
-    card on a node the model may not use would send an operator looking for a
-    capacity problem that is not there.
+    Measured over ``nodes`` (what ``placement`` left), not the whole cluster.
     """
     if not nodes:
         if spec.placement == "head":
@@ -432,8 +310,6 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
             "— capacity is not the problem, the weights are not there"
         )
 
-    # Compared against nodes that could actually run it: free VRAM on a node
-    # without the checkpoint is not room.
     tp = max(1, spec.tensor_parallel)
     wide_enough = [n for n in carrying if tp <= n.gpu_count]
     if not wide_enough:
@@ -446,14 +322,12 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
     roomiest_card_capacity = max(card_capacity[n.node_id] for n in wide_enough)
     per_gpu = per_gpu_need_bytes(spec, spec.ctx_floor, roomiest_card_capacity)
     if per_gpu > roomiest_card_capacity:
-        # Splitting further is the fix here, not a bigger node
         return (
             f"needs {per_gpu / GB:.1f} GiB per card at its "
             f"{spec.ctx_floor // 1024}K context floor (TP {tp}), and the largest "
             f"card holds {roomiest_card_capacity / GB:.1f} GiB"
         )
 
-    # It fits a card in principle, so what is missing is free cards, not size.
     freest = max(
         (max(free[n.node_id]) for n in wide_enough), default=0
     )
@@ -474,11 +348,7 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
 
 
 def _scope(spec: ModelSpec) -> str:
-    """What a delegation reason's figures were measured over.
-
-    Naming the cluster where only the pool was counted reads as a cluster-wide
-    shortage, and sends an operator to look at a card the model may not use.
-    """
+    """Scope a delegation reason's figures were measured over."""
     return {"head": "the head node", "pool": "the pool"}.get(
         spec.placement, "this cluster"
     )
@@ -488,12 +358,7 @@ def _restore_context(
     plan_: Plan, specs: Sequence[ModelSpec], by_id: dict[str, NodeSpec],
     free: dict[str, list[int]], card_capacity: dict[str, int],
 ) -> None:
-    """Double contexts toward their targets from what is left on their own cards.
-
-    Furthest-from-target first, so one model cannot take everything. The room has
-    to be on the cards the placement actually holds — free space on the node's
-    other card is somebody else's.
-    """
+    """Double contexts toward their targets from free space on their own cards, furthest-from-target first."""
     spec_by_id = {s.id: s for s in specs}
     grew = True
     while grew:
@@ -502,11 +367,9 @@ def _restore_context(
             here = plan_.for_node(node_id)
             if not here:
                 continue
-            # Lowest ratio to target first
             for placement in sorted(here, key=lambda p: p.ctx / spec_by_id[p.model_id].ctx_target):
                 spec = spec_by_id[placement.model_id]
-                # As seated, not as declared: a placement narrowed to fit must
-                # not be grown back against the width it never got.
+                # Sized as seated, not as declared
                 if placement.sessions:
                     spec = replace(spec, concurrent_sessions=placement.sessions)
                 if placement.ctx >= spec.ctx_target:
@@ -537,16 +400,7 @@ def _replicate(
     free: dict[str, list[int]], card_capacity: dict[str, int],
     replicas: Optional[int], head: Optional[str] = None,
 ) -> None:
-    """Extra instances, once every model has one, in declared share.
-
-    Each round seats the model furthest below its share — ``instances / share``,
-    lowest first — so two models at 60 and 40 converge on three nodes to two as
-    the pool grows, and equal shares reproduce the fewest-instances-first order
-    that had no other way of being expressed.
-
-    ``replicas`` caps the count per model; None means fill until nothing more
-    seats. Either way the loop ends when no node can take another instance.
-    """
+    """Extra instances, one per round to the model furthest below its share (``instances / share``)."""
     placed = {p.model_id for p in plan_.placements}
     eligible = [s for s in specs if s.id in placed]
     counts = {s.id: 1 for s in eligible}
@@ -554,8 +408,6 @@ def _replicate(
     grew = True
     while grew:
         grew = False
-        # Furthest below its share first, then declared priority: spare capacity
-        # deepens the model the cluster least wants to queue on.
         for spec in sorted(eligible,
                            key=lambda s: (counts[s.id] / s.share, -s.priority)):
             if replicas is not None and counts[spec.id] >= replicas:
@@ -570,7 +422,7 @@ def _replicate(
             candidates = [n for n in nodes if seatable.get(n.node_id) is not None]
             if not candidates:
                 continue
-            target = _worst_fit(candidates, free)  # a new instance has no home
+            target = _worst_fit(candidates, free)
             seated, cards = seatable[target.node_id]
             cap = card_capacity[target.node_id]
             per_card = per_gpu_need_bytes(seated, seated.ctx_floor, cap)

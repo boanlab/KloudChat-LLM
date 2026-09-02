@@ -1,9 +1,4 @@
-"""Two build-and-start facts that only bite on a full recreate.
-
-Both were found the same afternoon, deploying an unrelated change. Neither shows
-up in day-to-day operation, which is exactly why they belong in a test rather
-than in someone's memory.
-"""
+"""Build and start-up invariants for the compose stack."""
 
 from __future__ import annotations
 
@@ -16,8 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 COMPOSE = ROOT / "docker-compose.yml"
 
-#: Tags that name a branch or a stream rather than a release. They resolve to
-#: something different tomorrow, so a rebuild is not the same image.
+#: Tags naming a stream rather than a release.
 MOVING_TAGS = {"main", "master", "latest", "nightly", "edge", "dev"}
 
 
@@ -41,18 +35,10 @@ def _from_lines(dockerfile: Path) -> list[str]:
     ids=lambda p: p.parent.name,
 )
 def test_a_moving_base_tag_carries_a_digest(dockerfile: Path) -> None:
-    """`:main` is not a version. Pin it, or the sandbox changes under a rebuild.
-
-    code-interpreter built from `librecodeinterpreter:main`, so two builds of the
-    same commit produced two different images — and that image is where user code
-    runs. The vLLM base is the precedent: it is passed in as an argument and
-    install-vllm.sh records the digest it resolved to, because a moving base once
-    relocated the tool-parser registry and left the containers healthy with tool
-    calls silently unparsed.
-    """
+    """A base image on a moving tag must be pinned by digest."""
     for ref in _from_lines(dockerfile):
         if ref.startswith("$"):
-            continue  # vLLM's ${BASE_IMAGE}; install-vllm.sh pins the digest
+            continue  # vLLM's ${BASE_IMAGE}; install-vllm.sh records its digest
         if "@sha256:" in ref:
             continue
         tag = ref.rsplit(":", 1)[1] if ":" in ref.rsplit("/", 1)[-1] else "latest"
@@ -63,12 +49,7 @@ def test_a_moving_base_tag_carries_a_digest(dockerfile: Path) -> None:
 
 
 def test_everything_waited_on_declares_a_start_period(services: dict) -> None:
-    """A probe that runs before the port is bound must not count as a failure.
-
-    MinIO had no start_period, so on a full recreate its first health probe hit a
-    closed port and compose refused to start minio-init and code-interpreter
-    behind it. Whatever another service waits on gets a warm-up window.
-    """
+    """Every service another one waits on (service_healthy) has a healthcheck start_period."""
     waited_on: set[str] = set()
     for svc in services.values():
         depends = svc.get("depends_on")

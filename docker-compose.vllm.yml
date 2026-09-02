@@ -1,43 +1,32 @@
-# Everything a GPU node serves, started per node. External OpenAI-compatible
-# backends from LiteLLM's side (VLLM_*_URL in .env), placed and started by the
-# scheduler over SSH.
+# GPU-node services. Started per node by the scheduler over SSH; LiteLLM reaches
+# them through VLLM_*_URL in the orchestrator's .env.
 #
-#   vllm-qwen122b   top chat — Qwen3.5-122B-A10B (vision, 128K ctx here, 78 GiB)
-#   vllm-qwen35b    unified chat and floor — Qwen3.6-35B-A3B (vision, 262K ctx)
-#   vllm-glmflash   cheap-decode floor — GLM-4.7-Flash 31.2B-A3B
-#   vllm-gemma26b   second family — Gemma-4-26B-A4B (vision, tool calling)
-#   vllm-coder30b   coding — Qwen3-Coder-30B-A3B (FP8, 48 KiB/token KV)
-#   vllm-codernext  coding — Qwen3-Coder-Next-80B (FP8, hybrid attention)
-#   vllm-qwen27b    the one dense model — Qwen3.6-27B
-#   vllm-bgem3      retrieval embeddings — BAAI/bge-m3, pooling runner (~2 GiB)
-#   vllm-rerank     retrieval reranking — BAAI/bge-reranker-v2-m3 (~2.2 GiB)
-#   vllm-whisper    transcription — openai/whisper-large-v3 (~3.1 GiB, any arch)
+#   vllm-qwen35b    default chat — Qwen3.6-35B-A3B (vision, 262K)
+#   vllm-qwen122b   top chat — Qwen3.5-122B-A10B (vision, 128K, 78 GiB)
+#   vllm-coder30b   coding — Qwen3-Coder-30B-A3B (FP8)
+#   vllm-codernext  coding — Qwen3-Coder-Next-80B (FP8, 262K)
+#   vllm-qwen27b    dense — Qwen3.6-27B
+#   vllm-rerank     retrieval reranking — BAAI/bge-reranker-v2-m3
+#   vllm-bgem3      retrieval embeddings — BAAI/bge-m3
+#   vllm-whisper    transcription — openai/whisper-large-v3
 #
-# Two chat models on one node is ~41 GiB of weights, so PRO5000 (48G) or larger.
-# NVFP4 weights need an FP4-capable card. The image defaults to arm64; amd64
-# nodes set VLLM_IMAGE.
-#
-# VLLM_<MODEL>_DEVICES: cards a container may use, written by the scheduler on
-# multi-card nodes so two models take two cards — gpu-memory-utilization is a
-# fraction of a device, not of the node. It is passed as NVIDIA_VISIBLE_DEVICES,
-# never CUDA_VISIBLE_DEVICES: the runtime variable has a safe "all", the CUDA one
-# has no such value and fails engine init on GB10.
+# VLLM_<MODEL>_{MAX_LEN,GPU_UTIL,TP,DEVICES} are written by the scheduler.
+# Devices go through NVIDIA_VISIBLE_DEVICES, never CUDA_VISIBLE_DEVICES (no
+# "all" value; fails engine init on GB10).
 name: kloudchat-vllm
 
 services:
   vllm-qwen35b:
     container_name: vllm-qwen35b
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
-    # Every vLLM service shares one image, so the build stanza lives here only.
-    # BASE_IMAGE is the upstream image; VLLM_IMAGE is what this repo builds on top
-    # of it. install-vllm.sh normally does this build and records both in .env.
+    # One image for every vLLM service; install-vllm.sh builds it and records
+    # VLLM_IMAGE and VLLM_BASE_IMAGE in .env.
     build:
       context: ./services/vllm
       args:
         BASE_IMAGE: ${VLLM_BASE_IMAGE:-vllm/vllm-openai:nightly-aarch64}
     restart: unless-stopped
     ipc: host
-    # List form: a YAML flow scalar would eat the quotes in the JSON arguments
     command:
       - --model
       - /model
@@ -53,28 +42,24 @@ services:
       - "${VLLM_QWEN35B_GPU_UTIL:-0.55}"
       - --kv-cache-dtype
       - fp8
-      # Reserves the multimodal vision mm-budget, which needs batched-tokens >= 16384
+      # >= 16384 for the vision mm-budget
       - --max-num-batched-tokens
       - "${VLLM_QWEN35B_MAX_BATCHED_TOKENS:-16384}"
-      # qwen3_xml matches the tool-call format of the Qwen3.6 chat template
+      # Qwen3.6 tool-call and <think> formats
       - --enable-auto-tool-choice
       - --tool-call-parser
       - qwen3_xml
-      # Splits <think>...</think> out into reasoning_content
       - --reasoning-parser
       - qwen3
-      # Thinking off by default — latency and tokens in ordinary chat.
-      # Enabled per request through chat_template_kwargs.
+      # Thinking off by default; enabled per request via chat_template_kwargs
       - --default-chat-template-kwargs
       - '{"enable_thinking": false}'
-      # Per-sequence conv-state cache limits CUDA-graph capture. Unset, cudagraph
-      # profiling OOMs.
+      # Required: the hybrid model's conv-state cache bounds CUDA-graph capture
       - --max-num-seqs
       - "${VLLM_QWEN35B_MAX_NUM_SEQS:-128}"
       - --tensor-parallel-size
       - "${VLLM_QWEN35B_TP:-1}"
       - --trust-remote-code
-      # No --enforce-eager: CUDA graphs off costs 4x decode throughput
     volumes:
       - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_QWEN35B_DIR:-qwen3.6-35b-nvfp4}:/model:ro
     ports:
@@ -94,11 +79,10 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-      # Weight load, torch.compile and KV profiling on first start
       start_period: 600s
 
-  # Top chat model. Same family and parsers as vllm-qwen35b; 78 GiB of weights
-  # leaves ~22 GiB of KV, so the context is pinned at 128K, not the native 262K.
+  # Top chat. Same parsers as vllm-qwen35b; 128K rather than the native 262K
+  # because 78 GiB of weights leave ~22 GiB of KV.
   vllm-qwen122b:
     container_name: vllm-qwen122b
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -128,12 +112,10 @@ services:
       - qwen3
       - --default-chat-template-kwargs
       - '{"enable_thinking": false}'
-      # Linear-attention conv state is 21.4 MiB per sequence — 2.7 GiB at 128,
-      # out of a ~22 GiB pool. Kept low; more is queue depth the card cannot serve.
+      # 21.4 MiB of conv state per sequence out of a ~22 GiB pool
       - --max-num-seqs
       - "${VLLM_QWEN122B_MAX_NUM_SEQS:-32}"
-      # Cards to shard across, written by the scheduler. 1 is a single card;
-      # a 96 GiB card needs 2, which the 78 GiB of weights do not fit whole.
+      # 2 on 96 GiB cards, where the weights do not fit one
       - --tensor-parallel-size
       - "${VLLM_QWEN122B_TP:-1}"
       - --trust-remote-code
@@ -156,132 +138,9 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-      # 78 GiB of weights to read off disk before torch.compile even starts.
       start_period: 1200s
 
-  # Title generation, memory extraction, query rewriting, default chat. 3B active
-  # parameters, so this call volume does not tie up the larger model.
-  vllm-glmflash:
-    container_name: vllm-glmflash
-    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
-    restart: unless-stopped
-    ipc: host
-    command:
-      - --model
-      - /model
-      - --served-model-name
-      - local/glm-4.7-flash
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --max-model-len
-      - "${VLLM_GLMFLASH_MAX_LEN:-131072}"
-      - --gpu-memory-utilization
-      - "${VLLM_GLMFLASH_GPU_UTIL:-0.65}"
-      - --kv-cache-dtype
-      - fp8
-      - --max-num-batched-tokens
-      - "${VLLM_GLMFLASH_MAX_BATCHED_TOKENS:-16384}"
-      - --enable-auto-tool-choice
-      - --tool-call-parser
-      - glm45
-      # Without it, chain-of-thought leaks into content. glm47 is the registered
-      # name for the GLM-4.7 family.
-      - --reasoning-parser
-      - glm47
-      # Thinking off by default: with a small max_tokens it spends the budget on
-      # reasoning and returns empty content
-      - --default-chat-template-kwargs
-      - '{"enable_thinking": false}'
-      - --tensor-parallel-size
-      - "${VLLM_GLMFLASH_TP:-1}"
-      - --trust-remote-code
-    volumes:
-      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_GLMFLASH_DIR:-glm-4.7-flash}:/model:ro
-    ports:
-      - "8002:8000"
-    environment:
-      HF_TOKEN: ${HF_TOKEN}
-      NVIDIA_VISIBLE_DEVICES: ${VLLM_GLMFLASH_DEVICES:-all}
-      # MLA backend is a per-card choice — TRITON_MLA exceeds GB10's shared
-      # memory limit and fails engine init. install-vllm.sh writes the card's
-      # value (lib.sh::mla_attention_backend); empty lets vLLM choose.
-      VLLM_ATTENTION_BACKEND: ${VLLM_GLMFLASH_ATTN_BACKEND-FLASHINFER_MLA}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 600s
-
-  # A second family. Gemma 4's <|tool> form needs the `gemma4` parser; without
-  # it the model falls back to ReAct text and no client can execute anything.
-  # Five layers in six are sliding-window (1024), so 256K is cheap in KV.
-  vllm-gemma26b:
-    container_name: vllm-gemma26b
-    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
-    restart: unless-stopped
-    ipc: host
-    command:
-      - --model
-      - /model
-      - --served-model-name
-      - local/gemma-4-26b-a4b
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --max-model-len
-      - "${VLLM_GEMMA26B_MAX_LEN:-262144}"
-      - --gpu-memory-utilization
-      - "${VLLM_GEMMA26B_GPU_UTIL:-0.45}"
-      - --kv-cache-dtype
-      - fp8
-      # Vision model, so the mm-budget floor applies here too
-      - --max-num-batched-tokens
-      - "${VLLM_GEMMA26B_MAX_BATCHED_TOKENS:-16384}"
-      - --enable-auto-tool-choice
-      - --tool-call-parser
-      - gemma4
-      - --reasoning-parser
-      - gemma4
-      - --default-chat-template-kwargs
-      - '{"enable_thinking": false}'
-      - --tensor-parallel-size
-      - "${VLLM_GEMMA26B_TP:-1}"
-      - --trust-remote-code
-    volumes:
-      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_GEMMA26B_DIR:-gemma-4-26b}:/model:ro
-    ports:
-      - "8005:8000"
-    environment:
-      HF_TOKEN: ${HF_TOKEN}
-      NVIDIA_VISIBLE_DEVICES: ${VLLM_GEMMA26B_DEVICES:-all}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 600s
-
-  # Coding. Qwen3-Coder's XML tool dialect needs `qwen3_coder`; `qwen3_xml` is a
-  # different format and silently yields no tool calls. No thinking mode, so no
-  # reasoning parser.
+  # Coding. Qwen3-Coder's own tool dialect (`qwen3_coder`); no thinking mode.
   vllm-coder30b:
     container_name: vllm-coder30b
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -329,8 +188,7 @@ services:
       retries: 5
       start_period: 600s
 
-  # Coding, the larger of the two. Same `qwen3_coder` dialect as the 30B; KV on
-  # 12 of 48 layers, the rest linear, which is what makes the native 262K fit.
+  # Coding, larger. Hybrid attention: KV on 12 of 48 layers, so 262K fits.
   vllm-codernext:
     container_name: vllm-codernext
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -347,7 +205,6 @@ services:
       - "8000"
       - --max-model-len
       - "${VLLM_CODERNEXT_MAX_LEN:-262144}"
-      # 75 GiB of weights on a 121.6 GiB card; the rest is KV at 12 KiB/token.
       - --gpu-memory-utilization
       - "${VLLM_CODERNEXT_GPU_UTIL:-0.85}"
       - --kv-cache-dtype
@@ -364,8 +221,7 @@ services:
       - "8008:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
-      # DeepGEMM rejects this checkpoint's FP8 128x128 scale-factor layout on
-      # GB10, at engine init. Set to 1 where the kernel takes it.
+      # 0 on GB10: DeepGEMM rejects this checkpoint's FP8 scale-factor layout
       VLLM_USE_DEEP_GEMM: ${VLLM_CODERNEXT_DEEP_GEMM:-0}
       NVIDIA_VISIBLE_DEVICES: ${VLLM_CODERNEXT_DEVICES:-all}
     deploy:
@@ -382,8 +238,7 @@ services:
       retries: 5
       start_period: 600s
 
-  # The one dense model. Same family plumbing as vllm-qwen35b; every parameter
-  # active, which costs decode rather than memory.
+  # Dense. Same parsers as vllm-qwen35b.
   vllm-qwen27b:
     container_name: vllm-qwen27b
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -437,8 +292,7 @@ services:
       retries: 5
       start_period: 600s
 
-  # Retrieval reranking. Pooling runner scoring (query, passage) pairs. Exposed
-  # at /v1/rerank. ~2.2 GiB, so it shares a card.
+  # Retrieval reranking, /v1/rerank. Pooling runner; shares a card.
   vllm-rerank:
     container_name: vllm-rerank
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -455,7 +309,7 @@ services:
       - "8000"
       - --runner
       - pooling
-      # Query and passage share the window; 8194 is what the checkpoint declares.
+      # Query and passage share the window
       - --max-model-len
       - "${VLLM_RERANK_MAX_LEN:-8192}"
       - --gpu-memory-utilization
@@ -481,8 +335,7 @@ services:
       retries: 5
       start_period: 120s
 
-  # Retrieval embeddings. A pooling runner: no tool parser, no reasoning parser,
-  # no chat-template kwargs, no KV cache. ~2 GiB, so it shares a card.
+  # Retrieval embeddings, /v1/embeddings. Pooling runner; shares a card.
   vllm-bgem3:
     container_name: vllm-bgem3
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -497,13 +350,10 @@ services:
       - 0.0.0.0
       - --port
       - "8000"
-      # Pooling, not generation: makes /v1/embeddings answer.
       - --runner
       - pooling
-      # bge-m3 declares 8194 positions; well past any chunk the indexer sends.
       - --max-model-len
       - "${VLLM_BGEM3_MAX_LEN:-8192}"
-      # Overwritten by the scheduler per placement; a floor for standalone runs.
       - --gpu-memory-utilization
       - "${VLLM_BGEM3_GPU_UTIL:-0.08}"
     volumes:
@@ -525,12 +375,10 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-      # No torch.compile or KV profiling to wait through.
       start_period: 120s
 
-  # Transcription, called by whisper-shim through WHISPER_URLS. vLLM rather than
-  # faster-whisper because ctranslate2's aarch64 wheels are CPU-only, which
-  # would leave the arm64 nodes unable to use their cards for it.
+  # Transcription, reached by whisper-shim through WHISPER_URLS. vLLM rather than
+  # faster-whisper: ctranslate2 has no GPU wheels for aarch64.
   vllm-whisper:
     container_name: vllm-whisper
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
@@ -539,9 +387,7 @@ services:
     command:
       - --model
       - /model
-      # vLLM 404s a name it does not serve, and the previous backend ignored the
-      # field entirely. The shim normalises to the first name; the aliases are
-      # for a caller that reaches a node directly.
+      # First name is what the shim sends; the aliases serve direct callers
       - --served-model-name
       - local/whisper-large-v3
       - whisper-1
@@ -551,11 +397,9 @@ services:
       - 0.0.0.0
       - --port
       - "8000"
-      # The decoder window — 448 transcript tokens, whisper's whole context.
-      # Audio longer than one 30s clip is split by the server before decoding.
+      # Whisper's decoder window; longer audio is split server-side
       - --max-model-len
       - "${VLLM_WHISPER_MAX_LEN:-448}"
-      # Overwritten by the scheduler per placement; a floor for standalone runs.
       - --gpu-memory-utilization
       - "${VLLM_WHISPER_GPU_UTIL:-0.14}"
     volumes:
@@ -565,7 +409,7 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN}
       NVIDIA_VISIBLE_DEVICES: ${VLLM_WHISPER_DEVICES:-all}
-      # Upload ceiling in MB. vLLM defaults to 25, which rejects an hour of m4a.
+      # Upload ceiling in MB (vLLM default 25 rejects an hour of m4a)
       VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: ${WHISPER_MAX_UPLOAD_MB:-100}
     deploy:
       resources:
