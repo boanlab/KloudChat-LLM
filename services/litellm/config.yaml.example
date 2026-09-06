@@ -96,9 +96,14 @@ litellm_settings:
   max_internal_user_budget: 25
   internal_user_budget_duration: "1mo"
   # Ceilings for key creation; a key budget blocks before the user budget does
+  # tpm: a document turn with three papers attached spends 40k tokens a call and
+  # 60–130k a minute on the local model alone (measured 2026-09-06); 100k made
+  # such turns wait for the next window or drop slides. Spend is still capped by
+  # the user budget above, so the token ceiling only needs to clear one person's
+  # heaviest turn with room for parallel ones; a round million leaves it out of the way.
   upperbound_key_generate_params:
     max_budget: 9999
-    tpm_limit: 100000
+    tpm_limit: 1000000
     rpm_limit: 500
 
 anthropic_proxy:
