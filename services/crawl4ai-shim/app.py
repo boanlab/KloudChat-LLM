@@ -19,6 +19,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any
 
+import netguard
 from crawl4ai import (
     AsyncWebCrawler,
     BrowserConfig,
@@ -92,6 +93,12 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
     url = payload.get("url")
     if not url:
         return {"success": False, "error": "url is required"}
+    # Judged by resolved address before the browser opens it: this service is reached
+    # without authentication and sits beside every other internal service.
+    refused = await asyncio.to_thread(netguard.refusal, url)
+    if refused:
+        LOG.warning("scrape refused for %s: %s", url, refused)
+        return {"success": False, "error": refused}
 
     formats = payload.get("formats") or ["markdown"]
     timeout_ms = payload.get("timeout") or DEFAULT_TIMEOUT_MS
@@ -129,6 +136,13 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
         err = getattr(result, "error_message", None) or "crawl failed"
         LOG.warning("scrape failed on %s: %s", url, err)
         return {"success": False, "error": err}
+    # The browser follows redirects on its own; the address it ended up at is judged too.
+    final_url = getattr(result, "redirected_url", None) or url
+    if final_url != url:
+        refused = await asyncio.to_thread(netguard.refusal, final_url)
+        if refused:
+            LOG.warning("scrape refused after redirect %s -> %s: %s", url, final_url, refused)
+            return {"success": False, "error": refused}
 
     data: dict[str, Any] = {}
 

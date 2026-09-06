@@ -52,7 +52,7 @@ jobs:
         run: ruff check scheduler services
 
       - name: Scheduler and LiteLLM routing tests
-        run: pytest scheduler/tests services/litellm/tests -q
+        run: pytest scheduler/tests services/litellm/tests services/crawl4ai-shim/tests -q
 
   compose:
     name: Validate compose files
