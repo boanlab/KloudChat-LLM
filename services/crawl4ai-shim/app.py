@@ -70,6 +70,9 @@ async def lifespan(_app: FastAPI):
         user_agent=USER_AGENT,
         java_script_enabled=True,
         light_mode=True,
+        # Images, fonts and media are never handed to the model — only the page's
+        # markdown is — so the browser does not download them. Scripts still run.
+        text_mode=True,
     )
     crawler = AsyncWebCrawler(config=cfg)
     await crawler.start()
