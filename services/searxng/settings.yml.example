@@ -54,9 +54,24 @@ categories_as_tabs:
 #         print(len(d["results"]), d["unresponsive_engines"])'
 engines:
 
-  # General search. bing is the one engine stable for Korean queries.
-  - name: bing
+  # General search. Re-measured 2026-09-08 with a throwaway instance on this
+  # network, six Korean everyday queries (medicine, minimum wage, scholarship
+  # dates, a paediatrician, a model name, train fares) plus four English
+  # developer queries, scored on results carrying the query words:
+  #   yandex      6/6 Korean, 4/4 English — Naver blogs, 지식iN, 아하, news sites
+  #   bing        1/6 Korean, 0/4 English — home pages, dictionaries, Baidu junk
+  #   yahoo       suspended (HTTP protocol error)
+  #   google/naver/duckduckgo/startpage/brave/mojeek/qwant/presearch  blocked
+  # bing stays as a fallback at low weight: KloudChat re-ranks by query-word
+  # overlap, so its off-topic hits sink under yandex's when both answer.
+  - name: yandex
     weight: 1.5
+    timeout: 6.0
+    categories: [general]
+    disabled: false
+
+  - name: bing
+    weight: 0.5
     timeout: 6.0
     categories: [general]
     disabled: false
