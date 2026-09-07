@@ -122,6 +122,11 @@ services:
     environment:
       SCRAPER_API_KEY: ${SCRAPER_API_KEY:?}
       DEFAULT_TIMEOUT_MS: '30000'
+      # Pages rendering at once in the one Chromium; the rest wait QUEUE_TIMEOUT_MS,
+      # then are refused. A good scrape is reused for CACHE_TTL_S.
+      MAX_CONCURRENT_PAGES: '8'
+      QUEUE_TIMEOUT_MS: '15000'
+      CACHE_TTL_S: '900'
       LOG_LEVEL: INFO
     healthcheck:
       test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]

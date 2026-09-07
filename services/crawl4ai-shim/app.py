@@ -9,7 +9,9 @@ Request (firecrawl v2, the fields honoured): url, formats ["markdown", "html",
 Response: {"success": true, "data": {"markdown", "html", "rawHtml", "metadata"}}
 or {"success": false, "error"}.
 
-One persistent headless Chromium crawler, shared by every request.
+One persistent headless Chromium crawler, shared by every request. At most
+MAX_CONCURRENT_PAGES render at once (the rest wait up to QUEUE_TIMEOUT_MS and
+are then told "busy"), and a successful scrape is reused for CACHE_TTL_S.
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ from crawl4ai import (
 )
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from gate import Gate, PageCache
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL,
@@ -43,7 +46,18 @@ USER_AGENT = os.environ.get(
 # Bearer token the gateway injects. Empty disables the check.
 API_KEY = os.environ.get("SCRAPER_API_KEY", "")
 
+# Pages rendering at once, and how long a request waits for a slot before it is
+# refused. One Chromium on an 8-core host renders about eight pages in the time
+# it takes to render one; beyond that every page slows towards its own timeout.
+MAX_CONCURRENT_PAGES = int(os.environ.get("MAX_CONCURRENT_PAGES", "8"))
+QUEUE_TIMEOUT_MS = int(os.environ.get("QUEUE_TIMEOUT_MS", "15000"))
+# A successful scrape is answered from memory for this long.
+CACHE_TTL_S = int(os.environ.get("CACHE_TTL_S", "900"))
+CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "512"))
+
 crawler: AsyncWebCrawler | None = None
+gate = Gate(MAX_CONCURRENT_PAGES)
+cache = PageCache(CACHE_TTL_S, CACHE_MAX_ENTRIES)
 
 
 @asynccontextmanager
@@ -56,6 +70,9 @@ async def lifespan(_app: FastAPI):
         user_agent=USER_AGENT,
         java_script_enabled=True,
         light_mode=True,
+        # Images, fonts and media are never handed to the model — only the page's
+        # markdown is — so the browser does not download them. Scripts still run.
+        text_mode=True,
     )
     crawler = AsyncWebCrawler(config=cfg)
     await crawler.start()
@@ -75,6 +92,8 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok" if crawler is not None else "starting",
         "backend": "crawl4ai",
+        "pages": {"active": gate.active, "waiting": gate.waiting, "limit": gate.limit},
+        "cache": {"entries": len(cache), "ttl_s": CACHE_TTL_S},
     }
 
 
@@ -117,9 +136,18 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
         only_text=False,
     )
 
+    cache_key = PageCache.key(url, formats, only_main)
+    if (hit := cache.get(cache_key)) is not None:
+        LOG.info("scrape %s served from cache", url)
+        return hit
+
     LOG.info("scrape %s (formats=%s, timeout=%dms, main=%s)",
              url, formats, timeout_ms, only_main)
 
+    if not await gate.acquire(QUEUE_TIMEOUT_MS / 1000.0):
+        LOG.warning("scrape refused, browser busy (%d rendering, %d waiting): %s",
+                    gate.active, gate.waiting, url)
+        return {"success": False, "error": "busy: too many pages rendering"}
     try:
         result = await asyncio.wait_for(
             crawler.arun(url=url, config=run_cfg),
@@ -131,6 +159,8 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         LOG.warning("scrape error on %s: %r", url, e)
         return {"success": False, "error": f"crawl4ai error: {e}"}
+    finally:
+        gate.release()
 
     if not getattr(result, "success", False):
         err = getattr(result, "error_message", None) or "crawl failed"
@@ -163,7 +193,9 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
 
     data["metadata"] = _build_metadata(result, url)
 
-    return {"success": True, "data": data}
+    response = {"success": True, "data": data}
+    cache.put(cache_key, response)
+    return response
 
 
 async def _handle(req: Request) -> JSONResponse:

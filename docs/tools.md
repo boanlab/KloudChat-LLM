@@ -66,6 +66,17 @@ A Firecrawl-compatible `/v1/scrape` (also `/v0/scrape`, `/v2/scrape`) in front
 of Crawl4AI. The image carries Playwright and Chromium, so pages that need
 rendering come back as markdown body text. Default page timeout 30 s.
 
+One Chromium serves every request, so two guards sit in front of it. At most
+`MAX_CONCURRENT_PAGES` (8) render at once; a request past that waits up to
+`QUEUE_TIMEOUT_MS` (15 s) for a slot and is then answered `busy`, which the
+caller treats like an unreadable page (KloudChat falls back to the search
+snippet). Without the cap, 32 parallel pages on an 8-core host all crawled
+toward the 30 s timeout together (median 20.6 s); with it, eight render at
+full speed while the rest queue. A successful scrape is kept in memory for
+`CACHE_TTL_S` (15 min) keyed by URL, formats and the main-content flag — the
+top search results are the same pages for everyone asking the same thing that
+hour. `/health` reports pages rendering, waiting, and cache entries.
+
 ### Code execution: code-interpreter
 
 Sandboxed Python (`librecodeinterpreter`, pinned by digest). The only service
