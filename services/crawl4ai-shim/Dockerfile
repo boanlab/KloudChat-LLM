@@ -14,7 +14,7 @@ RUN pip install -r /app/requirements.txt
 # Browser check and config generation
 RUN crawl4ai-setup || true
 
-COPY app.py netguard.py /app/
+COPY app.py netguard.py gate.py /app/
 
 EXPOSE 8080
 
