@@ -187,3 +187,49 @@ engines:
   - name: huggingface
     weight: 0.6
     disabled: false
+
+  # ── 네이버 검색 API (developers.naver.com) ──────────────────────────
+  # Not the scraping `naver` engine above (blocked from this network) but the
+  # Open API, through SearXNG's generic JSON engine. The Korean web as Korean
+  # users see it — blogs, 지식iN, news — from the source. Free quota 25,000
+  # calls a day per application; a search costs one call per engine below.
+  # gen-searxng-config.sh fills the credentials from NAVER_CLIENT_ID /
+  # NAVER_CLIENT_SECRET in .env and enables the two engines only when both
+  # are set; without them they stay disabled and cost nothing.
+  - name: naver web
+    engine: json_engine
+    shortcut: nvw
+    categories: [general]
+    paging: false
+    search_url: https://openapi.naver.com/v1/search/webkr.json?query={query}&display=10
+    headers:
+      X-Naver-Client-Id: "__NAVER_CLIENT_ID__"
+      X-Naver-Client-Secret: "__NAVER_CLIENT_SECRET__"
+    results_query: items
+    url_query: link
+    title_query: title
+    content_query: description
+    title_html_to_text: true
+    content_html_to_text: true
+    weight: 2.0
+    timeout: 5.0
+    disabled: __NAVER_DISABLED__
+
+  - name: naver news
+    engine: json_engine
+    shortcut: nvn
+    categories: [news]
+    paging: false
+    search_url: https://openapi.naver.com/v1/search/news.json?query={query}&display=10&sort=date
+    headers:
+      X-Naver-Client-Id: "__NAVER_CLIENT_ID__"
+      X-Naver-Client-Secret: "__NAVER_CLIENT_SECRET__"
+    results_query: items
+    url_query: originallink
+    title_query: title
+    content_query: description
+    title_html_to_text: true
+    content_html_to_text: true
+    weight: 2.0
+    timeout: 5.0
+    disabled: __NAVER_DISABLED__

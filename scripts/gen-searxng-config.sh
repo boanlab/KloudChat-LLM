@@ -38,7 +38,26 @@ SEARXNG_SECRET_KEY="$(grep -E '^SEARXNG_SECRET_KEY=' "$ENV_FILE" | tail -n1 | cu
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 # The secret_key line only; the sentinel also appears in a comment.
-sed "/^[[:space:]]*secret_key:/ s|${SENTINEL}|${SEARXNG_SECRET_KEY}|" "$CONFIG_EXAMPLE" > "$tmp"
+# Naver 검색 API credentials are optional: both set enables the two naver
+# engines, otherwise they are written disabled and never called.
+# `|| true`: with pipefail an absent line is a failed pipeline, and absent is fine here.
+NAVER_CLIENT_ID="$( (grep -E '^NAVER_CLIENT_ID=' "$ENV_FILE" || true) | tail -n1 | cut -d= -f2-)"
+NAVER_CLIENT_SECRET="$( (grep -E '^NAVER_CLIENT_SECRET=' "$ENV_FILE" || true) | tail -n1 | cut -d= -f2-)"
+if [[ -n "$NAVER_CLIENT_ID" && -n "$NAVER_CLIENT_SECRET" ]]; then
+  NAVER_DISABLED=false
+else
+  NAVER_DISABLED=true
+  NAVER_CLIENT_ID="unset"; NAVER_CLIENT_SECRET="unset"
+fi
+sed -e "/^[[:space:]]*secret_key:/ s|${SENTINEL}|${SEARXNG_SECRET_KEY}|" \
+    -e "s|__NAVER_CLIENT_ID__|${NAVER_CLIENT_ID}|g" \
+    -e "s|__NAVER_CLIENT_SECRET__|${NAVER_CLIENT_SECRET}|g" \
+    -e "s|__NAVER_DISABLED__|${NAVER_DISABLED}|g" \
+    "$CONFIG_EXAMPLE" > "$tmp"
+if grep -q "__NAVER_" "$tmp"; then
+  err "a __NAVER_*__ sentinel was not substituted — check settings.yml.example."
+  exit 1
+fi
 
 if ! grep -qE "^[[:space:]]*secret_key: \"?${SEARXNG_SECRET_KEY}\"?[[:space:]]*$" "$tmp"; then
   err "secret_key was not substituted — check the ${SENTINEL} line in .example."

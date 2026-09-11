@@ -103,11 +103,24 @@ open APIs that cost nothing per user.
 | science | google scholar, openalex, semantic scholar, arxiv, pubmed, openaire | literature; the UI's papers lane |
 | it | github, stackoverflow, mdn, docker hub, microsoft learn, huggingface | engineering; the UI's code lane |
 
-Absent on purpose: google, bing, duckduckgo, naver, startpage, qwant, mojeek
-and the other scrapers that answer this address with a CAPTCHA, an access
-denial, or off-topic home pages (bing), and the paid or terms-restricted APIs
-(Naver open API). The measurements behind every choice are in the settings
-file next to the engine list.
+Absent on purpose: google, bing, duckduckgo, naver (the scraper), startpage,
+qwant, mojeek and the other scrapers that answer this address with a CAPTCHA,
+an access denial, or off-topic home pages (bing), and the paid APIs. The
+measurements behind every choice are in the settings file next to the engine
+list.
+
+Naver's Open API (검색 API) is the one keyed engine, wired in as two
+`json_engine` entries: `naver web` (general) and `naver news` (news) — the
+Korean web as Korean users see it, from the source. `gen-searxng-config.sh`
+fills their credentials from `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` in
+`.env` and enables them only when both are set; without a key they are
+written disabled and never called. The free quota is 25,000 calls a day per
+application, one call per engine per search. To turn them on: register an
+application at developers.naver.com with the 검색 API, put the two values in
+`.env`, run `./scripts/gen-searxng-config.sh`, then `docker compose restart
+searxng`. Naver's terms tie the results to the registered service and forbid
+storing them beyond the response; SearXNG passes them through and KloudChat
+keeps only what the answer cites.
 
 ### Document fetch: crawl4ai-shim
 
