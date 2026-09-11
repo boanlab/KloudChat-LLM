@@ -109,10 +109,24 @@ step_enable_stt_profile() {
   echo "  [profile] COMPOSE_PROFILES=${profiles},whisper (transcription shim)"
 }
 
+# SearXNG reads its settings at start and compose does not watch a mounted
+# file, so a rewritten settings.yml is applied by restarting the container.
+SEARXNG_CONFIG_CHANGED=0
+
 step_gen_configs() {
   hdr "2. Generating configuration"
+  local before after
+  before="$(sha256sum services/searxng/settings.yml 2>/dev/null | cut -d' ' -f1)"
   "${SCRIPT_DIR}/gen-searxng-config.sh"
+  after="$(sha256sum services/searxng/settings.yml 2>/dev/null | cut -d' ' -f1)"
+  [[ "$before" == "$after" ]] || SEARXNG_CONFIG_CHANGED=1
   "${SCRIPT_DIR}/gen-litellm-config.sh"
+}
+
+step_apply_searxng_config() {
+  (( SEARXNG_CONFIG_CHANGED )) || return 0
+  docker compose restart searxng
+  ok "searxng restarted with the new settings"
 }
 
 step_compose_up() {
@@ -124,6 +138,7 @@ step_compose_up() {
     info "--build: images come from this working tree, not from the registry"
     docker compose up -d --build
     ok "containers started"
+    step_apply_searxng_config
     return 0
   fi
 
@@ -137,6 +152,7 @@ step_compose_up() {
     return 1
   fi
   ok "containers started"
+  step_apply_searxng_config
 }
 
 step_wait_gateway() {

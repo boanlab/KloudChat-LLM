@@ -12,6 +12,8 @@ or {"success": false, "error"}.
 One persistent headless Chromium crawler, shared by every request. At most
 MAX_CONCURRENT_PAGES render at once (the rest wait up to QUEUE_TIMEOUT_MS and
 are then told "busy"), and a successful scrape is reused for CACHE_TTL_S.
+
+Page addresses are logged at DEBUG only; a warning names the host.
 """
 from __future__ import annotations
 
@@ -20,8 +22,10 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlsplit
 
 import netguard
+from adultlist import AdultList
 from crawl4ai import (
     AsyncWebCrawler,
     BrowserConfig,
@@ -54,15 +58,23 @@ QUEUE_TIMEOUT_MS = int(os.environ.get("QUEUE_TIMEOUT_MS", "15000"))
 # A successful scrape is answered from memory for this long.
 CACHE_TTL_S = int(os.environ.get("CACHE_TTL_S", "900"))
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "512"))
+# Hosts file of adult sites a scrape refuses; baked into the image.
+ADULT_HOSTS_FILE = os.environ.get("ADULT_HOSTS_FILE", "/app/adult-hosts.txt")
 
 crawler: AsyncWebCrawler | None = None
+adult = AdultList()
 gate = Gate(MAX_CONCURRENT_PAGES)
 cache = PageCache(CACHE_TTL_S, CACHE_MAX_ENTRIES)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global crawler
+    global crawler, adult
+    try:
+        adult = AdultList.from_file(ADULT_HOSTS_FILE)
+        LOG.info("adult site list: %d domains from %s", len(adult), ADULT_HOSTS_FILE)
+    except OSError as e:
+        LOG.error("adult site list unreadable, running without one: %s", e)
     LOG.info("starting Crawl4AI (headless Chromium)")
     cfg = BrowserConfig(
         headless=True,
@@ -94,7 +106,21 @@ async def health() -> dict[str, Any]:
         "backend": "crawl4ai",
         "pages": {"active": gate.active, "waiting": gate.waiting, "limit": gate.limit},
         "cache": {"entries": len(cache), "ttl_s": CACHE_TTL_S},
+        "adult_list": {"domains": len(adult)},
     }
+
+
+def _refusal(url: str) -> str | None:
+    """Why `url` may not be scraped: off the network, or an adult site."""
+    return netguard.refusal(url) or adult.refusal(url)
+
+
+def _site(url: str) -> str:
+    """The host alone, for a log line."""
+    try:
+        return urlsplit(url).hostname or "?"
+    except ValueError:
+        return "?"
 
 
 def _build_metadata(result: Any, url: str) -> dict[str, Any]:
@@ -112,11 +138,11 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
     url = payload.get("url")
     if not url:
         return {"success": False, "error": "url is required"}
-    # Judged by resolved address before the browser opens it: this service is reached
-    # without authentication and sits beside every other internal service.
-    refused = await asyncio.to_thread(netguard.refusal, url)
+    # Judged by resolved address and host before the browser opens it: this service is
+    # reached without authentication and sits beside every other internal service.
+    refused = await asyncio.to_thread(_refusal, url)
     if refused:
-        LOG.warning("scrape refused for %s: %s", url, refused)
+        LOG.warning("scrape refused for %s: %s", _site(url), refused)
         return {"success": False, "error": refused}
 
     formats = payload.get("formats") or ["markdown"]
@@ -134,19 +160,21 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
         excluded_tags=excluded_tags,
         word_count_threshold=10,
         only_text=False,
+        # Crawl4AI's own progress lines print the address
+        verbose=False,
     )
 
     cache_key = PageCache.key(url, formats, only_main)
     if (hit := cache.get(cache_key)) is not None:
-        LOG.info("scrape %s served from cache", url)
+        LOG.debug("scrape %s served from cache", url)
         return hit
 
-    LOG.info("scrape %s (formats=%s, timeout=%dms, main=%s)",
-             url, formats, timeout_ms, only_main)
+    LOG.debug("scrape %s (formats=%s, timeout=%dms, main=%s)",
+              url, formats, timeout_ms, only_main)
 
     if not await gate.acquire(QUEUE_TIMEOUT_MS / 1000.0):
         LOG.warning("scrape refused, browser busy (%d rendering, %d waiting): %s",
-                    gate.active, gate.waiting, url)
+                    gate.active, gate.waiting, _site(url))
         return {"success": False, "error": "busy: too many pages rendering"}
     try:
         result = await asyncio.wait_for(
@@ -154,24 +182,25 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
             timeout=(timeout_ms / 1000.0) + 10,
         )
     except asyncio.TimeoutError:
-        LOG.warning("scrape timeout on %s", url)
+        LOG.warning("scrape timeout on %s", _site(url))
         return {"success": False, "error": "scrape timeout"}
     except Exception as e:
-        LOG.warning("scrape error on %s: %r", url, e)
+        LOG.warning("scrape error on %s: %r", _site(url), e)
         return {"success": False, "error": f"crawl4ai error: {e}"}
     finally:
         gate.release()
 
     if not getattr(result, "success", False):
         err = getattr(result, "error_message", None) or "crawl failed"
-        LOG.warning("scrape failed on %s: %s", url, err)
+        LOG.warning("scrape failed on %s: %s", _site(url), err)
         return {"success": False, "error": err}
     # The browser follows redirects on its own; the address it ended up at is judged too.
     final_url = getattr(result, "redirected_url", None) or url
     if final_url != url:
-        refused = await asyncio.to_thread(netguard.refusal, final_url)
+        refused = await asyncio.to_thread(_refusal, final_url)
         if refused:
-            LOG.warning("scrape refused after redirect %s -> %s: %s", url, final_url, refused)
+            LOG.warning("scrape refused after redirect %s -> %s: %s",
+                        _site(url), _site(final_url), refused)
             return {"success": False, "error": refused}
 
     data: dict[str, Any] = {}

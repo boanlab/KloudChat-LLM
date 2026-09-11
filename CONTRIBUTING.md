@@ -83,9 +83,9 @@ concrete command over the general principle.
 
 ## Publishing images
 
-`.github/workflows/publish-images.yml` owns the five `boanlab/kloudchat-*`
-images: `crawl4ai-shim`, `whisper-shim`, `code-interpreter`, `deep-research`,
-`index-shim`. vLLM is upstream, pulled by the GPU nodes.
+`.github/workflows/publish-images.yml` owns the six `boanlab/kloudchat-*`
+images: `crawl4ai-shim`, `search-shim`, `whisper-shim`, `code-interpreter`,
+`deep-research`, `index-shim`. vLLM is upstream, pulled by the GPU nodes.
 
 | Trigger | Builds | Tags |
 |---|---|---|

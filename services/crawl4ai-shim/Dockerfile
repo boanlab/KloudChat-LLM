@@ -14,7 +14,10 @@ RUN pip install -r /app/requirements.txt
 # Browser check and config generation
 RUN crawl4ai-setup || true
 
-COPY app.py netguard.py gate.py /app/
+# Adult sites a scrape refuses, from a pinned commit of StevenBlack/hosts (porn-only)
+ADD https://raw.githubusercontent.com/StevenBlack/hosts/83dd698bbcdcb8c11a7796af7188d7ab4ccd02f1/alternates/porn-only/hosts /app/adult-hosts.txt
+
+COPY app.py netguard.py adultlist.py gate.py /app/
 
 EXPOSE 8080
 

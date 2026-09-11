@@ -18,7 +18,7 @@ on:
         description: "Image to publish"
         type: choice
         default: all
-        options: [all, crawl4ai-shim, whisper-shim, code-interpreter, deep-research, index-shim]
+        options: [all, crawl4ai-shim, search-shim, whisper-shim, code-interpreter, deep-research, index-shim]
       tag:
         description: "Tag to publish under"
         required: false
@@ -58,6 +58,7 @@ jobs:
           # `context` is also the path watched for changes
           catalogue='[
             {"image":"crawl4ai-shim",   "context":"services/crawl4ai-shim",   "platforms":"linux/amd64,linux/arm64"},
+            {"image":"search-shim",     "context":"services/search-shim",     "platforms":"linux/amd64,linux/arm64"},
             {"image":"whisper-shim",    "context":"services/whisper-shim",    "platforms":"linux/amd64,linux/arm64"},
             {"image":"code-interpreter","context":"services/code-interpreter","platforms":"linux/amd64,linux/arm64"},
             {"image":"deep-research",   "context":"services/deep-research",   "platforms":"linux/amd64,linux/arm64"},

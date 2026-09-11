@@ -4,7 +4,7 @@
 #   /litellm/*         → litellm root       (admin API included, Authorization passed through)
 #   /tools/index/*     → index-shim         (RAG: chunk, embed, store, search)
 #   /v1/*              → litellm /v1        (for OpenAI-compatible clients)
-#   /tools/search/*    → searxng
+#   /tools/search/*    → search-shim       (cache and cap in front of searxng)
 #   /tools/fetch/*     → crawl4ai-shim      (shim key injected)
 #   /tools/exec/*      → code-interpreter   (x-api-key injected)
 #   /tools/research/*  → deep-research      (MCP streamable-http)
@@ -43,7 +43,7 @@
 	}
 
 	handle_path /tools/search* {
-		reverse_proxy searxng:8080
+		reverse_proxy search-shim:8080
 	}
 
 	handle_path /tools/fetch* {

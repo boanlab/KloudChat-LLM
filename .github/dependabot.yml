@@ -11,6 +11,7 @@ updates:
     directories:
       - /services/whisper-shim
       - /services/crawl4ai-shim
+      - /services/search-shim
       - /services/code-interpreter
       - /services/deep-research
       - /services/vllm

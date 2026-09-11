@@ -30,7 +30,7 @@ Set under `deep-research.environment` in `docker-compose.yml` as `LDR_*`.
 | `LDR_LLM_MODEL` | `${DEEP_RESEARCH_MODEL:-local/qwen3.5-122b-a10b}` |
 | `LDR_LLM_OPENAI_ENDPOINT_URL` | `${DEEP_RESEARCH_LLM_URL:-http://litellm:8000/v1}` |
 | `LDR_LLM_OPENAI_ENDPOINT_API_KEY` | `${LITELLM_MASTER_KEY}` |
-| `LDR_SEARCH_TOOL` | `searxng` (`LDR_SEARCH_ENGINE_WEB_SEARXNG_DEFAULT_PARAMS_INSTANCE_URL=http://searxng:8080`) |
+| `LDR_SEARCH_TOOL` | `searxng` (`LDR_SEARCH_ENGINE_WEB_SEARXNG_DEFAULT_PARAMS_INSTANCE_URL=http://search-shim:8080`, the cache and cap in front of SearXNG) |
 | `LDR_SEARCH_ITERATIONS` | `2`, bounds run time |
 | `LDR_SEARCH_QUESTIONS_PER_ITERATION` | `1` |
 
@@ -40,7 +40,7 @@ accordingly.
 ## Deployment
 
 - Image `${KLOUDCHAT_IMAGE_NS}/kloudchat-deep-research`, profile `tools`,
-  started after `searxng`.
+  started after `search-shim`.
 - Quality follows `DEEP_RESEARCH_MODEL`. Without a local vLLM, LiteLLM serves
   the same name from OpenRouter.
 
