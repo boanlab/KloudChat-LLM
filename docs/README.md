@@ -18,7 +18,7 @@ One gateway port is exposed. Behind it, seven capabilities are split by path.
 | Path | Service | Profile |
 |---|---|---|
 | `/litellm/*`, `/v1/*` | LiteLLM | `models` |
-| `/tools/search/*` | SearXNG | `tools` |
+| `/tools/search/*` | search-shim, in front of SearXNG | `tools` |
 | `/tools/fetch/*` | crawl4ai-shim | `tools` |
 | `/tools/exec/*` | code-interpreter | `tools` |
 | `/tools/research/*` | deep-research (MCP) | `tools` |

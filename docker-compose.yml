@@ -111,6 +111,38 @@ services:
     tmpfs: [/var/cache/searxng]
     networks: [kloudchat, searxng-data]
 
+  # In front of SearXNG: result cache, identical searches coalesced, searches in
+  # flight capped. The engines ban on burst, and every search leaves through one
+  # address, so this is what keeps hundreds of concurrent users from looking
+  # like a bot to them.
+  search-shim:
+    container_name: kloudchat-search-shim
+    image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-search-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
+    build:
+      context: ./services/search-shim
+    profiles: [tools]
+    restart: always
+    depends_on: [searxng]
+    environment:
+      SEARXNG_URL: http://searxng:8080
+      # Searches SearXNG runs at once; the rest wait QUEUE_TIMEOUT_MS, then are
+      # refused. An answer with results is reused for CACHE_TTL_S and, while
+      # SearXNG cannot answer, up to STALE_TTL_S after it was fetched.
+      MAX_CONCURRENT_SEARCHES: '12'
+      QUEUE_TIMEOUT_MS: '10000'
+      CACHE_TTL_S: '900'
+      STALE_TTL_S: '21600'
+      # Forced on every search, whatever the caller sent (2 = strict)
+      SAFESEARCH: '2'
+      LOG_LEVEL: INFO
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [kloudchat]
+
   # ── document fetch ──────────────────────────────────────────────────
   crawl4ai-shim:
     container_name: kloudchat-crawl4ai-shim
@@ -245,10 +277,11 @@ services:
       context: ./services/deep-research
     profiles: [tools]
     restart: always
-    depends_on: [searxng]
+    depends_on: [search-shim]
     environment:
       LDR_SEARCH_TOOL: searxng
-      LDR_SEARCH_ENGINE_WEB_SEARXNG_DEFAULT_PARAMS_INSTANCE_URL: http://searxng:8080
+      # Through the search shim, so its cache and cap cover research too
+      LDR_SEARCH_ENGINE_WEB_SEARXNG_DEFAULT_PARAMS_INSTANCE_URL: http://search-shim:8080
       LDR_SEARCH_ITERATIONS: '2'
       LDR_SEARCH_QUESTIONS_PER_ITERATION: '1'
       LDR_LLM_PROVIDER: openai_endpoint

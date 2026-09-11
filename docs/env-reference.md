@@ -158,6 +158,13 @@ Changing the others means editing `docker-compose.yml`.
 | index-shim | `INDEX_MAX_DOC_CHARS` | `2000000` | Documents are truncated beyond this |
 | index-shim | `EMBED_MODELS`, `RERANK_*`, `LITELLM_URL` | see section 8 | Compose maps them from the `INDEX_*` keys |
 | crawl4ai-shim | `DEFAULT_TIMEOUT_MS` | `30000` | Page load timeout |
+| crawl4ai-shim | `MAX_CONCURRENT_PAGES` / `QUEUE_TIMEOUT_MS` / `CACHE_TTL_S` | `8` / `15000` / `900` | Pages rendering at once, the wait for a slot, and how long a good scrape is reused |
+| crawl4ai-shim | `ADULT_HOSTS_FILE` | `/app/adult-hosts.txt` | Hosts file of adult sites a scrape refuses; baked into the image |
+| search-shim | `SEARXNG_URL` | `http://searxng:8080` | The SearXNG behind it |
+| search-shim | `MAX_CONCURRENT_SEARCHES` / `QUEUE_TIMEOUT_MS` | `12` / `10000` | Searches SearXNG runs at once, and the wait for a slot before `503 busy` |
+| search-shim | `CACHE_TTL_S` / `STALE_TTL_S` / `CACHE_MAX_ENTRIES` | `900` / `21600` / `2048` | How long an answer with results is reused, how much longer it is served while SearXNG cannot answer, and how many are kept |
+| search-shim | `UPSTREAM_TIMEOUT_S` / `CONNECT_TIMEOUT_S` | `20` / `3` | Whole-call and connect timeouts towards SearXNG |
+| search-shim | `SAFESEARCH` | `2` | Forced on every search: 0 off, 1 moderate, 2 strict |
 | crawl4ai-shim | `USER_AGENT` | `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 KloudChat/1.0` | |
 | code-interpreter | `MAX_EXECUTION_TIME` / `MAX_MEMORY_MB` | `30` / `512` | Sandbox limits, set in compose |
 | all shims | `LOG_LEVEL` | `INFO` | |

@@ -13,7 +13,7 @@ one address in its admin screen. No backend address is compiled into the UI.
 ┌─ KloudChat (UI) ────────┐        ┌─ KloudChat-LLM ─────────────────────────┐
 │  web · API · DB         │        │  gateway :8080   ← the only exposed port │
 │                         │        │   /litellm/*        → litellm           │
-│  admin → integrations   │──URL──▶│   /tools/search/*   → searxng           │
+│  admin → integrations   │──URL──▶│   /tools/search/*   → search-shim       │
 │   one URL               │        │   /tools/fetch/*    → crawl4ai-shim     │
 │                         │        │   /tools/exec/*     → code-interpreter  │
 └─────────────────────────┘        │   /tools/research/* → deep-research     │
