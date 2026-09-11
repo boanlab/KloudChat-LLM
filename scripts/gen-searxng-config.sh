@@ -38,7 +38,7 @@ SEARXNG_SECRET_KEY="$(grep -E '^SEARXNG_SECRET_KEY=' "$ENV_FILE" | tail -n1 | cu
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 # The secret_key line only; the sentinel also appears in a comment.
-# Naver 검색 API credentials are optional: both set enables the two naver
+# NAVER Search API (API HUB) credentials are optional: both set enables the two naver
 # engines, otherwise they are written disabled and never called.
 # `|| true`: with pipefail an absent line is a failed pipeline, and absent is fine here.
 NAVER_CLIENT_ID="$( (grep -E '^NAVER_CLIENT_ID=' "$ENV_FILE" || true) | tail -n1 | cut -d= -f2-)"
