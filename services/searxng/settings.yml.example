@@ -226,7 +226,10 @@ engines:
     shortcut: nvn
     categories: [news]
     paging: false
-    search_url: https://naverapihub.apigw.ntruss.com/search/v1/news?query={query}&display=10&sort=date
+    # Relevance order: `sort=date` puts the newest article first whatever it is
+    # about (personnel notices, weekly digests); `sim` still answers with
+    # today's articles when the subject is in the news.
+    search_url: https://naverapihub.apigw.ntruss.com/search/v1/news?query={query}&display=10&sort=sim
     headers:
       X-NCP-APIGW-API-KEY-ID: "__NAVER_CLIENT_ID__"
       X-NCP-APIGW-API-KEY: "__NAVER_CLIENT_SECRET__"
