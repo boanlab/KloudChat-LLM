@@ -187,3 +187,55 @@ engines:
   - name: huggingface
     weight: 0.6
     disabled: false
+
+  # ── NAVER Search API (NAVER API HUB) ─────────────────────────────────
+  # Not the scraping `naver` engine above (blocked from this network) but the
+  # Search API, through SearXNG's generic JSON engine. The Korean web as Korean
+  # users see it — web documents and news — from the source. Since 2026-06 the
+  # API is served by NAVER API HUB on NAVER Cloud Platform
+  # (naverapihub.apigw.ntruss.com, X-NCP-APIGW-* headers); the developers.naver.com
+  # endpoints stop for new applications on 2026-07-31 and for everyone on
+  # 2027-06-30. Quota: the search APIs share 775,000 calls a month per
+  # application at 50 requests a second per key, free at present; a search costs
+  # one call per engine below. Each API (웹문서, 뉴스) must be enabled on the
+  # application in the NCP console or the HUB answers 401 "활성화되어 있지 않습니다".
+  # gen-searxng-config.sh fills the credentials from NAVER_CLIENT_ID /
+  # NAVER_CLIENT_SECRET in .env and enables the two engines only when both
+  # are set; without them they stay disabled and cost nothing.
+  - name: naver web
+    engine: json_engine
+    shortcut: nvw
+    categories: [general]
+    paging: false
+    search_url: https://naverapihub.apigw.ntruss.com/search/v1/webkr?query={query}&display=10
+    headers:
+      X-NCP-APIGW-API-KEY-ID: "__NAVER_CLIENT_ID__"
+      X-NCP-APIGW-API-KEY: "__NAVER_CLIENT_SECRET__"
+    results_query: items
+    url_query: link
+    title_query: title
+    content_query: description
+    title_html_to_text: true
+    content_html_to_text: true
+    weight: 2.0
+    timeout: 5.0
+    disabled: __NAVER_DISABLED__
+
+  - name: naver news
+    engine: json_engine
+    shortcut: nvn
+    categories: [news]
+    paging: false
+    search_url: https://naverapihub.apigw.ntruss.com/search/v1/news?query={query}&display=10&sort=date
+    headers:
+      X-NCP-APIGW-API-KEY-ID: "__NAVER_CLIENT_ID__"
+      X-NCP-APIGW-API-KEY: "__NAVER_CLIENT_SECRET__"
+    results_query: items
+    url_query: originallink
+    title_query: title
+    content_query: description
+    title_html_to_text: true
+    content_html_to_text: true
+    weight: 2.0
+    timeout: 5.0
+    disabled: __NAVER_DISABLED__

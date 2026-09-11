@@ -103,11 +103,30 @@ open APIs that cost nothing per user.
 | science | google scholar, openalex, semantic scholar, arxiv, pubmed, openaire | literature; the UI's papers lane |
 | it | github, stackoverflow, mdn, docker hub, microsoft learn, huggingface | engineering; the UI's code lane |
 
-Absent on purpose: google, bing, duckduckgo, naver, startpage, qwant, mojeek
-and the other scrapers that answer this address with a CAPTCHA, an access
-denial, or off-topic home pages (bing), and the paid or terms-restricted APIs
-(Naver open API). The measurements behind every choice are in the settings
-file next to the engine list.
+Absent on purpose: google, bing, duckduckgo, naver (the scraper), startpage,
+qwant, mojeek and the other scrapers that answer this address with a CAPTCHA,
+an access denial, or off-topic home pages (bing), and the paid APIs. The
+measurements behind every choice are in the settings file next to the engine
+list.
+
+NAVER's Search API is the one keyed engine, wired in as two `json_engine`
+entries: `naver web` (general, 웹문서) and `naver news` (news) — the Korean
+web as Korean users see it, from the source. Since June 2026 the API is served
+by NAVER API HUB on NAVER Cloud Platform (`naverapihub.apigw.ntruss.com`,
+authenticated with `X-NCP-APIGW-API-KEY-ID` / `X-NCP-APIGW-API-KEY`); the old
+developers.naver.com endpoints close to new applications on 2026-07-31 and to
+everyone on 2027-06-30. `gen-searxng-config.sh` fills the credentials from
+`NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` in `.env` and enables them only when
+both are set; without a key they are written disabled and never called. The
+search APIs share a quota of 775,000 calls a month per application at 50
+requests a second per key, free at present, one call per engine per search.
+To turn them on: create an application in NAVER API HUB, enable the 웹문서 and
+뉴스 search APIs on it (an API not enabled answers 401 "이 Application에서
+활성화되어 있지 않습니다"), put the two values in `.env`, run
+`./scripts/gen-searxng-config.sh`, then `docker compose restart searxng`.
+NAVER's terms tie the results to the registered service and forbid storing
+them beyond the response; SearXNG passes them through and KloudChat keeps only
+what the answer cites.
 
 ### Document fetch: crawl4ai-shim
 
