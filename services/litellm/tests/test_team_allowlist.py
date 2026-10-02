@@ -27,8 +27,7 @@ def test_add_strict_preserves_restricted_team_allowlists(tmp_path: Path) -> None
     env_file = tmp_path / ".env"
     env_file.write_text(
         "LITELLM_MASTER_KEY=test-master-key\n"
-        "VLLM_QWEN35B_URL=http://qwen.test:8000\n"
-        "VLLM_QWEN122B_URL=\n"
+        "VLLM_QWEN27B_URL=http://qwen.test:8000\n"
         "OPENROUTER_API_KEY=\n"
     )
     capture = tmp_path / "updates.jsonl"
@@ -49,7 +48,7 @@ def test_add_strict_preserves_restricted_team_allowlists(tmp_path: Path) -> None
             done
             case "$url" in
               */team/list)
-                printf '%s\n' '[{"team_id":"restricted","team_alias":"restricted","models":["local/qwen3.6-35b","openai/gpt"]},{"team_id":"external","team_alias":"external","models":["openai/gpt"]},{"team_id":"unrestricted","team_alias":"unrestricted","models":[]}]' ;;
+                printf '%s\n' '[{"team_id":"restricted","team_alias":"restricted","models":["local/qwen3.8-27b","openai/gpt"]},{"team_id":"external","team_alias":"external","models":["openai/gpt"]},{"team_id":"unrestricted","team_alias":"unrestricted","models":[]}]' ;;
               */team/update)
                 printf '%s\n' "$payload" >> "$KCHAT_TEST_CAPTURE"
                 printf '%s\n' '{}' ;;
@@ -85,9 +84,9 @@ def test_add_strict_preserves_restricted_team_allowlists(tmp_path: Path) -> None
         {
             "team_id": "restricted",
             "models": [
-                "local/qwen3.6-35b",
+                "local/qwen3.8-27b",
                 "openai/gpt",
-                "strict-local/qwen3.6-35b",
+                "strict-local/qwen3.8-27b",
             ],
         }
     ]

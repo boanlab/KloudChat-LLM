@@ -52,7 +52,7 @@ The two injected keys never reach the UI: they exist only inside the gateway.
 
 Do not set these by hand. The placement step of `setup.sh all` writes them; set
 `KLOUDCHAT_SKIP_SCHEDULER=1` to manage them yourself. The prefix
-(`VLLM_QWEN35B` and so on) is the `env_prefix` in `scheduler/models.yaml`.
+(`VLLM_QWEN27B` and so on) is the `env_prefix` in `scheduler/models.yaml`.
 
 | Variable | Where | Contents |
 |---|---|---|
@@ -88,7 +88,8 @@ placement is skipped.
 | `VLLM_MODELS_ROOT` | `/var/lib/vllm/models` | Checkpoint root on the node |
 | `VLLM_<MODEL>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root. Point it at an `-awq` download on an FP4-less card |
 | `VLLM_<MODEL>_MAX_BATCHED_TOKENS` | `16384` | Lower bound for the vision mm-budget |
-| `VLLM_<MODEL>_MAX_NUM_SEQS` | `128` (35B), `32` (122B) | CUDA-graph capture limit for the hybrid models |
+| `VLLM_<MODEL>_MAX_NUM_SEQS` | `64` | CUDA-graph capture limit for the hybrid models |
+| `VLLM_QWEN27B_SPEC_TOKENS` | `5` | MTP speculative tokens per step for `vllm-qwen27b` |
 | `VLLM_CODERNEXT_DEEP_GEMM` | `0` | `VLLM_USE_DEEP_GEMM` for `vllm-codernext`. DeepGEMM rejects this checkpoint's FP8 scale-factor layout on GB10; `1` where the kernel takes it |
 | `VLLM_WHISPER_DIR` | `whisper-large-v3` | Transcription checkpoint directory |
 | `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling for `vllm-whisper` (`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`) |
@@ -99,7 +100,7 @@ Defaults and their rationale are in [GPU memory](gpu-memory.md#tuning-knobs).
 
 | Variable | Default | Notes |
 |---|---|---|
-| `DEEP_RESEARCH_MODEL` | `local/qwen3.5-122b-a10b` | Model for iterative search. The scheduler holds a 128K context floor on it |
+| `DEEP_RESEARCH_MODEL` | `local/qwen3.8-27b` | Model for iterative search. The scheduler holds it at its native 256K context |
 | `DEEP_RESEARCH_LLM_URL` | `http://litellm:8000/v1` | LiteLLM on the same network |
 
 ## 8. Retrieval index (profile `index`)

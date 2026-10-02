@@ -7,13 +7,10 @@
 # No arguments: `recommended whisper-large-v3`.
 #
 # Aliases (lib.sh::VLLM_MODELS):
-#   qwen3.6-35b-nvfp4   unsloth/Qwen3.6-35B-A3B-NVFP4          21 GB  chat (default)
-#   qwen3.6-35b         Qwen/Qwen3.6-35B-A3B                   35 GB  chat, FP8
-#   qwen3.6-35b-awq     QuantTrio/Qwen3.6-35B-A3B-AWQ          26 GB  chat, int4 (cards without FP4)
-#   qwen3.5-122b-a10b   Qwen/Qwen3.5-122B-A10B-NVFP4           78 GB  top chat
+#   qwen3.8-27b-nvfp4   unsloth/Qwen3.8-27B-NVFP4              22 GB  chat (default)
+#   qwen3.8-27b         Qwen/Qwen3.8-27B-FP8                   26 GB  chat, FP8
+#   qwen3.8-27b-awq     cyankiwi/Qwen3.8-27B-AWQ-INT4          17 GB  chat, int4 (cards without FP4)
 #   qwen3-coder-next    Qwen/Qwen3-Coder-Next-FP8              75 GB  coding
-#   qwen3-coder-30b     Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8  33 GB  coding
-#   qwen3.6-27b         Qwen/Qwen3.6-27B                       21 GB  dense chat
 #   bge-m3 / bge-reranker-v2-m3                                 3 GB  retrieval
 #   whisper-large-v3    openai/whisper-large-v3                 4 GB  transcription
 #

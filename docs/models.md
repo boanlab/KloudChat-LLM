@@ -96,23 +96,19 @@ means the model is placed wherever it fits.
 
 | Model (alias) | Container | Port | Quant | Node | Priority | Role |
 |---|---|---|---|---|---|---|
-| `local/qwen3.6-35b` | `vllm-qwen35b` | 8001 | NVFP4 | head | 20 | Unified chat and floor: conversation, artifacts, vision, coding, titles, memory extraction |
-| `local/qwen3.5-122b-a10b` | `vllm-qwen122b` | 8004 | NVFP4 | pool (share 60) | 15 | Top chat and deep research. 10B active, 128K here. Needs the card to itself |
-| `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | pool (share 40) | 10 | Coding (Qwen3-Coder-Next-80B-A3B). Hybrid attention, 12 of 48 layers hold KV, 12 KiB/token at 262K |
+| `local/qwen3.8-27b` | `vllm-qwen27b` | 8001 | NVFP4 | any | 20 | Unified chat: conversation, artifacts, vision, coding, deep research, titles, memory extraction. One instance per node that fits it |
+| `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | pool | 10 | Coding (Qwen3-Coder-Next-80B-A3B). Hybrid attention, 12 of 48 layers hold KV, 12 KiB/token at 262K |
 | `local/bge-m3` | `vllm-bgem3` | 8003 | BF16 | head | 5 | Retrieval embeddings. Pooling runner |
 | `local/bge-reranker-v2-m3` | `vllm-rerank` | 8009 | BF16 | head | 0 | Retrieval reranking, second stage over vector search |
 | `local/whisper-large-v3` | `vllm-whisper` | 9000 | FP16 | head | 4 | Transcription. Reached through `/tools/stt`, not a LiteLLM chat route |
-| `local/qwen3-coder-30b` | `vllm-coder30b` | 8006 | FP8 | any | 0 | Coding, smaller. 48 KiB/token. Superseded by `qwen3-coder-next` where 75 GiB fits |
-| `local/qwen3.6-27b` | `vllm-qwen27b` | 8007 | NVFP4 | any | 0 | The one dense model |
 | `strict-local/<model>` | same backend as its `local/` twin | | | | | Privacy-only alias; fails rather than leaving vLLM |
 
-**The split.** Qwen3.6-35B-A3B covers vision, a 262K context and agentic coding
-on its own, and at 3B active it is cheap enough to carry the high-volume
-internal calls (titles, memory extraction, query rewriting). Qwen3.5-122B-A10B
-is the quality end: 10B active decodes at roughly a third the rate, and 78 GiB
-of weights leaves ~22 GiB of KV on a GB10, about 13 concurrent requests at
-128K. Volume goes to the 35B; the 122B is chosen when the answer is worth the
-wait.
+**One chat model.** Qwen3.8-27B covers vision, a 262K context, agentic coding
+and deep research, and carries the high-volume internal calls (titles, memory
+extraction, query rewriting). Dense, so every token runs the whole model;
+throughput comes from replicas. Every node with room gets an instance, all
+registered under `local/qwen3.8-27b`, and LiteLLM spreads requests across
+them (`least-busy`).
 
 A model in the catalogue but not in `VLLM_MODELS` gets no `local/` alias; it is
 reachable under its OpenRouter slug. See [Registration](#vllm-local).
@@ -121,22 +117,19 @@ reachable under its OpenRouter slug. See [Registration](#vllm-local).
 
 - Default is NVFP4 (GB10 / RTX 5090 / PRO 5000 / PRO 6000).
 - A card without FP4 cannot run the default lineup. The catalogue carries an
-  AWQ int4 build of the chat model, `qwen3.6-35b-awq`, executable from compute
-  capability 7.5. Point `VLLM_QWEN35B_DIR` at it; the served entry does not
+  AWQ int4 build of the chat model, `qwen3.8-27b-awq`, executable from compute
+  capability 7.5. Point `VLLM_QWEN27B_DIR` at it; the served entry does not
   change.
 - That build is for large FP4-less cards: on 48 GiB it places at 128K–256K, and
-  at 26 GB of weights it does not fit a 24 GiB card. 32 GiB usable is the floor
+  at 17 GB of weights plus runtime it does not fit a 24 GiB card. 32 GiB usable is the floor
   and `manage-vllm.sh up` refuses below it ([gpu-memory.md](gpu-memory.md)).
 
 **Parsers**
 
 | Model | Tool parser | Reasoning parser | Notes |
 |---|---|---|---|
-| `qwen3.6-35b` | `qwen3_xml` | `qwen3` | Thinking off by default via `--default-chat-template-kwargs '{"enable_thinking": false}'`. The hybrid Gated-DeltaNet needs `--max-num-seqs` for cudagraph capture |
-| `qwen3.5-122b-a10b` | `qwen3_xml` | `qwen3` | Same family and chat-template controls. `--max-num-seqs` is set low for KV |
-| `qwen3.6-27b` | `qwen3_xml` | `qwen3` | Same family plumbing as `qwen3.6-35b` |
+| `qwen3.8-27b` | `qwen3_xml` | `qwen3` | Thinking off by default via `--default-chat-template-kwargs '{"enable_thinking": false}'`. The hybrid Gated-DeltaNet needs `--max-num-seqs` for cudagraph capture. MTP speculative decoding from the checkpoint's draft head (`min_p` and `logit_bias` are ignored under speculation) |
 | `qwen3-coder-next` | `qwen3_coder` | none | Qwen3-Coder's XML dialect (`<tool_call><function=…><parameter=…>`). `qwen3_xml` yields no tool calls |
-| `qwen3-coder-30b` | `qwen3_coder` | none | Same dialect. No thinking mode |
 
 ## Free models
 
@@ -171,16 +164,13 @@ for the OpenRouter default. It does not apply to embeddings.
 
   | `model_name` | URL variable |
   |---|---|
-  | `local/qwen3.6-35b` | `VLLM_QWEN35B_URL` |
-  | `local/qwen3.5-122b-a10b` | `VLLM_QWEN122B_URL` |
+  | `local/qwen3.8-27b` | `VLLM_QWEN27B_URL` |
   | `local/qwen3-coder-next` | `VLLM_CODERNEXT_URL` |
-  | `local/qwen3-coder-30b` | `VLLM_CODER30B_URL` |
-  | `local/qwen3.6-27b` | `VLLM_QWEN27B_URL` |
   | `local/bge-m3` | `VLLM_BGEM3_URL` |
   | `local/bge-reranker-v2-m3` | `VLLM_RERANK_URL` |
 
 - **No URL**: no `local/*` name. With an OpenRouter key the model is reachable
-  under its own slug (`qwen/qwen3.6-35b-a3b`, `qwen/qwen3.5-122b-a10b`) and
+  under its own slug (`qwen/qwen3.8-27b`, `qwen/qwen3-coder-next`) and
   priced as the paid route it is. A surface that names `local/<m>` stops
   resolving on a GPU-less install; see **Naming a model from outside**.
 - **Discovery**: `gen-litellm-config.sh` polls `/v1/models` at each URL and
@@ -201,41 +191,33 @@ What fits on which card is in the
 
 | Model | Node class | Notes |
 |---|---|---|
-| `qwen3.6-35b` | Any single NVFP4-capable GPU | Unified chat and floor |
-| `qwen3.5-122b-a10b` | GB10, or 2 × PRO 6000 (`tensor_parallel: 2`), alone on the cards | Top chat |
+| `qwen3.8-27b` | Any single NVFP4-capable GPU; every such node takes a replica | Unified chat |
 | `qwen3-coder-next` | GB10 or PRO 6000, alone on the card | Coding (FP8, 75 GiB) |
-| `qwen3-coder-30b` | Any single GPU (FP8, no FP4 needed) | Coding |
-| `qwen3.6-27b` | Any single NVFP4-capable GPU | Dense |
 
 **Roles**
 
-- `qwen3.6-35b`: default chat and the deployment volume points at. Artifacts,
-  coding and the high-volume internal calls (titles, memory extraction, query
-  rewriting) run here; the UI names those call sites (`KCHAT_TITLE_MODEL`). The
-  scheduler holds a 128K context floor on it for coding-agent sessions. It sits
-  on the head node with retrieval.
-- `qwen3.5-122b-a10b`: top chat, chosen from the picker, and what the pool
-  exists for (three pool nodes in five). `DEEP_RESEARCH_MODEL` points here, the
-  one route that reaches it without a user choosing it. Nothing else is routed
-  here by default: its KV pool admits 12 concurrent sessions.
+- `qwen3.8-27b`: default chat and the deployment volume points at. Artifacts,
+  coding, deep research (`DEEP_RESEARCH_MODEL`) and the high-volume internal
+  calls (titles, memory extraction, query rewriting) run here; the UI names
+  those call sites (`KCHAT_TITLE_MODEL`). The scheduler holds it at its
+  native 256K: a card that cannot is skipped, not given a shorter window.
+  Unplaced, so coverage seats one
+  instance and replication fills the other nodes with more.
 - `qwen3-coder-next`: coding, a picker choice. 75 GiB of FP8 weights, so it
-  wants a pool card to itself (two pool nodes in five). On a pool of one it
-  yields to the 122B.
-- `qwen3-coder-30b` and `qwen3.6-27b`: picker choices for a cluster with cards
-  to spare. Check `scheduler plan` before adding them to `VLLM_MODELS`.
+  wants a pool card to itself. Coverage seats every listed model once before
+  any replica, so listing it gives the pool card to the coder rather than a
+  second 27B; the default `VLLM_MODELS` leaves it out and the slug
+  `qwen/qwen3-coder-next` serves it.
 
 **Ranking.** `placement` decides which cards a model may compete for, and
 `priority` decides who wins among the models competing for the same ones:
-`qwen3.6-35b` (20) then `bge-m3` (5) on the head node, `qwen3.5-122b-a10b`
-(15) then `qwen3-coder-next` (10) in the pool. Without a priority, coverage
-seats the largest model first. The head node is ranked separately from the
-pool: losing the 35B degrades every path at once, losing a pool model costs
-deep research or a picker choice.
+`qwen3.8-27b` (20), then `qwen3-coder-next` (10), then `bge-m3` (5). Without a
+priority, coverage seats the largest model first. Losing the 27B degrades every
+path at once, losing the coder costs a picker choice.
 
-**Sharing the pool.** `share` divides the pool nodes once every model has one:
-60 to `qwen3.5-122b-a10b` and 40 to `qwen3-coder-next`, so a pool of five holds
-three and two. It is a weight, not a percentage, and with a pool of one it
-decides nothing.
+**Sharing the pool.** Once every model has an instance, `share` weights the
+extra instances among models competing for the same nodes. Only the 27B
+replicates here, so it takes every card with room.
 
 - **Artifacts**: no separate model. The client produces code and document
   artifacts on the chat deployment and the server extracts them.
@@ -259,11 +241,8 @@ independent paths:
 
 | Local (primary) | OpenRouter fallback (paid, $/1M in / out) |
 |---|---|
-| `local/qwen3.6-35b` | `qwen/qwen3.6-35b-a3b` (0.14 / 1.00) |
-| `local/qwen3.5-122b-a10b` | `qwen/qwen3.5-122b-a10b` (0.26 / 2.08) |
+| `local/qwen3.8-27b` | `qwen/qwen3.8-27b` (0.42 / 3.00) |
 | `local/qwen3-coder-next` | `qwen/qwen3-coder-next` (live price) |
-| `local/qwen3-coder-30b` | `qwen/qwen3-coder-30b-a3b-instruct` (0.07 / 0.28) |
-| `local/qwen3.6-27b` | `qwen/qwen3.6-27b` (0.60 / 3.60) |
 
 - **Emission condition**: `emit_or_fallback` emits the twin only when the local
   primary is deployed (its URL is set). With no local primary, `emit_brain`
@@ -323,11 +302,8 @@ defaults for the rest. They change with the nodes.
 
 | Model | Context | Purpose |
 |---|---|---|
-| `qwen3.6-35b` | 256K (262K native) | Chat, coding, internal calls |
-| `qwen3.5-122b-a10b` | 128K (262K native) | Top chat and deep research. Capped by KV, not by the model |
+| `qwen3.8-27b` | 256K (262K native) | Chat, coding, internal calls |
 | `qwen3-coder-next` | 256K (262K native) | Coding |
-| `qwen3-coder-30b` | 128K | Coding. Capped by KV: 48 KiB/token |
-| `qwen3.6-27b` | 128K | Dense |
 
 ### Embeddings
 

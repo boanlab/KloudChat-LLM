@@ -20,7 +20,7 @@ subcommand accepts `--hosts` and `--models` (CSV) to override `.env`, and
 ```bash
 # .env
 NODES_VLLM=ops@gpu-1,ops@gpu-2       # SSH targets, head node first
-VLLM_MODELS=qwen3.6-35b,qwen3.5-122b-a10b,bge-m3
+VLLM_MODELS=qwen3.8-27b,qwen3-coder-next,bge-m3
 VLLM_MODELS_ROOT=/var/lib/vllm/models
 ```
 

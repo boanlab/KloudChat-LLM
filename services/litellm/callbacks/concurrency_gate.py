@@ -37,18 +37,12 @@ SCRAPE_TIMEOUT = float(os.environ.get("CONCURRENCY_GATE_SCRAPE_TIMEOUT", "1.0"))
 # Age past which a strict alias's last good sample no longer counts.
 STRICT_STATE_TTL = max(POLL_TTL * 3, POLL_TTL + SCRAPE_TIMEOUT * 2)
 # In-flight caps by LiteLLM model_name. A key with no matching deployment is
-# logged by _load_gate_map. The 122B's cap follows its KV pool: ~22 GiB at 128K
-# is ~13 requests, and queueing past that preempts running sequences.
+# logged by _load_gate_map. The 27B's cap follows its KV pool: ~30 GiB at 256K
+# is under 4 full-length requests, and queueing past the cap preempts running
+# sequences.
 DEFAULT_CAPS = {
-    "local/qwen3.6-35b": 64,
-    "local/qwen3.5-122b-a10b": 12,
-    # 48 KiB/token KV
-    "local/qwen3-coder-30b": 24,
-    "local/qwen3.6-27b": 32,
-    "strict-local/qwen3.6-35b": 64,
-    "strict-local/qwen3.5-122b-a10b": 12,
-    "strict-local/qwen3-coder-30b": 24,
-    "strict-local/qwen3.6-27b": 32,
+    "local/qwen3.8-27b": 32,
+    "strict-local/qwen3.8-27b": 32,
 }
 
 

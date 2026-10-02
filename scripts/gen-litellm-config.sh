@@ -42,7 +42,7 @@ CTX_FALLBACK=32768
 
 # Per-model request timeout (s): a stuck-request backstop, generous because
 # deep research runs for minutes. Load is the concurrency gate's job.
-declare -A MODEL_TIMEOUT=( [qwen3.6-35b]=900 [qwen3.5-122b-a10b]=1800 [qwen3-coder-30b]=900 [qwen3.6-27b]=600 )
+declare -A MODEL_TIMEOUT=( [qwen3.8-27b]=1800 )
 
 # OpenRouter provider-routing variant for chat routes: ":floor" (cheapest
 # provider), ":nitro" (throughput), "" (OpenRouter default). KC_OR_VARIANT.
@@ -316,11 +316,8 @@ fi
 SECTION=$(
   echo "  ${MARKER_START}"
   # --- local (vLLM), or the OpenRouter slug where nothing is deployed ---
-  emit_brain "qwen3.6-35b"   "$(env_get VLLM_QWEN35B_URL)"    "qwen/qwen3.6-35b-a3b" "$(or_price qwen/qwen3.6-35b-a3b in)" "$(or_price qwen/qwen3.6-35b-a3b out)"
-  emit_brain "qwen3.5-122b-a10b" "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b" "$(or_price qwen/qwen3.5-122b-a10b in)" "$(or_price qwen/qwen3.5-122b-a10b out)"
+  emit_brain "qwen3.8-27b"   "$(env_get VLLM_QWEN27B_URL)"    "qwen/qwen3.8-27b" "$(or_price qwen/qwen3.8-27b in)" "$(or_price qwen/qwen3.8-27b out)"
   emit_brain "qwen3-coder-next" "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next" "$(or_price qwen/qwen3-coder-next in)" "$(or_price qwen/qwen3-coder-next out)"
-  emit_brain "qwen3-coder-30b" "$(env_get VLLM_CODER30B_URL)" "qwen/qwen3-coder-30b-a3b-instruct" "$(or_price qwen/qwen3-coder-30b-a3b-instruct in)" "$(or_price qwen/qwen3-coder-30b-a3b-instruct out)"
-  emit_brain "qwen3.6-27b" "$(env_get VLLM_QWEN27B_URL)" "qwen/qwen3.6-27b" "$(or_price qwen/qwen3.6-27b in)" "$(or_price qwen/qwen3.6-27b out)"
   # Retrieval: local when placed, the OpenAI catalogue below as fallback.
   emit_vllm_embed "bge-m3" "$(env_get VLLM_BGEM3_URL)"
   emit_vllm_rerank "bge-reranker-v2-m3" "$(env_get VLLM_RERANK_URL)"
@@ -361,10 +358,7 @@ SECTION=$(
     emit_or_audio "$m" "${MODEL_AUDIO_IN_PM[$m]}" "${MODEL_AUDIO_OUT_PM[$m]}" "${MODEL_AUDIO_PER_CALL[$m]:-}"
   done
   # --- OpenRouter twins of the deployed local models (fallback targets, hidden) ---
-  emit_or_fallback "$(env_get VLLM_QWEN35B_URL)"  "qwen/qwen3.6-35b-a3b" "$(or_price qwen/qwen3.6-35b-a3b in)" "$(or_price qwen/qwen3.6-35b-a3b out)"
-  emit_or_fallback "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b" "$(or_price qwen/qwen3.5-122b-a10b in)" "$(or_price qwen/qwen3.5-122b-a10b out)"
-  emit_or_fallback "$(env_get VLLM_CODER30B_URL)" "qwen/qwen3-coder-30b-a3b-instruct" "$(or_price qwen/qwen3-coder-30b-a3b-instruct in)" "$(or_price qwen/qwen3-coder-30b-a3b-instruct out)"
-  emit_or_fallback "$(env_get VLLM_QWEN27B_URL)" "qwen/qwen3.6-27b" "$(or_price qwen/qwen3.6-27b in)" "$(or_price qwen/qwen3.6-27b out)"
+  emit_or_fallback "$(env_get VLLM_QWEN27B_URL)"  "qwen/qwen3.8-27b" "$(or_price qwen/qwen3.8-27b in)" "$(or_price qwen/qwen3.8-27b out)"
   echo "  ${MARKER_END}"
 )
 
@@ -378,10 +372,7 @@ fb_line() {  # $1=local-model  $2=url_csv  $3=or-slug
 FALLBACKS=$(
   echo "  ${FB_START}"
   echo "  fallbacks:"
-  fb_line "qwen3.6-35b"   "$(env_get VLLM_QWEN35B_URL)"  "qwen/qwen3.6-35b-a3b"
-  fb_line "qwen3.5-122b-a10b" "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b"
-  fb_line "qwen3-coder-30b" "$(env_get VLLM_CODER30B_URL)" "qwen/qwen3-coder-30b-a3b-instruct"
-  fb_line "qwen3.6-27b" "$(env_get VLLM_QWEN27B_URL)" "qwen/qwen3.6-27b"
+  fb_line "qwen3.8-27b"   "$(env_get VLLM_QWEN27B_URL)"  "qwen/qwen3.8-27b"
   echo "  ${FB_END}"
 )
 
