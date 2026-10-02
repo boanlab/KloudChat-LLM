@@ -7,7 +7,7 @@ __R='\033[0;31m'; __G='\033[0;32m'; __Y='\033[1;33m'
 __B='\033[1;34m'; __N='\033[0m'
 
 hdr()  { echo; echo -e "${__B}━━━ $* ━━━${__N}"; }
-# Diagnostics on stderr: the config generators build YAML through `$(...)`.
+# stderr: the config generators capture stdout as YAML
 ok()   { echo -e "${__G}✓${__N} $*" >&2; }
 info() { echo -e "${__G}[INFO]${__N} $*" >&2; }
 warn() { echo -e "${__Y}[WARN]${__N} $*" >&2; }
@@ -52,13 +52,10 @@ env_set() {
   fi
 }
 
-# Write-permission check before a tmp+mv regeneration (root-owned files from a
-# sudo run or a container write).
-#   $1 = target file
-#   $2 = need_read (default 1; 0 for a full regeneration)
+# Read and write check on $1 before a tmp+mv regeneration
 assert_regen_writable() {
-  local f="$1" need_read="${2:-1}" d owner me; d="$(dirname "$f")"; me="$(id -un)"
-  if [[ "$need_read" == 1 && -e "$f" && ! -r "$f" ]]; then
+  local f="$1" d owner me; d="$(dirname "$f")"; me="$(id -un)"
+  if [[ -e "$f" && ! -r "$f" ]]; then
     owner="$(stat -c '%U:%G' "$f" 2>/dev/null || echo '?')"
     err "$f not readable (owner: $owner, current user: $me)."
     err "  Running the script with sudo makes it root-owned → fix: sudo chown $(id -u):$(id -g) \"$f\"   (then run without sudo)"
@@ -75,8 +72,7 @@ assert_regen_writable() {
 
 has_nvidia_gpu() { command -v nvidia-smi &>/dev/null && nvidia-smi -L &>/dev/null; }
 
-# ~/.local/bin on PATH: uv and the HuggingFace CLI live there, and a
-# non-interactive ssh session does not include it.
+# ~/.local/bin (uv, HF CLI) on PATH; non-interactive ssh omits it
 case ":${PATH}:" in
   *":${HOME}/.local/bin:"*) ;;
   *) [[ -d "${HOME}/.local/bin" ]] && PATH="${HOME}/.local/bin:${PATH}" && export PATH ;;
@@ -103,8 +99,7 @@ detect_gpu_class() {
   esac
 }
 
-# Supported cards: GB10, RTX 5090, RTX PRO 5000/6000 Blackwell. All execute the
-# catalogue's NVFP4, FP8 and BF16 weights; anything else is refused.
+# Supported cards: GB10, RTX 5090, RTX PRO 5000/6000 Blackwell
 gpu_is_supported() {
   case "$(detect_gpu_class)" in
     gb10|pro6000|pro5000|rtx5090) return 0 ;;
@@ -116,20 +111,19 @@ get_free_disk_gb() {
   df -BG "${1:-.}" 2>/dev/null | awk 'NR==2 {gsub("G",""); print $4; exit}'
 }
 
-# Compute capability of GPU 0 ("12.0"). Empty when the driver cannot answer;
-# callers fall back to the GPU class.
+# Compute capability of GPU 0 ("12.0"); empty when the driver cannot answer
 gpu_compute_cap() {
   has_nvidia_gpu || { echo ""; return; }
   nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
     | head -1 | tr -dc '0-9.'
 }
 
-# OS share on a unified-memory node. Mirrors
-# scheduler/inventory.py::_UNIFIED_RESERVE_BYTES; the two must agree.
+# OS reserve (GiB) on a unified-memory node; must equal
+# scheduler/inventory.py::_UNIFIED_RESERVE_BYTES
 UNIFIED_RESERVE_GB=12
 
-# Usable GPU memory in GiB, 0 without a GPU. Unified-memory cards report [N/A]
-# to nvidia-smi and fall back to MemTotal minus the OS share.
+# Usable GPU memory (GiB), 0 without a GPU; unified-memory cards report [N/A]
+# to nvidia-smi, so MemTotal minus the OS reserve stands in
 gpu_usable_vram_gb() {
   has_nvidia_gpu || { echo 0; return; }
   local mib kb total
@@ -141,48 +135,45 @@ gpu_usable_vram_gb() {
   (( total > UNIFIED_RESERVE_GB )) && echo $(( total - UNIFIED_RESERVE_GB )) || echo 0
 }
 
-# Commercial catalogue, served through OpenRouter; skipped without an OR key.
-# One array per provider; gen-litellm-config.sh registers from these.
-# Ids and prices: verify against https://openrouter.ai/api/v1/models.
-# Order within a provider = picker order (flagship first).
+# OpenRouter commercial catalogue, one array per provider; array order is
+# picker order. Ids: https://openrouter.ai/api/v1/models
 OPENAI_MODELS=(gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5-nano gpt-5.3-codex)
 ANTHROPIC_MODELS=(claude-fable-5 claude-opus-5 claude-sonnet-5 claude-haiku-4.5)
 GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.7-flash gemini-3.1-flash-lite)
 XAI_MODELS=(grok-4.6)
 PERPLEXITY_MODELS=(sonar sonar-pro)
-# Open-weight tier (295B to 2.8T). Display name = OpenRouter id.
+# Open-weight tier
 TENCENT_MODELS=(hy3)
 DEEPSEEK_MODELS=(deepseek-v4-pro deepseek-v4-flash)
 ZAI_MODELS=(glm-5.3)
 XIAOMI_MODELS=(mimo-v2.5)
 MOONSHOTAI_MODELS=(kimi-k3)
-# Qwen's hosted tier, distinct from the locally served qwen3.x checkpoints.
+# Qwen's hosted tier (not the local checkpoints)
 QWEN_MODELS=(qwen3.8-max qwen3.7-flash qwen3-coder-plus)
 MINIMAX_MODELS=(minimax-m3)
 
-# Image generation, cheapest first (picker default). Prices per `image_output`
-# token; one picture is ~1290 tokens.
+# Image generation, cheapest first (picker default)
 OR_IMAGE_MODELS=(
   openai/gpt-5-image-mini
   google/gemini-2.5-flash-image
   openai/gpt-5-image
   google/gemini-3-pro-image
 )
+# USD per image_output token; one picture is ~1290 tokens
 declare -A MODEL_IMAGE_OUT_COST=(
   [openai/gpt-5-image-mini]=0.000008
   [google/gemini-2.5-flash-image]=0.00003
   [openai/gpt-5-image]=0.00004
   [google/gemini-3-pro-image]=0.00012
 )
-# Audio generation through chat/completions (streaming required). gpt-audio:
-# speech, per token; lyria: music, per clip.
+# Audio generation through chat/completions (streaming required): gpt-audio
+# speech per token, lyria music per clip
 OR_AUDIO_MODELS=(
   openai/gpt-audio-mini
   openai/gpt-audio
   google/lyria-3-clip-preview
 )
-# Audio-token rates (OpenRouter prices text and audio separately; the audio
-# rate over-charges the text portion, the safe direction).
+# USD per 1M audio tokens, applied to the text portion as well
 declare -A MODEL_AUDIO_OUT_PM=(
   [openai/gpt-audio-mini]=2.40
   [openai/gpt-audio]=64.00
@@ -193,8 +184,7 @@ declare -A MODEL_AUDIO_IN_PM=(
   [openai/gpt-audio]=32.00
   [google/lyria-3-clip-preview]=0.00
 )
-# Per-clip billing. The catalogue states this figure in the model description
-# rather than in `pricing`; `or_price_drift` reads it from there.
+# USD per clip; the catalogue states it in the model description, not `pricing`
 declare -A MODEL_AUDIO_PER_CALL=(
   [google/lyria-3-clip-preview]=0.04
 )
@@ -206,7 +196,7 @@ declare -A MODEL_IMAGE_IN_PM=(
   [google/gemini-3-pro-image]=2.00
 )
 
-# RAG embedding fallback, registered when an OpenAI-compatible key is present.
+# RAG embedding fallback, registered with OPENAI_API_KEY
 OPENAI_EMBED_CATALOG=(text-embedding-3-small)
 
 # vLLM catalogue: download alias → HF repo.
@@ -218,13 +208,12 @@ declare -A VLLM_MODELS=(
   # Retrieval embeddings and reranking, BF16
   [bge-m3]="BAAI/bge-m3"
   [bge-reranker-v2-m3]="BAAI/bge-reranker-v2-m3"
-  # Transcription, FP16 (any card, any architecture)
+  # Transcription, FP16
   [whisper-large-v3]="openai/whisper-large-v3"
 )
 : "${VLLM_MODELS_ROOT:=/var/lib/vllm/models}"
 
-# Checkpoint size on disk, used by download-vllm-models.sh to refuse weights
-# the card cannot hold.
+# Checkpoint size on disk (GiB)
 declare -A VLLM_MODEL_WEIGHT_GB=(
   [qwen3.8-27b-nvfp4]=22
   [qwen3-coder-next]=75
@@ -232,17 +221,16 @@ declare -A VLLM_MODEL_WEIGHT_GB=(
   [bge-reranker-v2-m3]=3
   [whisper-large-v3]=4
 )
-# Runtime headroom over the weights: activation buffers plus KV for one request.
+# GiB over the weights: activations plus KV for one request
 VLLM_RUNTIME_HEADROOM_GB=6
 
-# Recommended set for a node without an explicit model list.
+# Download set for a node without an explicit model list
 VLLM_PREFERRED_MODELS=(qwen3.8-27b-nvfp4)
 
-# Usable-VRAM floor: the RTX 5090, the smallest supported card.
+# Usable-VRAM floor (GiB): the RTX 5090
 VLLM_MIN_USABLE_VRAM_GB=32
 
-# Why this node cannot serve alias $1: prints a reason and returns 1, or returns
-# 0 silently. Alias validity is the caller's check.
+# Prints why this node cannot serve alias $1 and returns 1; 0 silently otherwise
 vllm_model_unservable_reason() {
   local alias="$1" weight="${VLLM_MODEL_WEIGHT_GB[$1]:-0}"
   local vram; vram="$(gpu_usable_vram_gb)"
@@ -252,7 +240,6 @@ vllm_model_unservable_reason() {
   if ! gpu_is_supported; then
     echo "$(get_gpu_name) is not a supported card (GB10, RTX 5090, RTX PRO 5000/6000)"; return 1
   fi
-  # Size before capability: the more useful reason on a small card.
   if (( vram > 0 && vram < VLLM_MIN_USABLE_VRAM_GB )); then
     echo "the card has ${vram}GiB usable; this catalogue needs ${VLLM_MIN_USABLE_VRAM_GB}GiB before anything places with room to run"
     return 1
@@ -265,9 +252,9 @@ vllm_model_unservable_reason() {
   return 0
 }
 
-# vLLM base image per architecture. Nightly: the stable tags lag behind the
-# hybrid GDN and MoE architectures. install-vllm.sh records the digest the tag
-# resolved to as VLLM_BASE_DIGEST, which is the per-node pin.
+# vLLM base image per architecture; nightly, as the stable tags lack the
+# hybrid-attention architectures. install-vllm.sh pins the resolved digest
+# per node as VLLM_BASE_DIGEST.
 VLLM_IMAGE_ARM64="vllm/vllm-openai:nightly-aarch64"
 VLLM_IMAGE_AMD64="vllm/vllm-openai:cu129-nightly"
 
@@ -279,14 +266,13 @@ vllm_default_image() {
   esac
 }
 
-# Registry digest of a local image; empty for a locally built tag.
+# Registry digest of a local image; empty for a locally built tag
 image_base_digest() {
   docker image inspect "$1" --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' 2>/dev/null
 }
 
-# Declared prices for LiteLLM spend tracking (USD per 1M tokens); the live
-# catalogue overrides them at generation time (or_refresh_prices). Local models
-# are free; their OpenRouter twins are priced below.
+# Declared prices, USD per 1M tokens; or_refresh_prices overlays the live
+# catalogue. Local models are 0.
 declare -A MODEL_PRICE_IN_PM=(
   [gpt-5.6-sol]=2.50     [gpt-5.6-terra]=2      [gpt-5.6-luna]=0.20    [gpt-5-nano]=0.05
   [gpt-5.3-codex]=1.75
@@ -313,8 +299,8 @@ declare -A MODEL_PRICE_OUT_PM=(
   [qwen3.8-27b]=0
 )
 
-# Declared prices for the OpenRouter twins of local models and the STT
-# fallback, keyed by OpenRouter slug. `or_price` prefers the live figure.
+# OpenRouter twins of local models and the STT fallback, USD per 1M tokens,
+# keyed by slug; or_price prefers the live figure
 declare -A OR_TWIN_PRICE_IN_PM=(
   [qwen/qwen3.8-27b]=0.42
   [mistralai/voxtral-small-24b-2507]=0.10
@@ -328,8 +314,7 @@ per_token_cost() { awk -v v="$1" 'BEGIN { printf "%.10f", v/1000000 }'; }
 
 has_openrouter() { [[ -n "$(env_get OPENROUTER_API_KEY)" ]]; }
 
-# OpenRouter catalogue, fetched once per run (free-model list, price refresh,
-# drift check).
+# OpenRouter catalogue, fetched once per run
 __OR_CATALOGUE_CACHE=""
 
 or_catalogue() {
@@ -347,7 +332,7 @@ or_catalogue() {
   cat "$__OR_CATALOGUE_CACHE"
 }
 
-# One model's live price, or the declared fallback. USD per 1M tokens.
+# Live price or the declared fallback, USD per 1M tokens
 #   or_price <slug> in|out [fallback]
 or_price() {
   local slug="$1" field="$2" fallback="${3:-}" key live
@@ -363,8 +348,7 @@ or_price() {
   [[ -n "$live" && "$live" != "null" ]] && echo "$live" || echo "$fallback"
 }
 
-# Overlay the live prices onto the declared tables, in place. Prints
-# "<total> <moved>".
+# Live prices over the declared tables, in place; prints "<total> <moved>"
 or_refresh_prices() {
   has_openrouter || return 0
   local live; live="$(or_catalogue 2>/dev/null)" || return 0
@@ -397,8 +381,8 @@ or_refresh_prices() {
   echo "${total} ${moved}"
 }
 
-# Free chat models OpenRouter currently offers, one slug per line: zero price
-# both ways, text output, `:free` suffix, guardrail models excluded.
+# OpenRouter's free chat models, one slug per line: zero price both ways, text
+# output, `:free` suffix, guardrail models excluded
 or_free_models() {
   has_openrouter || return 0
   command -v jq &>/dev/null || return 0
@@ -412,8 +396,7 @@ or_free_models() {
         | .id' 2>/dev/null | sort
 }
 
-# Declared prices against the live catalogue. One line per mismatch; returns 1
-# if any were found.
+# Declared prices against the live catalogue; one line per mismatch, rc 1 if any
 or_price_drift() {
   has_openrouter || { echo "no OPENROUTER_API_KEY — nothing to check" >&2; return 0; }
   command -v jq &>/dev/null || { echo "jq is required" >&2; return 0; }
@@ -469,8 +452,7 @@ or_price_drift() {
     fi
   done
 
-  # Image and audio: image_output per image token, audio/audio_output per
-  # audio token.
+  # image_output per image token; audio/audio_output per audio token
   local id declared actual_out actual_in
   for id in "${OR_IMAGE_MODELS[@]}"; do
     declared="${MODEL_IMAGE_OUT_COST[$id]:-}"
@@ -525,7 +507,7 @@ __vllm_node_models() {
   curl -sf --max-time 5 "${probe}/v1/models" 2>/dev/null | jq -r '.data[]?.id' 2>/dev/null || true
 }
 # "<URL>\t<served-model-name>" per line for every reachable URL in the csv,
-# deduplicated.
+# deduplicated
 vllm_union_node_models() {
   local urls_csv="$1"
   [[ -n "$urls_csv" ]] || return 0
@@ -547,8 +529,7 @@ vllm_union_node_models() {
   done
 }
 
-# Whether any URL in the csv is a vLLM that answers. A URL only records that a
-# backend was placed, not that it serves.
+# Whether any URL in the csv answers /v1/models with a model
 vllm_any_url_alive() {
   local csv="$1" u
   [[ -n "$csv" ]] || return 1
@@ -582,8 +563,7 @@ __vllm_one_state() {
   esac
 }
 
-# One URL's self-reported max_model_len, 3 tries at 2s. Empty with rc!=0 on
-# failure.
+# One URL's self-reported max_model_len, 3 tries 2s apart; rc 1 on failure
 vllm_discover_max_len() {
   local raw="$1" probe len
   probe="$(__vllm_normalize_url "$raw")"
@@ -599,7 +579,7 @@ vllm_discover_max_len() {
   return 1
 }
 
-# URL host → ssh target: the matching user@host from NODES_VLLM, else the host.
+# URL host → ssh target: the matching user@host from NODES_VLLM, else the host
 __vllm_ssh_target() {
   local host="$1" csv entry
   csv="$(env_get NODES_VLLM 2>/dev/null)"
@@ -615,7 +595,7 @@ __vllm_ssh_target() {
 #   0 = Up (including "health: starting")
 #   1 = missing / exited / restart loop
 #   2 = unknown (ssh or docker query failed)
-# Local hosts (localhost, loopback, own IP) are queried without ssh.
+# Local hosts (localhost, loopback, own IP) are queried without ssh
 __vllm_container_state() {
   local raw="$1" url hostport host port target out h islocal=0 ip
   url="$(__vllm_normalize_url "$raw")"
@@ -637,11 +617,11 @@ __vllm_container_state() {
   return 1
 }
 
-# Wait until every URL in the csv is ready.
+# Wait until every URL in the csv is ready; progress on stderr
 #   vllm_wait_until_ready "$URL_CSV" "label" [timeout=600] [interval=10] [dead_thresh=3]
 #   rc 0 = all ready; 2 = a container was missing/exited dead_thresh times in a
-#   row; 3 = timeout. vLLM listens only after the weights load, so a TCP refusal
-#   is judged by container state, not elapsed time. Progress on stderr.
+#   row; 3 = timeout. vLLM listens only after the weights load, so a TCP
+#   refusal is judged by container state.
 vllm_wait_until_ready() {
   local urls_csv="$1" label="$2"
   local timeout="${3:-600}" interval="${4:-10}" dead_thresh="${5:-3}"
@@ -690,7 +670,7 @@ vllm_wait_until_ready() {
   return 0
 }
 
-# LiteLLM team allowlist: every chat model gen-litellm-config.sh registers.
+# LiteLLM team allowlist: every chat model gen-litellm-config.sh registers
 litellm_chat_models_csv() {
   local vllm_chat_url; vllm_chat_url="$(env_get VLLM_QWEN27B_URL 2>/dev/null || true)"
   local out=() m
@@ -708,8 +688,7 @@ litellm_chat_models_csv() {
     for m in "${QWEN_MODELS[@]}";       do out+=("qwen/$m");       done
     for m in "${MINIMAX_MODELS[@]}";    do out+=("minimax/$m");    done
   fi
-  # Same shape as emit_brain: local/ and strict-local/ aliases over a vLLM URL,
-  # the OpenRouter slug without one.
+  # Mirrors emit_brain
   if [[ -n "$vllm_chat_url" ]]; then
     out+=("local/qwen3.8-27b" "strict-local/qwen3.8-27b")
   elif has_openrouter; then
@@ -723,8 +702,8 @@ litellm_chat_models_csv() {
 }
 
 LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-$(env_get LITELLM_MASTER_KEY)}"
-# LITELLM_URL: shell env, then .env, then localhost:8000. Container-side
-# hostnames are rewritten for host-side calls.
+# LITELLM_URL: shell env, then .env, then localhost:8000; container hostnames
+# rewritten for host-side calls
 LITELLM_URL="${LITELLM_URL:-$(env_get LITELLM_URL)}"
 LITELLM_URL="${LITELLM_URL:-http://localhost:8000}"
 LITELLM_URL="${LITELLM_URL//host.docker.internal/localhost}"
@@ -761,11 +740,11 @@ team_id_by_alias() {
 
 # ───────────────────────── multi-node dispatch ─────────────────────────
 
-# Repository path on a remote node, relative to the login user's $HOME.
+# Repository path on a remote node, relative to the login user's $HOME
 KLOUDCHAT_REMOTE_DIR="${KLOUDCHAT_REMOTE_DIR:-KloudChat-LLM}"
 
 # Whether a NODES_VLLM target is this host: localhost, loopback, $HOSTNAME, the
-# short hostname, local IPv4 addresses, or DNS resolution to one of them.
+# short hostname, a local IPv4 address, or a name resolving to one
 is_local_host() {
   local target="${1#*@}"
   [[ -z "$target" ]] && return 1
@@ -787,7 +766,7 @@ is_local_host() {
   return 1
 }
 
-# CSV → one item per line, trimmed of whitespace and quotes.
+# CSV → one item per line, trimmed of whitespace and quotes
 csv_split() {
   local IFS=, s
   for s in $1; do
@@ -796,8 +775,7 @@ csv_split() {
   done
 }
 
-# Push the repo to a node, excluding runtime data. `.env` is excluded too: the
-# scheduler writes per-node values there (see rsync_push_env_if_absent).
+# Repo to a node, minus runtime data and .env (per node; rsync_push_env_if_absent)
 rsync_push() {
   local host="$1"
   echo "  → rsync to ${host}:${KLOUDCHAT_REMOTE_DIR}/"
@@ -817,8 +795,7 @@ rsync_push() {
     "${__PROJECT_DIR}/" "${host}:${KLOUDCHAT_REMOTE_DIR}/"
 }
 
-# Seed a node's .env only when it has none; after that the scheduler owns it.
-# The test path is relative: ssh_run has already cd'd into KLOUDCHAT_REMOTE_DIR.
+# Seed a node's .env only when absent; the scheduler owns it afterwards
 rsync_push_env_if_absent() {
   local host="$1"
   if ssh_run "$host" "test -f .env" 2>/dev/null; then
@@ -835,8 +812,7 @@ rsync_push_file() {
   rsync -az "${__PROJECT_DIR}/${path}" "${host}:${KLOUDCHAT_REMOTE_DIR}/${path}"
 }
 
-# ssh + cd into the repo + command. -n keeps the caller's stdin (while-read
-# loops over the node list).
+# ssh, cd into the repo, run; -n leaves the caller's stdin alone (while-read loops)
 ssh_run() {
   local host="$1"; shift
   ssh -n -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 "$host" \

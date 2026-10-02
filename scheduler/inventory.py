@@ -96,9 +96,8 @@ def _probe_checkpoints(host: str, models_root: str) -> Optional[frozenset[str]]:
     return frozenset(line.strip() for line in out.splitlines() if line.strip())
 
 
-#: Cards the stack serves on; everything else classifies as UNSUPPORTED_GPU_CLASS
-#: and the planner places nothing there. Must match lib.sh::detect_gpu_class.
-SUPPORTED_GPU_CLASSES: frozenset[str] = frozenset({"gb10", "rtx5090", "pro5000", "pro6000"})
+#: Every card outside GB10, RTX 5090 and RTX PRO 5000/6000; the planner places
+#: nothing there. Must match lib.sh::detect_gpu_class.
 UNSUPPORTED_GPU_CLASS: str = "unsupported"
 
 

@@ -40,7 +40,7 @@ ok "GPU: $(get_gpu_name) (class=$(detect_gpu_class))"
 command -v docker &>/dev/null || { err "Docker not found."; exit 1; }
 ok "Docker $(docker --version | awk '{print $3}' | tr -d ',')"
 
-# A real --gpus passthrough is the gate; `docker info` Runtimes has false negatives.
+# A real --gpus run is the gate; `docker info` Runtimes has false negatives
 hdr "1. GPU runtime check"
 if docker run --rm --gpus all --entrypoint nvidia-smi nvcr.io/nvidia/cuda:12.6.3-base-ubuntu24.04 -L &>/dev/null; then
   ok "GPU passthrough confirmed (--gpus all)"
@@ -56,7 +56,7 @@ else
 fi
 
 hdr "2. vLLM image"
-# Base (pulled) and derived (built here) are separate tags.
+# Base (pulled) and derived (built here) are separate tags
 VLLM_BASE_IMAGE="${IMAGE_OVERRIDE:-${VLLM_BASE_IMAGE:-$(vllm_default_image)}}"
 [[ -n "$VLLM_BASE_IMAGE" ]] || { err "could not determine the vLLM base image — pass --image or set VLLM_BASE_IMAGE"; exit 1; }
 VLLM_IMAGE="kloudchat-vllm:local"
@@ -68,12 +68,12 @@ if (( REINSTALL )) || ! docker image inspect "$VLLM_BASE_IMAGE" &>/dev/null; the
   docker pull "$VLLM_BASE_IMAGE"
 fi
 
-# Digest the tag resolved to, recorded for reproducible rebuilds.
+# Digest the tag resolved to, the per-node pin
 BASE_DIGEST="$(image_base_digest "$VLLM_BASE_IMAGE")"
 [[ -n "$BASE_DIGEST" ]] && echo "  digest:  $BASE_DIGEST"
 
-# This repo's layer over the base: pytest and the audio decoders the
-# transcription endpoint needs.
+# This repo's layer over the base: pytest and the transcription endpoint's
+# audio decoders
 echo "  → building services/vllm/Dockerfile onto the base"
 docker build --quiet \
   --build-arg "BASE_IMAGE=$VLLM_BASE_IMAGE" \

@@ -14,9 +14,8 @@ Endpoints:
   GET  /health
   anything else      forwarded to SearXNG unchanged, outside the cap.
 
-The engines behind SearXNG ban a datacentre address on burst, so the point is
-to keep the number of requests that actually leave this host small and even.
-Search terms are logged at DEBUG only.
+The engines behind SearXNG ban a datacentre address on burst; the requests
+leaving this host are kept few and even. Search terms are logged at DEBUG only.
 """
 from __future__ import annotations
 
@@ -36,14 +35,13 @@ LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
 LOG = logging.getLogger("search-shim")
-# One line per upstream call otherwise
+# httpx logs one line per upstream call at INFO
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080").rstrip("/")
 # SearXNG's own outgoing.max_request_timeout is 15 s; this bounds the whole call.
 UPSTREAM_TIMEOUT_S = float(os.environ.get("UPSTREAM_TIMEOUT_S", "20"))
-# A SearXNG that is down or restarting is found out this fast, not after the
-# full timeout with a gate slot held.
+# Bounds how long a gate slot is held on a SearXNG that is down or restarting.
 CONNECT_TIMEOUT_S = float(os.environ.get("CONNECT_TIMEOUT_S", "3"))
 
 # Searches SearXNG runs at once, and how long a request waits for a slot.
@@ -55,8 +53,8 @@ CACHE_TTL_S = int(os.environ.get("CACHE_TTL_S", "900"))
 STALE_TTL_S = int(os.environ.get("STALE_TTL_S", "21600"))
 # Answers are kept as the bytes SearXNG sent, tens of KB each.
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2048"))
-# SearXNG safe search on every search: 0 off, 1 moderate, 2 strict. The caller's
-# value is replaced, not floored: the UI sends 1 by default.
+# SearXNG safe search on every search: 0 off, 1 moderate, 2 strict. Replaces
+# the caller's value (the UI sends 1 by default).
 SAFESEARCH = os.environ.get("SAFESEARCH", "2")
 # A bare language is given its region: engines that take a market or country
 # prefer Korean results only with the region present.
@@ -78,8 +76,8 @@ coalescer = Coalescer()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global search_client, proxy_client
-    # The search pool is the gate's size, so a slot never waits on a connection;
-    # the passthrough has its own pool and cannot starve searches.
+    # Search pool sized to the gate, so a slot never waits on a connection; the
+    # passthrough has its own pool and cannot starve searches.
     search_client = httpx.AsyncClient(
         base_url=SEARXNG_URL,
         timeout=httpx.Timeout(UPSTREAM_TIMEOUT_S, connect=CONNECT_TIMEOUT_S,
@@ -122,8 +120,7 @@ class Answer:
     body: bytes
 
     def has_results(self) -> bool:
-        """An empty answer is what a suspended engine returns; remembering it
-        would hide the engine's recovery."""
+        """A suspended engine answers empty; an empty answer is never cached."""
         if "json" in self.media_type:
             try:
                 return bool(json.loads(self.body).get("results"))

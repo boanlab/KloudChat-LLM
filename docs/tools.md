@@ -8,9 +8,9 @@ decided by the UI. This document covers only what the backend provides.
 
 ## Paths and the calls behind them
 
-The gateway strips the prefix and forwards to each service's root. The UI
-stores everything up to the prefix as a base URL and appends the
-service-specific path.
+The gateway (`services/gateway/Caddyfile`) strips the prefix and forwards to
+each service's root. The UI stores everything up to the prefix as a base URL
+and appends the service-specific path.
 
 | Capability | Base URL | What the UI calls | Service |
 |---|---|---|---|
@@ -23,12 +23,11 @@ service-specific path.
 | Retrieval index | `/tools/index` | `/tools/index/{documents,search}` | index-shim |
 
 The contract is identical without the gateway, so a raw service address works
-too. `GET /health` on the gateway itself answers `{"status":"ok"}`.
+too. `GET /health` on the gateway answers `{"status":"ok"}`.
 
 LiteLLM is exposed at its service root because its admin API (`/key/*`,
 `/user/*`, `/model/info`, `/health/*`) and admin UI (`/ui/`) do not live under
-`/v1`. `/v1/*` is also open, for OpenAI-compatible clients that connect
-directly.
+`/v1`. `/v1/*` is also open, for OpenAI-compatible clients.
 
 ## Authentication
 
@@ -36,134 +35,110 @@ Only `/litellm/*` and `/v1/*` pass the caller's `Authorization` header through.
 The UI calls with a per-user LiteLLM virtual key, so spend is attributed to a
 person.
 
-`/tools/*` is not authenticated. The internal keys for code execution and
-document fetching are injected by the gateway, so the UI never learns them and
-caller-supplied credentials are ignored. **The gateway port must only be open
-inside a private network**: a sandbox that runs arbitrary code sits behind it.
+`/tools/*` is not authenticated. The internal keys for code execution
+(`CODE_INTERPRETER_API_KEY`) and document fetching (`SCRAPER_API_KEY`) are
+injected by the gateway; caller-supplied credentials are ignored. **The
+gateway port must only be open inside a private network**: a sandbox that runs
+arbitrary code sits behind it.
 
 ## Services
 
 ### Web search: search-shim and SearXNG
 
-SearXNG is a metasearch front end: general search runs on scraping, so queries
-never reach a commercial search API, but every one of them leaves this host
-through a single address. The engines ban that address on burst, and one
-CAPTCHA suspends the engine for every user at once. So the gateway does not
-talk to SearXNG directly: `search-shim` sits in front of it and the UI, deep
-research and anything else on `/tools/search` go through the shim.
+SearXNG is a metasearch front end: general search is scraped, so queries never
+reach a commercial search API, but every one of them leaves this host through
+a single address. Engines ban that address on burst, and one CAPTCHA suspends
+the engine for every user at once. `search-shim` therefore sits in front of
+SearXNG; the UI, deep research and anything else on `/tools/search` go through
+it.
 
-The shim is transparent for SearXNG's API: `/search` in JSON or HTML (deep
-research asks for HTML), and any other path is forwarded as is, outside the
-cap. On `/search` it adds:
+The shim is transparent for SearXNG's API: `/search` in JSON or HTML, and any
+other path is forwarded as is, outside the cap. On `/search` it adds:
 
-- **Strict safe search**: `safesearch=2` is set on every search it forwards,
-  replacing whatever the caller sent (the UI sends 1). SearXNG's own default is
-  2 as well, for anything that reaches it without the shim.
-- **Region on the language**: a bare `language=ko` becomes `ko-KR`. Engines
-  that take a market or country (bing news, duckduckgo, brave) prefer Korean
-  results only with the region present. SearXNG's `default_lang` is `ko-KR`
-  too, for a request that carries no language.
-- A **result cache**: a search with results is answered from memory for
-  `CACHE_TTL_S` (15 min), keyed by the query (case and spacing folded) and every
-  other parameter as given, a repeated parameter keeping its first value as
-  SearXNG does. The queries a model writes for one topic converge, so the same
-  words arrive many times an hour. Empty answers are not cached: that is what a
-  suspended engine returns, and remembering it would hide the engine's
-  recovery.
+- **Strict safe search**: `SAFESEARCH` (2) replaces whatever the caller sent.
+  SearXNG's own `safe_search` is 2 as well.
+- **Region on the language**: a bare `language=ko` becomes `ko-KR`. SearXNG's
+  `default_lang` is `ko-KR` for a request that carries no language.
+- **Result cache**: a search with results is answered from memory for
+  `CACHE_TTL_S` (15 min), keyed by the query (case and spacing folded) and
+  every other parameter. Empty answers are not cached.
 - **Coalescing**: identical searches in flight at the same moment share one
   upstream call.
-- A **cap on searches in flight**: at most `MAX_CONCURRENT_SEARCHES` (12) reach
+- **Cap on searches in flight**: at most `MAX_CONCURRENT_SEARCHES` (12) reach
   SearXNG at once; a request past that waits up to `QUEUE_TIMEOUT_MS` (10 s).
-  When the wait runs out, or SearXNG fails (a 5xx, a refused connection, a
-  timeout), an answer up to `STALE_TTL_S` (6 h) old is served if there is one;
-  without one the caller gets `503` (`busy: too many searches in flight`) or
-  `502`, both with an empty `results` list. SearXNG's own `4xx` for a bad
-  parameter passes through unchanged.
+  When the wait runs out or SearXNG fails (5xx, refused connection, timeout),
+  an answer up to `STALE_TTL_S` (6 h) old is served if there is one; without
+  one the caller gets `503` (`busy: too many searches in flight`) or `502`,
+  both with an empty `results` list. SearXNG's own `4xx` passes through.
 
 `/health` on the shim reports searches running, waiting and coalesced, and the
-cache size. SearXNG's own worker state is shared through valkey and may be
-empty after a restart. Its configuration is `services/searxng/settings.yml`,
+cache size. SearXNG's worker state is shared through valkey and may be empty
+after a restart. Its configuration is `services/searxng/settings.yml`,
 generated by `scripts/gen-searxng-config.sh` from `settings.yml.example` and
-`SEARXNG_SECRET_KEY` in `.env`; the generator rewrites the file whenever the
-example or the key changed, and `setup.sh` restarts SearXNG when it did. Every
-engine suspension after a block is shortened there to a few minutes (SearXNG's
-defaults run from an hour after a CAPTCHA to fifteen days after a Cloudflare
-challenge), so a ban heals on its own. Search terms appear in the shim's log
-at `DEBUG` only.
+`SEARXNG_SECRET_KEY` in `.env`; `setup.sh` runs the generator and restarts
+SearXNG when the file changed. Engine suspension after a block is shortened
+there to minutes (`suspended_times`), so a ban heals on its own. Search terms
+appear in the shim's log at `DEBUG` only.
 
-The engine set is explicit (`use_default_settings: engines: keep_only`), chosen
-for a Korean university audience from what answers on this network. No
-commercial search API is involved: general web search is scraped, the rest are
-open APIs that cost nothing per user.
+The engine set is explicit (`use_default_settings: engines: keep_only`),
+chosen for a Korean university audience from what answers on this network. No
+commercial search API is involved except NAVER's.
 
 | Category | Engines | For |
 |---|---|---|
-| general | yandex, brave, wikipedia, openlibrary | everyday, administrative and business questions; books for the humanities |
-| news | duckduckgo news, bing news, reuters | current events; the UI's news lane |
-| science | google scholar, openalex, semantic scholar, arxiv, pubmed, openaire | literature; the UI's papers lane |
-| it | github, stackoverflow, mdn, docker hub, microsoft learn, huggingface | engineering; the UI's code lane |
+| general | yandex, brave, wikipedia, openlibrary | everyday, administrative and business questions; books |
+| news | duckduckgo news, bing news, reuters | current events |
+| science | google scholar, openalex, semantic scholar, arxiv, pubmed, openaire | literature |
+| it | github, stackoverflow, mdn, docker hub, microsoft learn, huggingface | engineering |
 
 Absent on purpose: google, bing, duckduckgo, naver (the scraper), startpage,
-qwant, mojeek and the other scrapers that answer this address with a CAPTCHA,
-an access denial, or off-topic home pages (bing), and the paid APIs. The
-measurements behind every choice are in the settings file next to the engine
-list.
+qwant, mojeek and the other scrapers that answer this address with a CAPTCHA
+or an access denial, and the paid APIs.
 
 NAVER's Search API is the one keyed engine, wired in as two `json_engine`
-entries: `naver web` (general, 웹문서) and `naver news` (news) — the Korean
-web as Korean users see it, from the source. Since June 2026 the API is served
-by NAVER API HUB on NAVER Cloud Platform (`naverapihub.apigw.ntruss.com`,
-authenticated with `X-NCP-APIGW-API-KEY-ID` / `X-NCP-APIGW-API-KEY`); the old
-developers.naver.com endpoints close to new applications on 2026-07-31 and to
-everyone on 2027-06-30. `gen-searxng-config.sh` fills the credentials from
+entries: `naver web` (general, 웹문서) and `naver news` (news). The API is
+served by NAVER API HUB on NAVER Cloud Platform
+(`naverapihub.apigw.ntruss.com`, authenticated with `X-NCP-APIGW-API-KEY-ID` /
+`X-NCP-APIGW-API-KEY`). `gen-searxng-config.sh` fills the credentials from
 `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` in `.env` and enables them only when
 both are set; without a key they are written disabled and never called. The
 search APIs share a quota of 775,000 calls a month per application at 50
-requests a second per key, free at present, one call per engine per search.
-To turn them on: create an application in NAVER API HUB, enable the 웹문서 and
-뉴스 search APIs on it (an API not enabled answers 401 "이 Application에서
-활성화되어 있지 않습니다"), put the two values in `.env`, run
+requests a second per key, one call per engine per search. To turn them on:
+create an application in NAVER API HUB, enable the 웹문서 and 뉴스 search APIs
+on it (an API not enabled answers 401), put the two values in `.env`, run
 `./scripts/gen-searxng-config.sh`, then `docker compose restart searxng`.
-NAVER's terms tie the results to the registered service and forbid storing
-them beyond the response; SearXNG passes them through and KloudChat keeps only
-what the answer cites.
 
 ### Document fetch: crawl4ai-shim
 
 A Firecrawl-compatible `/v1/scrape` (also `/v0/scrape`, `/v2/scrape`) in front
 of Crawl4AI. The image carries Playwright and Chromium, so pages that need
-rendering come back as markdown body text. Default page timeout 30 s.
+rendering come back as markdown body text. Page timeout `DEFAULT_TIMEOUT_MS`
+(30 s).
 
 A URL is judged before the browser opens it and again on the address it ended
-up at after redirects: nothing on the deployment's own network (`netguard`),
-and no adult site (`adultlist`). The adult list is a hosts file baked into the
-image at build time from a pinned commit of StevenBlack/hosts' porn-only list
-(about 64,000 hosts). It keeps hosts-file semantics: the listed host is
-refused, `www.` folded, and nothing more is inferred, because the list names
-shared platforms (`fc2.com`) and bare labels (`www.sex`) that would otherwise
-take a whole blog host or top-level domain with them. A refused fetch
-answers `{"success": false, "error": "adult sites cannot be scraped"}`, which
-the caller treats like an unreadable page. `/health` reports the list size.
-Page addresses appear in the shim's log at `DEBUG` only; a warning names the
-host.
+up at after redirects: nothing on the deployment's own network (`netguard.py`),
+and no adult site (`adultlist.py`). The adult list is a hosts file baked into
+the image at build time from a pinned commit of StevenBlack/hosts' porn-only
+list (`ADULT_HOSTS_FILE`). It keeps hosts-file semantics: the listed host is
+refused, `www.` folded, nothing more inferred. A refused fetch answers
+`{"success": false, "error": "adult sites cannot be scraped"}`, which the
+caller treats like an unreadable page. `/health` reports the list size. Page
+addresses appear in the shim's log at `DEBUG` only.
 
-One Chromium serves every request, so two guards sit in front of it. At most
-`MAX_CONCURRENT_PAGES` (8) render at once; a request past that waits up to
-`QUEUE_TIMEOUT_MS` (15 s) for a slot and is then answered `busy`, which the
-caller treats like an unreadable page (KloudChat falls back to the search
-snippet). Without the cap, 32 parallel pages on an 8-core host all crawled
-toward the 30 s timeout together (median 20.6 s); with it, eight render at
-full speed while the rest queue. A successful scrape is kept in memory for
-`CACHE_TTL_S` (15 min) keyed by URL, formats and the main-content flag — the
-top search results are the same pages for everyone asking the same thing that
-hour. `/health` reports pages rendering, waiting, and cache entries.
+One Chromium serves every request. At most `MAX_CONCURRENT_PAGES` (8) render
+at once; a request past that waits up to `QUEUE_TIMEOUT_MS` (15 s) for a slot
+and is then answered `{"success": false, "error": "busy: too many pages
+rendering"}`. A successful scrape is kept in memory for `CACHE_TTL_S` (15 min)
+keyed by URL, formats and the main-content flag. `/health` reports pages
+rendering, waiting, and cache entries.
 
 ### Code execution: code-interpreter
 
-Sandboxed Python (`librecodeinterpreter`, pinned by digest). The only service
-with `SYS_ADMIN` and relaxed apparmor/seccomp, which is what lets user code run.
-Execution is capped at 30 seconds and 512 MB. Output files are stored in MinIO;
-the UI reads stdout and stderr.
+Sandboxed Python (`librecodeinterpreter`, pinned by digest in
+`services/code-interpreter/Dockerfile`). The only service with `SYS_ADMIN` and
+relaxed apparmor/seccomp. Execution is capped at `MAX_EXECUTION_TIME` (30 s)
+and `MAX_MEMORY_MB` (512). Output files are stored in MinIO; the UI reads
+stdout and stderr.
 
 The image bundles NanumGothic as the matplotlib default so that Korean chart
 labels render.
@@ -171,24 +146,24 @@ labels render.
 ### Deep research: deep-research
 
 `local-deep-research` wrapped by `mcp-proxy` into an MCP streamable-http
-server on port 8081. It searches through the SearXNG on the same network and
-calls models through the LiteLLM on the same network, as `DEEP_RESEARCH_MODEL`.
-A single call takes minutes to tens of minutes.
+server on port 8081. It searches through `search-shim` and calls models
+through LiteLLM as `DEEP_RESEARCH_MODEL`. A call takes minutes to tens of
+minutes.
 
-The UI attaches it as an HTTP MCP connector; the tool list and calling
-convention are defined by MCP. Internals are in
+The UI attaches it as an HTTP MCP connector. Internals are in
 [internal/deep-research.md](internal/deep-research.md).
 
 ### Transcription: whisper-shim
 
-A front end for the `vllm-whisper` backends (`openai/whisper-large-v3` on vLLM,
-placed on the GPU nodes like any other model). `WHISPER_URLS` lists the nodes
-it was placed on; with several, the shim routes by in-flight count over a
-10-second health cache.
+A front end for the `vllm-whisper` backends (`openai/whisper-large-v3` on
+vLLM, placed on the GPU nodes like any other model). `WHISPER_URLS` lists the
+nodes it was placed on; with several, the shim routes by in-flight count over
+a `HEALTH_CACHE_TTL_SEC` (10 s) health cache.
 
-It sets the model name on every forwarded request to `local/whisper-large-v3`.
-vLLM answers only for a name it was started with, while callers send whatever
-their client was configured with (`whisper-1`, most often).
+It sets the model name on every forwarded request to `WHISPER_MODEL_NAME`
+(`local/whisper-large-v3`). vLLM answers only for a name it was started with,
+while callers send whatever their client was configured with (`whisper-1`,
+most often; the backend also serves that alias).
 
 Without a backend the shim's `/health` reports `degraded`, so it is fenced
 behind the `whisper` profile: `setup.sh` enables that profile once
@@ -205,17 +180,18 @@ Chunks, embeds and stores documents in pgvector (`index-db`), and searches
 them with a two-stage recall/rerank pipeline through LiteLLM. Endpoints:
 `PUT /documents`, `POST /search`, `DELETE /documents/{id}`,
 `DELETE /collections/{name}`, `GET /health` (database and embedding
-availability reported separately). Runs under the `index` profile. Tuning is in
-[env-reference.md](env-reference.md), the model side in
+availability reported separately). Runs under the `index` profile. Tuning is
+in [env-reference.md](env-reference.md), the model side in
 [models.md](models.md#retrieval).
 
 ### Models: LiteLLM
 
-The single point for every model call. Local vLLM and OpenRouter are registered
-under the same names, so a model whose local node is missing or down goes out
-to OpenRouter unchanged. Configuration is `services/litellm/config.yaml`,
-generated by `scripts/gen-litellm-config.sh` from the `VLLM_*_URL` values and
-the OpenRouter key in `.env`.
+The single point for every model call. Local vLLM and OpenRouter are
+registered under the same names, so a model whose local node is missing or
+down goes out to OpenRouter unchanged. Configuration is
+`services/litellm/config.yaml`, generated by `scripts/gen-litellm-config.sh`
+from the `VLLM_*_URL` values and the OpenRouter key in `.env`. LiteLLM
+publishes no host port; it is reached through the gateway at `/litellm/*`.
 
 ## Checking status
 

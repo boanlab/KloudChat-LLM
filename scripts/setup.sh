@@ -31,7 +31,6 @@ source "${SCRIPT_DIR}/lib.sh"
 
 GATEWAY_PORT="$(env_get GATEWAY_PORT)"; GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 
-# --build: build images from this working tree instead of pulling published ones
 BUILD_LOCAL=0
 
 usage() { sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'; }
@@ -75,13 +74,13 @@ step_env_validate() {
   ok "secrets are set"
 }
 
-# Every VLLM_<MODEL>_URL recorded in .env by the scheduler.
+# Every VLLM_<MODEL>_URL the scheduler recorded in .env
 vllm_urls_csv() {
   awk -F= '/^VLLM_[A-Z0-9_]+_URL=/ && $2 != "" { print $2 }' .env 2>/dev/null | paste -sd, -
 }
 
-# Weight loading takes minutes; gen-litellm-config.sh needs the backends up to
-# discover each model's context (32K fallback otherwise).
+# gen-litellm-config.sh reads each backend's context from /v1/models (32K
+# fallback), so the backends come first
 step_wait_vllm() {
   local csv; csv="$(vllm_urls_csv)"
   [[ -n "$csv" ]] || return 0
@@ -99,7 +98,7 @@ step_wait_vllm() {
   return 0
 }
 
-# `whisper` profile (the transcription shim) once WHISPER_URLS is set.
+# `whisper` profile (the transcription shim) once WHISPER_URLS is set
 step_enable_stt_profile() {
   [[ -n "$(env_get WHISPER_URLS)" ]] || return 0
   local profiles; profiles="$(env_get COMPOSE_PROFILES)"
@@ -109,8 +108,7 @@ step_enable_stt_profile() {
   echo "  [profile] COMPOSE_PROFILES=${profiles},whisper (transcription shim)"
 }
 
-# SearXNG reads its settings at start and compose does not watch a mounted
-# file, so a rewritten settings.yml is applied by restarting the container.
+# SearXNG reads settings.yml only at start; a rewrite needs a container restart
 SEARXNG_CONFIG_CHANGED=0
 
 step_gen_configs() {
@@ -143,7 +141,7 @@ step_compose_up() {
   fi
 
   # --ignore-pull-failures: one unreachable tag does not stop the rest;
-  # --no-build: never substitute a local build for a missing published image.
+  # --no-build: no local build in place of a missing published image
   docker compose pull --ignore-pull-failures
   if ! docker compose up -d --no-build; then
     err "an image is missing and could not be pulled"
@@ -168,9 +166,9 @@ step_wait_gateway() {
   return 1
 }
 
-# Capabilities behind the gateway: "<name>|<public path>|<probe>|<blocking>".
-# One list for both the readiness wait and the URL table. blocking=0 for
-# transcription: its shim exists only under the `whisper` profile.
+# Capabilities behind the gateway: "<name>|<public path>|<probe>|<blocking>",
+# for the readiness wait and the URL table. blocking=0 for transcription: its
+# shim exists only under the `whisper` profile.
 CAPABILITIES=(
   "LiteLLM|/litellm|/litellm/health/liveliness|1"
   "Web search|/tools/search|/tools/search/healthz|1"
@@ -202,8 +200,8 @@ step_wait_services() {
 
 # ───────────────────────── integration URLs ─────────────────────────
 
-# Addresses for the UI admin screen (Settings → System → Integrations), with
-# per-capability status.
+# Addresses for the UI admin screen (Settings → System → Integrations) with
+# per-capability status
 role_urls() {
   local host; host="$(hostname -I 2>/dev/null | awk '{print $1}')"
   host="${host:-localhost}"
@@ -271,7 +269,7 @@ dispatch_csv() {
 
 # ───────────────────────── scheduler ─────────────────────────
 
-# PyYAML, the scheduler's only dependency.
+# PyYAML, the scheduler's only dependency
 ensure_scheduler_deps() {
   python3 -c "import yaml" 2>/dev/null && return 0
   if [[ "${KLOUDCHAT_SCHEDULER_NO_AUTOINSTALL:-0}" == "1" ]] || ! command -v apt-get &>/dev/null; then
@@ -308,14 +306,14 @@ role_all() {
   step_env_check
   step_env_validate
 
-  # 1) GPU nodes. A failure does not stop the rest: a partial cluster still serves.
+  # 1) GPU nodes; a failed node does not stop the rest
   if [[ -n "$(env_get NODES_VLLM)" ]]; then
     dispatch_csv vllm || true
   else
     warn "NODES_VLLM is empty — skipping GPU node installation"
   fi
 
-  # 2) Placement: writes VLLM_*_URL and WHISPER_URLS into .env.
+  # 2) Placement: writes VLLM_*_URL and WHISPER_URLS into .env
   if [[ "${KLOUDCHAT_SKIP_SCHEDULER:-0}" != "1" && -n "$(env_get NODES_VLLM)" ]]; then
     run_scheduler apply -y || warn "placement failed — using the VLLM_*_URL values already in .env"
   fi

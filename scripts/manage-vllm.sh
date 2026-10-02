@@ -14,8 +14,8 @@
 #   vllm-bgem3       BAAI/bge-m3 — retrieval embeddings
 #   vllm-rerank      BAAI/bge-reranker-v2-m3 — retrieval reranking
 #   vllm-whisper     openai/whisper-large-v3 — transcription
-# Placement across nodes is the scheduler's (python3 -m scheduler apply); this
-# script is the per-node manual control. Compose project: kloudchat-vllm.
+# Per-node manual control; placement is the scheduler's (python3 -m scheduler
+# apply). Compose project: kloudchat-vllm.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,7 +25,7 @@ source "${SCRIPT_DIR}/lib.sh"
 
 [[ -f "$COMPOSE_FILE" ]] || { err "$COMPOSE_FILE not found"; exit 1; }
 
-# Every service in docker-compose.vllm.yml, in `up` and `status` order.
+# Every service in docker-compose.vllm.yml, in `up` and `status` order
 VLLM_SERVICES=(vllm-qwen27b vllm-codernext vllm-bgem3 vllm-rerank vllm-whisper)
 
 usage() {
@@ -43,8 +43,7 @@ cmd_up() {
     esac
   done
 
-  # No service named: every service with weights, which can sum gpu_util past
-  # 1.0 on a shared card.
+  # No service named: every service with weights (gpu_util can sum past 1.0)
   if (( ${#want[@]} == 0 )); then
     warn "no service named — starting every service with local weights."
     warn "  the scheduler decides placement: python -m scheduler apply"
@@ -53,7 +52,7 @@ cmd_up() {
 
   local root="${VLLM_MODELS_ROOT:-/var/lib/vllm/models}"
 
-  # Weight directory: VLLM_<MODEL>_DIR from .env, else the compose default.
+  # Weight directory: VLLM_<MODEL>_DIR from .env, else the compose default
   local d
   declare -A svc_dir
   d="$(env_get VLLM_QWEN27B_DIR)";   svc_dir[vllm-qwen27b]="${d:-qwen3.8-27b-nvfp4}"
@@ -63,8 +62,8 @@ cmd_up() {
   d="$(env_get VLLM_WHISPER_DIR)";   svc_dir[vllm-whisper]="${d:-whisper-large-v3}"
 
   local svc up_svcs=()
-  # Usable-VRAM floor, by size rather than card name. An explicit service list
-  # bypasses it (transcription runs on a small card).
+  # Usable-VRAM floor; an explicit service list bypasses it (transcription fits
+  # a small card)
   local usable; usable="$(gpu_usable_vram_gb)"
   if (( ${#want[@]} == 0 && usable > 0 && usable < VLLM_MIN_USABLE_VRAM_GB )); then
     err "GPU=$(detect_gpu_class) has ${usable}GiB usable — this catalogue needs ${VLLM_MIN_USABLE_VRAM_GB}GiB before a model places with room to run"
@@ -88,7 +87,7 @@ cmd_up() {
 
   local recreate_args=()
   if (( recreate )); then
-    info "force-recreate — reloading model (~3-5 min, qwen3.8-27b baseline)"
+    info "force-recreate — weights reload from disk (minutes)"
     recreate_args=(--force-recreate)
   fi
   docker compose -f "$COMPOSE_FILE" up -d --no-build "${recreate_args[@]}" "${up_svcs[@]}"

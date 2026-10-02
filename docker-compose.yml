@@ -111,10 +111,8 @@ services:
     tmpfs: [/var/cache/searxng]
     networks: [kloudchat, searxng-data]
 
-  # In front of SearXNG: result cache, identical searches coalesced, searches in
-  # flight capped. The engines ban on burst, and every search leaves through one
-  # address, so this is what keeps hundreds of concurrent users from looking
-  # like a bot to them.
+  # In front of SearXNG: result cache, coalesced duplicate searches, in-flight
+  # cap; the engines ban on burst from one address
   search-shim:
     container_name: kloudchat-search-shim
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-search-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
@@ -125,9 +123,9 @@ services:
     depends_on: [searxng]
     environment:
       SEARXNG_URL: http://searxng:8080
-      # Searches SearXNG runs at once; the rest wait QUEUE_TIMEOUT_MS, then are
-      # refused. An answer with results is reused for CACHE_TTL_S and, while
-      # SearXNG cannot answer, up to STALE_TTL_S after it was fetched.
+      # Concurrent SearXNG searches; the rest wait QUEUE_TIMEOUT_MS, then are
+      # refused. A result is reused for CACHE_TTL_S, and up to STALE_TTL_S while
+      # SearXNG cannot answer.
       MAX_CONCURRENT_SEARCHES: '12'
       QUEUE_TIMEOUT_MS: '10000'
       CACHE_TTL_S: '900'
@@ -154,8 +152,8 @@ services:
     environment:
       SCRAPER_API_KEY: ${SCRAPER_API_KEY:?}
       DEFAULT_TIMEOUT_MS: '30000'
-      # Pages rendering at once in the one Chromium; the rest wait QUEUE_TIMEOUT_MS,
-      # then are refused. A good scrape is reused for CACHE_TTL_S.
+      # Pages rendering at once in the one Chromium; the rest wait
+      # QUEUE_TIMEOUT_MS, then are refused. A good scrape is reused for CACHE_TTL_S.
       MAX_CONCURRENT_PAGES: '8'
       QUEUE_TIMEOUT_MS: '15000'
       CACHE_TTL_S: '900'

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Usage: tune-host.sh [--check]
 #
-# vm.swappiness=10 for LLM-serving hosts: mmap'd weights live in the file
-# cache, which the default swappiness=60 reclaims while idle.
+# vm.swappiness=10: mmap'd weights live in the file cache, which the default
+# swappiness=60 reclaims while idle.
 #
 #   --check   show current values only, without applying
 set -euo pipefail

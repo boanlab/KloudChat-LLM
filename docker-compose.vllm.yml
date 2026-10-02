@@ -17,7 +17,7 @@ services:
     container_name: vllm-qwen27b
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     # One image for every vLLM service; install-vllm.sh builds it and records
-    # VLLM_IMAGE and VLLM_BASE_IMAGE in .env.
+    # VLLM_IMAGE and VLLM_BASE_IMAGE in .env
     build:
       context: ./services/vllm
       args:
@@ -54,8 +54,7 @@ services:
       # Required: the hybrid model's conv-state cache bounds CUDA-graph capture
       - --max-num-seqs
       - "${VLLM_QWEN27B_MAX_NUM_SEQS:-64}"
-      # MTP speculative decoding from the checkpoint's own draft head; a dense
-      # 27B is bandwidth-bound on GB10 without it
+      # MTP speculative decoding from the checkpoint's own draft head
       - --speculative-config
       - '{"method":"mtp","num_speculative_tokens":${VLLM_QWEN27B_SPEC_TOKENS:-5}}'
       - --tensor-parallel-size
@@ -217,8 +216,7 @@ services:
       retries: 5
       start_period: 120s
 
-  # Transcription, reached by whisper-shim through WHISPER_URLS. vLLM rather than
-  # faster-whisper: ctranslate2 has no GPU wheels for aarch64.
+  # Transcription, reached by whisper-shim through WHISPER_URLS
   vllm-whisper:
     container_name: vllm-whisper
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}

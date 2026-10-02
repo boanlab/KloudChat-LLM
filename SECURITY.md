@@ -7,8 +7,7 @@ Report privately through
 or by email to the maintainers. Do not open a public issue.
 
 Include the affected component, the impact you were able to demonstrate, and
-the steps to reproduce it. We aim to acknowledge a report within five working
-days.
+the steps to reproduce it. Reports are acknowledged within five working days.
 
 ## Supported versions
 

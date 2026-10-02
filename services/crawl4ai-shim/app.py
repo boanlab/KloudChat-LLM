@@ -50,9 +50,9 @@ USER_AGENT = os.environ.get(
 # Bearer token the gateway injects. Empty disables the check.
 API_KEY = os.environ.get("SCRAPER_API_KEY", "")
 
-# Pages rendering at once, and how long a request waits for a slot before it is
-# refused. One Chromium on an 8-core host renders about eight pages in the time
-# it takes to render one; beyond that every page slows towards its own timeout.
+# Pages rendering at once, and the wait for a slot before a request is refused.
+# One Chromium on an 8-core host renders about eight pages concurrently; past
+# that every page slows towards its own timeout.
 MAX_CONCURRENT_PAGES = int(os.environ.get("MAX_CONCURRENT_PAGES", "8"))
 QUEUE_TIMEOUT_MS = int(os.environ.get("QUEUE_TIMEOUT_MS", "15000"))
 # A successful scrape is answered from memory for this long.
@@ -82,8 +82,8 @@ async def lifespan(_app: FastAPI):
         user_agent=USER_AGENT,
         java_script_enabled=True,
         light_mode=True,
-        # Images, fonts and media are never handed to the model — only the page's
-        # markdown is — so the browser does not download them. Scripts still run.
+        # No image, font or media downloads: only the page's markdown is
+        # returned. Scripts still run.
         text_mode=True,
     )
     crawler = AsyncWebCrawler(config=cfg)
@@ -138,8 +138,8 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
     url = payload.get("url")
     if not url:
         return {"success": False, "error": "url is required"}
-    # Judged by resolved address and host before the browser opens it: this service is
-    # reached without authentication and sits beside every other internal service.
+    # Resolved address and host checked before the browser opens the URL: the
+    # shim is unauthenticated and sits on the internal network.
     refused = await asyncio.to_thread(_refusal, url)
     if refused:
         LOG.warning("scrape refused for %s: %s", _site(url), refused)
@@ -160,7 +160,7 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
         excluded_tags=excluded_tags,
         word_count_threshold=10,
         only_text=False,
-        # Crawl4AI's own progress lines print the address
+        # Crawl4AI's progress lines carry the address
         verbose=False,
     )
 
@@ -194,7 +194,7 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
         err = getattr(result, "error_message", None) or "crawl failed"
         LOG.warning("scrape failed on %s: %s", _site(url), err)
         return {"success": False, "error": err}
-    # The browser follows redirects on its own; the address it ended up at is judged too.
+    # The address reached after the browser's own redirects is checked too.
     final_url = getattr(result, "redirected_url", None) or url
     if final_url != url:
         refused = await asyncio.to_thread(_refusal, final_url)
@@ -207,7 +207,7 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
 
     markdown_obj = getattr(result, "markdown", None)
     if markdown_obj is not None:
-        # fit_markdown: after the main-content filter; raw_markdown: plain html→md.
+        # fit_markdown: after the main-content filter; raw_markdown: plain html to md.
         if hasattr(markdown_obj, "fit_markdown") and markdown_obj.fit_markdown:
             data["markdown"] = markdown_obj.fit_markdown
         elif hasattr(markdown_obj, "raw_markdown"):

@@ -20,8 +20,8 @@ __SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$__SCRIPT_DIR/lib.sh"
 cd "$__SCRIPT_DIR/.."
 
-# "short-name|dockerfile|context[|platform]". Image = <NS>/kloudchat-<short>:<TAG>,
-# matching compose's image:. A platform field forces that platform.
+# "short-name|dockerfile|context". Image = <NS>/kloudchat-<short>:<TAG>,
+# matching compose's image:
 BUILD_TABLE=(
   "crawl4ai-shim|services/crawl4ai-shim/Dockerfile|services/crawl4ai-shim"
   "search-shim|services/search-shim/Dockerfile|services/search-shim"
@@ -74,10 +74,9 @@ if (( MULTI )); then
   fi
   PLAT="linux/amd64,linux/arm64"
   for e in "${BUILD_TABLE[@]}"; do
-    IFS='|' read -r short df ctx plat <<<"$e"; img="$(img_of "$short")"
-    platforms="${plat:-$PLAT}"
-    hdr "buildx ${img}  [${platforms}]"
-    docker buildx build --builder kloudchat-builder --platform "$platforms" \
+    IFS='|' read -r short df ctx <<<"$e"; img="$(img_of "$short")"
+    hdr "buildx ${img}  [${PLAT}]"
+    docker buildx build --builder kloudchat-builder --platform "$PLAT" \
       -t "$img" -f "$df" --push "$ctx"
   done
   ok "multi-arch build+push done (${#BUILD_TABLE[@]})"
@@ -86,13 +85,8 @@ fi
 
 if (( DO_BUILD )); then
   hdr "build (host arch)"
-  host_plat="linux/$(detect_arch)"
   for e in "${BUILD_TABLE[@]}"; do
-    IFS='|' read -r short df ctx plat <<<"$e"; img="$(img_of "$short")"
-    if [[ -n "$plat" && "$plat" != *"$host_plat"* ]]; then
-      warn "$short is ${plat}-only — can't build on host (${host_plat}), skipping (run on an amd64 node)"
-      continue
-    fi
+    IFS='|' read -r short df ctx <<<"$e"; img="$(img_of "$short")"
     echo "  → build $img"
     docker build -t "$img" -f "$df" "$ctx"
   done
@@ -102,13 +96,8 @@ fi
 if (( DO_PUSH )); then
   hdr "push → Docker Hub"
   docker info 2>/dev/null | grep -q "Username:" || warn "docker login not confirmed — if push fails, run 'docker login' first."
-  host_plat="linux/$(detect_arch)"
   for e in "${BUILD_TABLE[@]}"; do
-    IFS='|' read -r short _ _ plat <<<"$e"; img="$(img_of "$short")"
-    if [[ -n "$plat" && "$plat" != *"$host_plat"* ]]; then
-      warn "$short is ${plat}-only — no host (${host_plat}) build artifact, skipping push"
-      continue
-    fi
+    IFS='|' read -r short _ _ <<<"$e"; img="$(img_of "$short")"
     echo "  → $img"
     docker push "$img" || { err "push failed: $img — check 'docker login' + ${NS} push permission"; exit 1; }
   done

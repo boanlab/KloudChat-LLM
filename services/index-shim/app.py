@@ -27,21 +27,20 @@ from pydantic import BaseModel, Field
 log = logging.getLogger("index-shim")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
-#: Required; compose supplies it. No default with credentials in the source tree.
+#: Required; supplied by compose. No credential default in the source tree.
 DATABASE_URL = os.environ["INDEX_DATABASE_URL"]
-#: Model gateway. Embeddings and reranking are requested by model name; LiteLLM
-#: decides which backend answers.
+#: Model gateway; embeddings and reranking are requested by model name.
 LITELLM_URL = os.getenv("LITELLM_URL", "http://litellm:8000")
 LITELLM_KEY = os.getenv("LITELLM_MASTER_KEY", "")
 #: Reranker model. Empty skips the second stage.
 RERANK_MODEL = os.getenv("RERANK_MODEL", "local/bge-reranker-v2-m3").strip()
 #: Vector candidates fetched per requested passage before reranking.
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "5"))
-#: Reranker score floor. Measured with bge-reranker-v2-m3: passages that answer
-#: the question score 0.73–0.94, loosely related ones <= 0.025.
+#: Reranker score floor. bge-reranker-v2-m3 scores passages that answer the
+#: question 0.73–0.94, loosely related ones <= 0.025.
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.1"))
-#: Cosine distance bound on reranker candidates. Loose on purpose: a recall
-#: filter, not a relevance decision.
+#: Cosine distance bound on reranker candidates: a recall filter, not a
+#: relevance decision.
 RERANK_RECALL_DISTANCE = float(os.getenv("RERANK_RECALL_DISTANCE", "0.85"))
 
 #: Embedding models in preference order. The first that answers is used and its
@@ -101,7 +100,7 @@ def chunk_text(text: str) -> list[str]:
         if end < len(body):
             window = body[start:end]
             cut = max(window.rfind("\n\n"), window.rfind(". "), window.rfind("다.\n"))
-            # Breaks in the front half would yield heading-only chunks.
+            # A break in the front half would leave a heading-only chunk.
             if cut > CHUNK // 2:
                 end = start + cut
         piece = body[start:end].strip()
@@ -144,7 +143,7 @@ class _Embedder:
                 except (httpx.HTTPError, KeyError, ValueError, TypeError) as exc:
                     last = f"{model}: {exc}"
                     log.info("embedding via %s failed: %s", model, exc)
-                    # Failed model loses its cached preference.
+                    # A failed model loses its cached preference.
                     if self.model == model:
                         self.model = None
         raise HTTPException(status_code=503, detail=f"embeddings unavailable ({last})")
@@ -177,7 +176,7 @@ async def lifespan(app: FastAPI):
     app.state.dim_error = ""
     async with app.state.pool.acquire() as conn:
         await conn.execute(_SCHEMA % {"dim": EMBED_DIM})
-        # CREATE TABLE IF NOT EXISTS does not widen an existing column.
+        # CREATE TABLE IF NOT EXISTS leaves an existing column's width alone.
         found = await conn.fetchval(_COLUMN_DIM)
         if found and int(found) != EMBED_DIM:
             app.state.dim_error = (
@@ -210,8 +209,8 @@ class Query(BaseModel):
     collection: str = Field(min_length=1, max_length=200)
     query: str = Field(min_length=1, max_length=4000)
     limit: int = Field(default=4, ge=1, le=20)
-    #: Cosine distance cut when no reranker runs. Measured with bge-m3: answered
-    #: questions score 0.50–0.55 similarity, unanswered 0.31–0.32.
+    #: Cosine distance cut when no reranker runs. bge-m3 similarity: answered
+    #: questions 0.50–0.55, unanswered 0.31–0.32.
     max_distance: float = Field(default=0.58, ge=0.0, le=2.0)
 
 
@@ -310,9 +309,9 @@ async def _rerank(query: str, passages: list[dict]) -> Optional[list[dict]]:
         idx = int(item.get("index", -1))
         score = float(item.get("relevance_score", 0.0))
         if 0 <= idx < len(passages) and score >= RERANK_MIN_SCORE:
-            # Reranker score replaces the cosine score; the two are not comparable.
+            # Reranker score replaces the cosine score (not comparable).
             ordered.append({**passages[idx], "score": round(score, 4)})
-    # Empty is an answer (nothing relevant), not a fallback trigger.
+    # Empty is an answer (nothing relevant), not a fallback.
     return ordered
 
 
@@ -338,7 +337,7 @@ async def search(q: Query) -> dict[str, Any]:
             q.collection,
             literal,
             model,
-            # Over-fetch so the reranker has candidates to reorder.
+            # Over-fetch: candidates for the reranker.
             q.limit * RERANK_CANDIDATES if RERANK_MODEL else q.limit,
         )
     # With a reranker the cosine cut is only a recall bound.

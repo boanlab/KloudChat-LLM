@@ -24,7 +24,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
-# VLLM_PREFERRED_MODELS filtered to what this card can execute and fit together.
+# VLLM_PREFERRED_MODELS filtered to what this card can execute and fit together
 recommended_vllm_set() {
   local alias weight used=0 budget out=()
   budget="$(gpu_usable_vram_gb)"
@@ -58,7 +58,7 @@ mkdir -p "$VLLM_MODELS_ROOT"
 
 hdr "GPU: $(describe_gpu)"
 
-# Servability filter; skips print the reason.
+# Servability filter; a skip prints the reason
 add_target() {
   local alias="$1" reason
   if reason="$(vllm_model_unservable_reason "$alias")"; then
@@ -100,9 +100,8 @@ pull_one() {
     return 0
   fi
   # hf_xet: Xet-backed repos refuse plain HTTP. One --exclude per pattern (a
-  # list is read as positional filters). Alternative serialisations are
-  # excluded: vLLM loads only the safetensors, and extra files inflate what the
-  # scheduler measures the model to weigh.
+  # list is read as positional filters). Only safetensors are kept: the
+  # scheduler weighs the directory.
   HF_TOKEN="$HF_TOKEN" \
   HF_HUB_DOWNLOAD_TIMEOUT=180 \
   uv tool run --from "huggingface_hub[hf_xet]" hf download \

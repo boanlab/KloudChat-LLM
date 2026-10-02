@@ -28,8 +28,8 @@ One gateway port is exposed. Behind it, seven capabilities are split by path.
 GPU nodes live outside this stack. There is one node list, `NODES_VLLM`, and
 LiteLLM and whisper-shim call the nodes at the URLs the
 [scheduler](../scheduler/README.md) records in `.env`. Transcription is
-`openai/whisper-large-v3` on vLLM, placed like any other model; a cluster with no
-room for it leaves `WHISPER_URLS` empty and STT goes to OpenRouter.
+`openai/whisper-large-v3` on vLLM, placed like any other model; a cluster with
+no room for it leaves `WHISPER_URLS` empty and STT goes to OpenRouter.
 
 `/tools/*` is unauthenticated. The gateway port must only be open inside a
 private network.
@@ -48,7 +48,7 @@ MinIO and redis with code-interpreter, valkey with SearXNG. None publish a port.
 
 **Models and nodes**
 
-- [Model configuration](models.md): routing, adding models, OpenRouter fallback
+- [Model configuration](models.md): routing, OpenRouter fallback, retrieval
 - [Scheduler](../scheduler/README.md): which model lands on which node
 - [GPU memory](gpu-memory.md): what fits on each node class, and the vLLM tuning knobs
 
@@ -61,14 +61,13 @@ MinIO and redis with code-interpreter, valkey with SearXNG. None publish a port.
 
 | Goal | Look at |
 |---|---|
-| Add a commercial OpenRouter model | [models](models.md) |
-| Wire an OpenRouter fallback to a local model | [models](models.md) |
+| Add a commercial OpenRouter model | [models](models.md), `scripts/lib.sh` |
 | Change which models are deployed | `VLLM_MODELS` in `.env` plus [scheduler/models.yaml](../scheduler/models.yaml) |
 | Add a node or rebalance | [scheduler](../scheduler/README.md) |
 | Adjust vLLM memory or context | [GPU memory](gpu-memory.md#tuning-knobs) |
-| Tune OpenRouter overflow under load | [env-reference](env-reference.md) |
+| Tune the OpenRouter overflow gate | [env-reference](env-reference.md) |
 | Choose which services run | `COMPOSE_PROFILES` in `.env` |
 | Diagnose something that will not start | [troubleshooting](troubleshooting.md) |
 
-Agent instructions, MCP connectors and user management belong to the UI. Change
-those in the `KloudChat` admin screen, not in this repository.
+Agent instructions, MCP connectors and user management belong to the UI.
+Change those in the `KloudChat` admin screen, not in this repository.
