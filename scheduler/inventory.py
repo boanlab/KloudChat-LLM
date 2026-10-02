@@ -96,8 +96,10 @@ def _probe_checkpoints(host: str, models_root: str) -> Optional[frozenset[str]]:
     return frozenset(line.strip() for line in out.splitlines() if line.strip())
 
 
-#: Class of an unrecognised NVIDIA card; must match lib.sh::detect_gpu_class
-UNKNOWN_GPU_CLASS: str = "nvidia-other"
+#: Cards the stack serves on; everything else classifies as UNSUPPORTED_GPU_CLASS
+#: and the planner places nothing there. Must match lib.sh::detect_gpu_class.
+SUPPORTED_GPU_CLASSES: frozenset[str] = frozenset({"gb10", "rtx5090", "pro5000", "pro6000"})
+UNSUPPORTED_GPU_CLASS: str = "unsupported"
 
 
 def _classify_gpu_name(name: str) -> str:
@@ -111,9 +113,7 @@ def _classify_gpu_name(name: str) -> str:
         return "pro5000"
     if "5090" in name:
         return "rtx5090"
-    if "4090" in name:
-        return "rtx4090"
-    return UNKNOWN_GPU_CLASS if name.strip() else "unknown"
+    return UNSUPPORTED_GPU_CLASS if name.strip() else "unknown"
 
 
 #: GPU memory per compute process, labelled with its container or "-" for the host

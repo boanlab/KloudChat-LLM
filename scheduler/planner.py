@@ -21,6 +21,7 @@ from scheduler.kv_model import (
     kv_bytes_per_token,
     sliding_bytes_per_sequence,
 )
+from scheduler.inventory import UNSUPPORTED_GPU_CLASS
 from scheduler.registry import ModelSpec, replace
 from scheduler.types import GB, Dtype, NodeSpec
 
@@ -191,6 +192,15 @@ def plan(
     result = Plan()
     reserved = reserved or {}
     deployed = deployed or {}
+
+    # Unsupported cards hold nothing; the node stays visible in the notes
+    for n in nodes:
+        if n.gpu_class == UNSUPPORTED_GPU_CLASS:
+            result.notes.append(
+                f"{n.node_id}: unsupported card, nothing placed "
+                "(supported: GB10, RTX 5090, RTX PRO 5000/6000)"
+            )
+    nodes = [n for n in nodes if n.gpu_class != UNSUPPORTED_GPU_CLASS]
 
     if not nodes:
         for spec in specs:

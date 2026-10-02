@@ -37,30 +37,20 @@ URL.
 
 | Requirement | Minimum |
 |---|---|
-| NVIDIA GPU | 32 GiB usable. RTX 5090 for the default NVFP4 lineup; an FP4-less card of 48 GB or more runs the int4 build below |
+| NVIDIA GPU | GB10, RTX 5090, RTX PRO 5000 or RTX PRO 6000. 32 GiB usable |
 | NVIDIA Container Toolkit | every model, transcription included, is a vLLM container |
 | Model disk | 100 GB |
 
-**24 GiB cards are out of scope** (RTX 4090, RTX 3090, L4, A10). The int4 build
-executes there, but 17 GB of weights plus runtime leaves no room for a usable
-context. `manage-vllm.sh up` refuses below 32 GiB usable.
+**Four cards.** `detect_gpu_class` (lib.sh) and `scheduler/inventory.py`
+recognise GB10, RTX 5090, RTX PRO 5000 Blackwell and RTX PRO 6000 Blackwell;
+any other card is `unsupported`, `download-vllm-models.sh` and
+`manage-vllm.sh up` refuse it, and the scheduler places nothing on it. The
+weights are NVFP4, FP8 and BF16, which all four execute. The inventory reads
+capacity and card class from `nvidia-smi` and compose reserves
+`driver: nvidia`.
 
-**NVIDIA only.** The inventory reads capacity and card class from `nvidia-smi`,
-compose reserves `driver: nvidia`, and the quantisation gate is written in
-compute capability. The default weights are NVFP4, a Blackwell format with no
-AMD counterpart.
-
-Quantisation is gated by compute capability, so what a card can serve is a
-property of the card rather than of its name:
-
-| Weights | Needs | Cards |
-|---|---|---|
-| NVFP4 (default lineup) | cc ≥ 10.0 | GB10, RTX 5090, PRO 5000/6000 |
-| FP8 | cc ≥ 8.9 | Ada and later, RTX 4090 included |
-| AWQ int4 (`qwen3.8-27b-awq`) | cc ≥ 7.5 | Turing and later |
-
-`download-vllm-models.sh` refuses weights the card cannot execute or hold, with
-the reason.
+`download-vllm-models.sh` refuses weights the card cannot hold, with the
+reason.
 
 VRAM per model:
 
@@ -101,8 +91,6 @@ the derived one.
 - vLLM base image per architecture: amd64 `vllm/vllm-openai:cu129-nightly`,
   GB10 (arm64) `vllm/vllm-openai:nightly-aarch64`. Compose runs the derived
   `kloudchat-vllm:local`.
-- RTX 4090: no FP4, so the default lineup cannot run on it. `qwen3.8-27b-awq`
-  can, on 48 GB cards.
 
 ## OpenRouter (no GPU required)
 

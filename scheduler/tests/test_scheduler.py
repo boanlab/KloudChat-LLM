@@ -502,7 +502,8 @@ def test_gpu_class_names_agree_with_the_shell_side():
 
     assert inventory._classify_gpu_name("NVIDIA GB10") == "gb10"
     assert inventory._classify_gpu_name("NVIDIA RTX PRO 6000 Blackwell") == "pro6000"
-    assert inventory._classify_gpu_name("NVIDIA A100-SXM4-80GB") == "nvidia-other"
+    assert inventory._classify_gpu_name("NVIDIA A100-SXM4-80GB") == "unsupported"
+    assert inventory._classify_gpu_name("NVIDIA GeForce RTX 4090") == "unsupported"
     assert inventory._classify_gpu_name("") == "unknown"
 
 
@@ -934,3 +935,15 @@ if __name__ == "__main__":
             print(f"  FAIL {name}: {exc}")
     print(f"\n{str(failed) + ' failed' if failed else 'all passed'}")
     sys.exit(1 if failed else 0)
+
+
+def test_an_unsupported_card_holds_nothing():
+    """A node classified "unsupported" is left out of placement with a note."""
+    from scheduler import planner
+    spec = _spec("chat", weight=20 * GB)
+    bad = NodeSpec(node_id="n1", hostname="n1", gpu_class="unsupported",
+                   total_vram_bytes=96 * GB, arch="amd64")
+    result = planner.plan([spec], [bad])
+    assert not result.placements
+    assert [d.model_id for d in result.delegations] == ["chat"]
+    assert any("unsupported card" in n for n in result.notes)

@@ -17,9 +17,8 @@ sizing a node or diagnosing an OOM.
 | `bge-reranker-v2-m3` | BF16 | **2.1 GiB** (measured) | Retrieval reranking. Pooling, shares a card |
 | `whisper-large-v3` | FP16 | **3.1 GiB** (measured) | Transcription |
 
-- The default lineup is NVFP4 only, which needs compute capability 10.0. A card
-  without FP4 runs `qwen3.8-27b-awq` instead (same served model, different
-  checkpoint directory); `gpu_supports_quant` decides by capability.
+- The lineup is NVFP4, FP8 and BF16; every supported card (GB10, RTX 5090,
+  RTX PRO 5000/6000) executes all of it.
 - Weight figures are measured `safetensors` totals. The `-NVFP4` checkpoints
   mix 4-bit and 8-bit groups, which puts them 5–6 GiB above a pure-FP4
   calculation. Do not re-derive them from parameter counts.
@@ -76,7 +75,6 @@ cache need their share too.
 
 | Node | VRAM | `qwen3.8-27b` | `qwen3-coder-next` | Notes |
 |---|---:|---|---|---|
-| RTX 4090 | 24 G | ✗ | ✗ | Below the 32 GiB floor. No FP4; the int4 build does not fit |
 | RTX 5090 | 32 G | ○ | ✗ | 27B at a reduced context |
 | PRO 5000 | 48 G | ○ | ✗ | 27B with KV headroom, plus retrieval and transcription |
 | PRO 6000 | 96 G | ○ | ○ alone | |
@@ -117,12 +115,6 @@ defaults used when placement is skipped (`KLOUDCHAT_SKIP_SCHEDULER=1`).
 | `VLLM_QWEN27B_SPEC_TOKENS` | `5` | MTP draft tokens per step. A dense 27B decodes at ~11 tok/s on GB10 without speculation; the draft head and its KV take ~19% of the KV pool |
 | `VLLM_QWEN27B_MAX_NUM_SEQS` | `64` | The hybrid Gated-DeltaNet's per-sequence conv-state cache limits CUDA-graph capture; unset, cudagraph profiling OOMs |
 | `VLLM_CODERNEXT_GPU_UTIL` / `_MAX_LEN` | `0.85` / `262144` | 75 GiB of weights; 12 KiB/token makes the native context affordable |
-
-**Quantisation on cards without FP4.** `gpu_supports_quant` gates by compute
-capability: NVFP4 needs 10.0, FP8 needs 8.9, AWQ/GPTQ int4 reach back to 7.5.
-The catalogue carries an int4 build of the chat model (`qwen3.8-27b-awq`) for
-that case. It is a download alias, not a separate deployment: point
-`VLLM_QWEN27B_DIR` at it and the served entry is unchanged.
 
 - `*_MAX_LEN` on the node is what vLLM serves. `gen-litellm-config.sh`
   discovers `max_model_len` from each node's `/v1/models` and emits it per

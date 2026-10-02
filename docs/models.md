@@ -115,14 +115,11 @@ reachable under its OpenRouter slug. See [Registration](#vllm-local).
 
 **Quantisation**
 
-- Default is NVFP4 (GB10 / RTX 5090 / PRO 5000 / PRO 6000).
-- A card without FP4 cannot run the default lineup. The catalogue carries an
-  AWQ int4 build of the chat model, `qwen3.8-27b-awq`, executable from compute
-  capability 7.5. Point `VLLM_QWEN27B_DIR` at it; the served entry does not
-  change.
-- That build is for large FP4-less cards: on 48 GiB it places at 128K–256K, and
-  at 17 GB of weights plus runtime it does not fit a 24 GiB card. 32 GiB usable is the floor
-  and `manage-vllm.sh up` refuses below it ([gpu-memory.md](gpu-memory.md)).
+- Chat is NVFP4, the coder FP8, retrieval and transcription BF16/FP16. The
+  supported cards (GB10, RTX 5090, RTX PRO 5000/6000) execute all of them; no
+  alternative builds are carried.
+- 32 GiB usable is the floor and `manage-vllm.sh up` refuses below it
+  ([gpu-memory.md](gpu-memory.md)).
 
 **Parsers**
 

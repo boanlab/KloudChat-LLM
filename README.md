@@ -133,11 +133,9 @@ Local serving is NVIDIA-only: detection, the container runtime reservation,
 device pinning and the quantisation gate all go through NVIDIA interfaces, and
 the default weights are NVFP4, a format with no AMD counterpart.
 
-Two things decide whether a card can serve: size, then format. 32 GiB usable is
-the floor. The default weights are NVFP4 and need compute capability 10.0 (GB10,
-RTX 5090, PRO 5000/6000); an FP4-less card of 48 GiB or more runs the AWQ int4
-build of the chat model instead. Where nothing fits, the placement step says so
-and delegates to OpenRouter.
+Supported cards are GB10, RTX 5090 and RTX PRO 5000/6000; every script refuses
+anything else. 32 GiB usable is the floor. Where a model does not fit, the
+placement step says so and delegates to OpenRouter.
 
 ## Documentation
 
