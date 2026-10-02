@@ -86,7 +86,7 @@ placement is skipped.
 | `VLLM_IMAGE` | `kloudchat-vllm:local` | The image compose runs: this repo's layer over the upstream vLLM image, built and recorded by `install-vllm.sh` |
 | `VLLM_BASE_IMAGE` / `VLLM_BASE_DIGEST` | (empty) | Upstream image and the digest it resolved to, recorded by `install-vllm.sh`. A rebuild pins to the digest |
 | `VLLM_MODELS_ROOT` | `/var/lib/vllm/models` | Checkpoint root on the node |
-| `VLLM_<MODEL>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root. Point it at an `-awq` download on an FP4-less card |
+| `VLLM_<MODEL>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root |
 | `VLLM_<MODEL>_MAX_BATCHED_TOKENS` | `16384` | Lower bound for the vision mm-budget |
 | `VLLM_<MODEL>_MAX_NUM_SEQS` | `64` | CUDA-graph capture limit for the hybrid models |
 | `VLLM_QWEN27B_SPEC_TOKENS` | `5` | MTP speculative tokens per step for `vllm-qwen27b` |

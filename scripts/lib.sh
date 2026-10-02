@@ -99,8 +99,16 @@ detect_gpu_class() {
     *"RTX PRO 6000 Blackwell"*|*"RTX 6000 Pro Blackwell"*|*"RTX 6000 PRO Blackwell"*) echo pro6000 ;;
     *"RTX PRO 5000 Blackwell"*|*"RTX 5000 Pro Blackwell"*|*"RTX 5000 PRO Blackwell"*) echo pro5000 ;;
     *"RTX 5090"*) echo rtx5090 ;;
-    *"RTX 4090"*) echo rtx4090 ;;
-    *)            echo nvidia-other ;;
+    *)            echo unsupported ;;
+  esac
+}
+
+# Supported cards: GB10, RTX 5090, RTX PRO 5000/6000 Blackwell. All execute the
+# catalogue's NVFP4, FP8 and BF16 weights; anything else is refused.
+gpu_is_supported() {
+  case "$(detect_gpu_class)" in
+    gb10|pro6000|pro5000|rtx5090) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -131,27 +139,6 @@ gpu_usable_vram_gb() {
   [[ -n "$kb" ]] || { echo 0; return; }
   total=$(( kb / 1024 / 1024 ))
   (( total > UNIFIED_RESERVE_GB )) && echo $(( total - UNIFIED_RESERVE_GB )) || echo 0
-}
-
-# Weight dtype support. NVFP4 needs Blackwell (cc >= 10.0), FP8 needs Ada/Hopper
-# (cc >= 8.9). Unknown cards pass: the engine is the better judge.
-gpu_supports_quant() {
-  local quant="$1" cap need
-  cap="$(gpu_compute_cap)"
-  if [[ -z "$cap" ]]; then
-    case "$(detect_gpu_class)" in
-      gb10|pro6000|pro5000|rtx5090) cap=12.0 ;;
-      rtx4090)                      cap=8.9 ;;
-      *)                            return 0 ;;
-    esac
-  fi
-  case "$quant" in
-    nvfp4)     need=10.0 ;;
-    fp8)       need=8.9 ;;
-    awq|gptq)  need=7.5 ;;
-    *)         need=8.0 ;;
-  esac
-  awk -v c="$cap" -v n="$need" 'BEGIN { exit !(c + 0 >= n + 0) }'
 }
 
 # Commercial catalogue, served through OpenRouter; skipped without an OR key.
@@ -224,13 +211,8 @@ OPENAI_EMBED_CATALOG=(text-embedding-3-small)
 
 # vLLM catalogue: download alias → HF repo.
 declare -A VLLM_MODELS=(
-  # Chat, NVFP4 (default)
+  # Chat, NVFP4
   [qwen3.8-27b-nvfp4]="unsloth/Qwen3.8-27B-NVFP4"
-  # Chat, FP8 (cards without FP4, cc >= 8.9)
-  [qwen3.8-27b]="Qwen/Qwen3.8-27B-FP8"
-  # Chat, AWQ int4 (cards without FP4, cc >= 7.5). Point VLLM_QWEN27B_DIR at it;
-  # the served entry in models.yaml is unchanged.
-  [qwen3.8-27b-awq]="cyankiwi/Qwen3.8-27B-AWQ-INT4"
   # Coding, FP8
   [qwen3-coder-next]="Qwen/Qwen3-Coder-Next-FP8"
   # Retrieval embeddings and reranking, BF16
@@ -241,27 +223,14 @@ declare -A VLLM_MODELS=(
 )
 : "${VLLM_MODELS_ROOT:=/var/lib/vllm/models}"
 
-# Per-checkpoint demands, used by download-vllm-models.sh to refuse weights
-# the node cannot serve.
-#   WEIGHT_GB  checkpoint size on disk
-#   QUANT      weight dtype → required compute capability (gpu_supports_quant)
+# Checkpoint size on disk, used by download-vllm-models.sh to refuse weights
+# the card cannot hold.
 declare -A VLLM_MODEL_WEIGHT_GB=(
   [qwen3.8-27b-nvfp4]=22
-  [qwen3.8-27b]=28
-  [qwen3.8-27b-awq]=17
   [qwen3-coder-next]=75
   [bge-m3]=3
   [bge-reranker-v2-m3]=3
   [whisper-large-v3]=4
-)
-declare -A VLLM_MODEL_QUANT=(
-  [qwen3.8-27b-nvfp4]=nvfp4
-  [qwen3.8-27b]=fp8
-  [qwen3.8-27b-awq]=awq
-  [qwen3-coder-next]=fp8
-  [bge-m3]=bf16
-  [bge-reranker-v2-m3]=bf16
-  [whisper-large-v3]=fp16
 )
 # Runtime headroom over the weights: activation buffers plus KV for one request.
 VLLM_RUNTIME_HEADROOM_GB=6
@@ -269,25 +238,23 @@ VLLM_RUNTIME_HEADROOM_GB=6
 # Recommended set for a node without an explicit model list.
 VLLM_PREFERRED_MODELS=(qwen3.8-27b-nvfp4)
 
-# Usable-VRAM floor: the smallest chat build (17 GB int4) plus runtime and a
-# usable context.
+# Usable-VRAM floor: the RTX 5090, the smallest supported card.
 VLLM_MIN_USABLE_VRAM_GB=32
 
 # Why this node cannot serve alias $1: prints a reason and returns 1, or returns
 # 0 silently. Alias validity is the caller's check.
 vllm_model_unservable_reason() {
-  local alias="$1" quant="${VLLM_MODEL_QUANT[$1]:-}" weight="${VLLM_MODEL_WEIGHT_GB[$1]:-0}"
+  local alias="$1" weight="${VLLM_MODEL_WEIGHT_GB[$1]:-0}"
   local vram; vram="$(gpu_usable_vram_gb)"
   if ! has_nvidia_gpu; then
     echo "no NVIDIA GPU on this node"; return 1
   fi
+  if ! gpu_is_supported; then
+    echo "$(get_gpu_name) is not a supported card (GB10, RTX 5090, RTX PRO 5000/6000)"; return 1
+  fi
   # Size before capability: the more useful reason on a small card.
   if (( vram > 0 && vram < VLLM_MIN_USABLE_VRAM_GB )); then
     echo "the card has ${vram}GiB usable; this catalogue needs ${VLLM_MIN_USABLE_VRAM_GB}GiB before anything places with room to run"
-    return 1
-  fi
-  if [[ -n "$quant" ]] && ! gpu_supports_quant "$quant"; then
-    echo "$(get_gpu_name) cannot execute ${quant} weights (compute capability $(gpu_compute_cap))"
     return 1
   fi
   local need=$(( weight + VLLM_RUNTIME_HEADROOM_GB ))
