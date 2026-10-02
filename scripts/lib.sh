@@ -225,19 +225,14 @@ OPENAI_EMBED_CATALOG=(text-embedding-3-small)
 # vLLM catalogue: download alias → HF repo.
 declare -A VLLM_MODELS=(
   # Chat, NVFP4 (default)
-  [qwen3.6-35b-nvfp4]="unsloth/Qwen3.6-35B-A3B-NVFP4"
-  # Chat, FP8 (engines below vLLM 0.24)
-  [qwen3.6-35b]="Qwen/Qwen3.6-35B-A3B"
-  # Chat, AWQ int4 (cards without FP4, cc >= 7.5). Point VLLM_QWEN35B_DIR at it;
+  [qwen3.8-27b-nvfp4]="unsloth/Qwen3.8-27B-NVFP4"
+  # Chat, FP8 (cards without FP4, cc >= 8.9)
+  [qwen3.8-27b]="Qwen/Qwen3.8-27B-FP8"
+  # Chat, AWQ int4 (cards without FP4, cc >= 7.5). Point VLLM_QWEN27B_DIR at it;
   # the served entry in models.yaml is unchanged.
-  [qwen3.6-35b-awq]="QuantTrio/Qwen3.6-35B-A3B-AWQ"
-  # Top chat: 10B active, 78 GiB NVFP4, needs a card to itself
-  [qwen3.5-122b-a10b]="Qwen/Qwen3.5-122B-A10B-NVFP4"
+  [qwen3.8-27b-awq]="cyankiwi/Qwen3.8-27B-AWQ-INT4"
   # Coding, FP8
   [qwen3-coder-next]="Qwen/Qwen3-Coder-Next-FP8"
-  [qwen3-coder-30b]="Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"
-  # Dense chat, NVFP4
-  [qwen3.6-27b]="Qwen/Qwen3.6-27B"
   # Retrieval embeddings and reranking, BF16
   [bge-m3]="BAAI/bge-m3"
   [bge-reranker-v2-m3]="BAAI/bge-reranker-v2-m3"
@@ -251,25 +246,19 @@ declare -A VLLM_MODELS=(
 #   WEIGHT_GB  checkpoint size on disk
 #   QUANT      weight dtype → required compute capability (gpu_supports_quant)
 declare -A VLLM_MODEL_WEIGHT_GB=(
-  [qwen3.6-35b-nvfp4]=21
-  [qwen3.6-35b]=35
-  [qwen3.5-122b-a10b]=78
-  [qwen3.6-35b-awq]=26
+  [qwen3.8-27b-nvfp4]=22
+  [qwen3.8-27b]=28
+  [qwen3.8-27b-awq]=17
   [qwen3-coder-next]=75
-  [qwen3-coder-30b]=33
-  [qwen3.6-27b]=21
   [bge-m3]=3
   [bge-reranker-v2-m3]=3
   [whisper-large-v3]=4
 )
 declare -A VLLM_MODEL_QUANT=(
-  [qwen3.6-35b-nvfp4]=nvfp4
-  [qwen3.6-35b]=fp8
-  [qwen3.5-122b-a10b]=nvfp4
-  [qwen3.6-35b-awq]=awq
+  [qwen3.8-27b-nvfp4]=nvfp4
+  [qwen3.8-27b]=fp8
+  [qwen3.8-27b-awq]=awq
   [qwen3-coder-next]=fp8
-  [qwen3-coder-30b]=fp8
-  [qwen3.6-27b]=nvfp4
   [bge-m3]=bf16
   [bge-reranker-v2-m3]=bf16
   [whisper-large-v3]=fp16
@@ -277,11 +266,11 @@ declare -A VLLM_MODEL_QUANT=(
 # Runtime headroom over the weights: activation buffers plus KV for one request.
 VLLM_RUNTIME_HEADROOM_GB=6
 
-# Recommended set for a node without an explicit model list. The 122B is a
-# placement decision (78 GiB displaces everything else), so it is not here.
-VLLM_PREFERRED_MODELS=(qwen3.6-35b-nvfp4)
+# Recommended set for a node without an explicit model list.
+VLLM_PREFERRED_MODELS=(qwen3.8-27b-nvfp4)
 
-# Usable-VRAM floor: the smallest chat build (26 GB int4) plus headroom.
+# Usable-VRAM floor: the smallest chat build (17 GB int4) plus runtime and a
+# usable context.
 VLLM_MIN_USABLE_VRAM_GB=32
 
 # Why this node cannot serve alias $1: prints a reason and returns 1, or returns
@@ -341,7 +330,7 @@ declare -A MODEL_PRICE_IN_PM=(
   [glm-5.3]=1.40         [mimo-v2.5]=0.14          [kimi-k3]=3.00
   [qwen3.8-max]=2.00     [qwen3.7-flash]=0.03      [qwen3-coder-plus]=0.65
   [minimax-m3]=0.30
-  [qwen3.6-35b]=0    [qwen3.5-122b-a10b]=0    [qwen3-coder-30b]=0    [qwen3.6-27b]=0
+  [qwen3.8-27b]=0
   [text-embedding-3-small]=0.02
 )
 declare -A MODEL_PRICE_OUT_PM=(
@@ -354,19 +343,17 @@ declare -A MODEL_PRICE_OUT_PM=(
   [glm-5.3]=4.40         [mimo-v2.5]=0.28          [kimi-k3]=15.00
   [qwen3.8-max]=6.00     [qwen3.7-flash]=0.13      [qwen3-coder-plus]=3.25
   [minimax-m3]=1.20
-  [qwen3.6-35b]=0    [qwen3.5-122b-a10b]=0    [qwen3-coder-30b]=0    [qwen3.6-27b]=0
+  [qwen3.8-27b]=0
 )
 
 # Declared prices for the OpenRouter twins of local models and the STT
 # fallback, keyed by OpenRouter slug. `or_price` prefers the live figure.
 declare -A OR_TWIN_PRICE_IN_PM=(
-  [qwen/qwen3.6-35b-a3b]=0.14              [qwen/qwen3.5-122b-a10b]=0.26
-  [qwen/qwen3-coder-30b-a3b-instruct]=0.07 [qwen/qwen3.6-27b]=0.60
+  [qwen/qwen3.8-27b]=0.42
   [mistralai/voxtral-small-24b-2507]=0.10
 )
 declare -A OR_TWIN_PRICE_OUT_PM=(
-  [qwen/qwen3.6-35b-a3b]=1.00              [qwen/qwen3.5-122b-a10b]=2.08
-  [qwen/qwen3-coder-30b-a3b-instruct]=0.28 [qwen/qwen3.6-27b]=3.60
+  [qwen/qwen3.8-27b]=3.00
   [mistralai/voxtral-small-24b-2507]=0.30
 )
 
@@ -738,10 +725,7 @@ vllm_wait_until_ready() {
 
 # LiteLLM team allowlist: every chat model gen-litellm-config.sh registers.
 litellm_chat_models_csv() {
-  local vllm_chat_url; vllm_chat_url="$(env_get VLLM_QWEN35B_URL 2>/dev/null || true)"
-  local vllm_big_url; vllm_big_url="$(env_get VLLM_QWEN122B_URL 2>/dev/null || true)"
-  local vllm_coder_url; vllm_coder_url="$(env_get VLLM_CODER30B_URL 2>/dev/null || true)"
-  local vllm_dense_url; vllm_dense_url="$(env_get VLLM_QWEN27B_URL 2>/dev/null || true)"
+  local vllm_chat_url; vllm_chat_url="$(env_get VLLM_QWEN27B_URL 2>/dev/null || true)"
   local out=() m
   if has_openrouter; then
     for m in "${OPENAI_MODELS[@]}";     do out+=("openai/$m");     done
@@ -760,24 +744,9 @@ litellm_chat_models_csv() {
   # Same shape as emit_brain: local/ and strict-local/ aliases over a vLLM URL,
   # the OpenRouter slug without one.
   if [[ -n "$vllm_chat_url" ]]; then
-    out+=("local/qwen3.6-35b" "strict-local/qwen3.6-35b")
+    out+=("local/qwen3.8-27b" "strict-local/qwen3.8-27b")
   elif has_openrouter; then
-    out+=("qwen/qwen3.6-35b-a3b")
-  fi
-  if [[ -n "$vllm_big_url" ]]; then
-    out+=("local/qwen3.5-122b-a10b" "strict-local/qwen3.5-122b-a10b")
-  elif has_openrouter; then
-    out+=("qwen/qwen3.5-122b-a10b")
-  fi
-  if [[ -n "$vllm_coder_url" ]]; then
-    out+=("local/qwen3-coder-30b" "strict-local/qwen3-coder-30b")
-  elif has_openrouter; then
-    out+=("qwen/qwen3-coder-30b-a3b-instruct")
-  fi
-  if [[ -n "$vllm_dense_url" ]]; then
-    out+=("local/qwen3.6-27b" "strict-local/qwen3.6-27b")
-  elif has_openrouter; then
-    out+=("qwen/qwen3.6-27b")
+    out+=("qwen/qwen3.8-27b")
   fi
   if has_openrouter; then
     for m in "${OPENAI_EMBED_CATALOG[@]}"; do out+=("$m"); done

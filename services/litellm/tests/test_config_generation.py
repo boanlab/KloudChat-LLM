@@ -39,9 +39,7 @@ def _fake_curl(bin_dir: Path) -> None:
             done
             case "$url" in
               *qwen.test*/v1/models)
-                printf '%s\n' '{"data":[{"id":"local/qwen3.6-35b","max_model_len":65536}]}' ;;
-              *big.test*/v1/models)
-                printf '%s\n' '{"data":[{"id":"local/qwen3.5-122b-a10b","max_model_len":131072}]}' ;;
+                printf '%s\n' '{"data":[{"id":"local/qwen3.8-27b","max_model_len":65536}]}' ;;
               *bge.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/bge-m3","max_model_len":8192}]}' ;;
               *whisper.test*/v1/models)
@@ -98,8 +96,7 @@ def _run_generator(
     values = {
         "OPENROUTER_API_KEY": "test-openrouter-key" if with_openrouter else "",
         "OPENAI_API_KEY": "test-openai-key" if include_all_classes else "",
-        "VLLM_QWEN35B_URL": "http://qwen.test:8000" if with_vllm else "",
-        "VLLM_QWEN122B_URL": "http://big.test:8000" if include_all_classes else "",
+        "VLLM_QWEN27B_URL": "http://qwen.test:8000" if with_vllm else "",
         "VLLM_BGEM3_URL": "http://bge.test:8000" if include_all_classes else "",
         "WHISPER_URLS": (
             whisper_urls if whisper_urls is not None
@@ -169,7 +166,7 @@ def test_local_and_strict_aliases_follow_deployment_topology(
     models, fallbacks = _parse_dry_run(result.stdout)
     by_name = {model["model_name"]: model for model in models}
 
-    normal = by_name.get("local/qwen3.6-35b")
+    normal = by_name.get("local/qwen3.8-27b")
     assert (normal is not None) is (normal_boundary is not None)
     if normal is not None:
         info = normal["model_info"]
@@ -177,17 +174,17 @@ def test_local_and_strict_aliases_follow_deployment_topology(
         assert info["kchat_strict_local"] is False
         assert info["kchat_privacy_only"] is False
 
-    strict = by_name.get("strict-local/qwen3.6-35b")
+    strict = by_name.get("strict-local/qwen3.8-27b")
     assert (strict is not None) is has_strict
     if strict is not None:
-        assert strict["litellm_params"]["model"] == "hosted_vllm/local/qwen3.6-35b"
+        assert strict["litellm_params"]["model"] == "hosted_vllm/local/qwen3.8-27b"
         assert strict["model_info"]["kchat_data_boundary"] == "self_hosted"
         assert strict["model_info"]["kchat_strict_local"] is True
         assert strict["model_info"]["kchat_privacy_only"] is True
 
     # The OpenRouter slug is the hidden failover twin behind a local deployment,
     # or the visible only route without one; never both.
-    twin = by_name.get("qwen/qwen3.6-35b-a3b")
+    twin = by_name.get("qwen/qwen3.8-27b")
     assert (twin is not None) is with_openrouter
     if twin is not None:
         assert twin["model_info"]["kchat_data_boundary"] == "external"
@@ -198,7 +195,7 @@ def test_local_and_strict_aliases_follow_deployment_topology(
             assert twin["model_info"]["supports_tool_choice"] is True
 
     fallback_sources = {source for mapping in fallbacks for source in mapping}
-    assert ("local/qwen3.6-35b" in fallback_sources) is has_fallback
+    assert ("local/qwen3.8-27b" in fallback_sources) is has_fallback
     assert not any(source.startswith("strict-local/") for source in fallback_sources)
 
 
@@ -241,7 +238,7 @@ def test_every_generated_model_class_declares_its_boundary(tmp_path: Path) -> No
     by_name = {model["model_name"]: model for model in models}
     assert by_name["local/bge-m3"]["model_info"]["kchat_data_boundary"] == "self_hosted"
     assert by_name["text-embedding-3-small"]["model_info"]["kchat_data_boundary"] == "external"
-    assert by_name["strict-local/qwen3.5-122b-a10b"]["model_info"]["kchat_strict_local"] is True
+    assert by_name["strict-local/qwen3.8-27b"]["model_info"]["kchat_strict_local"] is True
 
 
 def test_regeneration_disables_existing_prompt_storage_without_losing_config(

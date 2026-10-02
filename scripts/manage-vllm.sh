@@ -9,11 +9,8 @@
 #   manage-vllm.sh pull                         update image
 #
 # Services:
-#   vllm-qwen35b     Qwen3.6-35B-A3B — chat, vision, coding
-#   vllm-qwen122b    Qwen3.5-122B-A10B — top chat, 78 GiB, a card to itself
+#   vllm-qwen27b     Qwen3.8-27B — chat, vision, coding (dense)
 #   vllm-codernext   Qwen3-Coder-Next-80B — coding, 75 GiB, a card to itself
-#   vllm-coder30b    Qwen3-Coder-30B-A3B — coding
-#   vllm-qwen27b     Qwen3.6-27B — dense chat
 #   vllm-bgem3       BAAI/bge-m3 — retrieval embeddings
 #   vllm-rerank      BAAI/bge-reranker-v2-m3 — retrieval reranking
 #   vllm-whisper     openai/whisper-large-v3 — transcription
@@ -29,8 +26,7 @@ source "${SCRIPT_DIR}/lib.sh"
 [[ -f "$COMPOSE_FILE" ]] || { err "$COMPOSE_FILE not found"; exit 1; }
 
 # Every service in docker-compose.vllm.yml, in `up` and `status` order.
-VLLM_SERVICES=(vllm-qwen35b vllm-qwen122b vllm-codernext vllm-coder30b vllm-qwen27b
-               vllm-bgem3 vllm-rerank vllm-whisper)
+VLLM_SERVICES=(vllm-qwen27b vllm-codernext vllm-bgem3 vllm-rerank vllm-whisper)
 
 usage() {
   sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'
@@ -52,7 +48,7 @@ cmd_up() {
   if (( ${#want[@]} == 0 )); then
     warn "no service named — starting every service with local weights."
     warn "  the scheduler decides placement: python -m scheduler apply"
-    warn "  to drive this node by hand: manage-vllm.sh up vllm-qwen35b [vllm-qwen122b ...]"
+    warn "  to drive this node by hand: manage-vllm.sh up vllm-qwen27b [vllm-codernext ...]"
   fi
 
   local root="${VLLM_MODELS_ROOT:-/var/lib/vllm/models}"
@@ -60,11 +56,8 @@ cmd_up() {
   # Weight directory: VLLM_<MODEL>_DIR from .env, else the compose default.
   local d
   declare -A svc_dir
-  d="$(env_get VLLM_QWEN35B_DIR)";   svc_dir[vllm-qwen35b]="${d:-qwen3.6-35b-nvfp4}"
-  d="$(env_get VLLM_QWEN122B_DIR)";  svc_dir[vllm-qwen122b]="${d:-qwen3.5-122b-a10b}"
+  d="$(env_get VLLM_QWEN27B_DIR)";   svc_dir[vllm-qwen27b]="${d:-qwen3.8-27b-nvfp4}"
   d="$(env_get VLLM_CODERNEXT_DIR)"; svc_dir[vllm-codernext]="${d:-qwen3-coder-next}"
-  d="$(env_get VLLM_CODER30B_DIR)";  svc_dir[vllm-coder30b]="${d:-qwen3-coder-30b}"
-  d="$(env_get VLLM_QWEN27B_DIR)";   svc_dir[vllm-qwen27b]="${d:-qwen3.6-27b}"
   d="$(env_get VLLM_BGEM3_DIR)";     svc_dir[vllm-bgem3]="${d:-bge-m3}"
   d="$(env_get VLLM_RERANK_DIR)";    svc_dir[vllm-rerank]="${d:-bge-reranker-v2-m3}"
   d="$(env_get VLLM_WHISPER_DIR)";   svc_dir[vllm-whisper]="${d:-whisper-large-v3}"
@@ -95,7 +88,7 @@ cmd_up() {
 
   local recreate_args=()
   if (( recreate )); then
-    info "force-recreate — reloading model (~3-5 min, qwen3.6-35b baseline)"
+    info "force-recreate — reloading model (~3-5 min, qwen3.8-27b baseline)"
     recreate_args=(--force-recreate)
   fi
   docker compose -f "$COMPOSE_FILE" up -d --no-build "${recreate_args[@]}" "${up_svcs[@]}"

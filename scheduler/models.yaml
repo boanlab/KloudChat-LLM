@@ -8,17 +8,18 @@
 # anywhere. A single-node cluster has no pool and the field is ignored.
 
 models:
-  # Unified chat and floor: default chat, titles, memory extraction, deep
-  # research, coding agents. NVFP4 build.
-  - id: qwen3.6-35b
-    hf_repo: Qwen/Qwen3.6-35B-A3B
-    dir: qwen3.6-35b-nvfp4
-    env_prefix: VLLM_QWEN35B
+  # Unified chat: default chat, titles, memory extraction, deep research,
+  # coding agents. Dense, hybrid attention (16 of 64 layers hold KV). NVFP4
+  # build. Any node; spare cards take replicas that LiteLLM balances across.
+  - id: qwen3.8-27b
+    hf_repo: Qwen/Qwen3.8-27B
+    dir: qwen3.8-27b-nvfp4
+    env_prefix: VLLM_QWEN27B
     port: 8001
-    # Coding-agent sessions accumulate context; below 128K they truncate
-    ctx_floor: 131072
+    # The native context is the floor: a node that cannot hold 256K delegates
+    # rather than serving a shorter window
+    ctx_floor: 262144
     priority: 20
-    placement: head
 
   # Coding. 80B-A3B, FP8, hybrid attention (12 of 48 layers hold KV). 75 GiB,
   # so it takes a pool card to itself.
@@ -29,42 +30,6 @@ models:
     port: 8008
     priority: 10
     placement: pool
-    share: 40
-
-  # Top chat and deep research. 122B-A10B, NVFP4, 78 GiB: a pool card to itself.
-  - id: qwen3.5-122b-a10b
-    hf_repo: Qwen/Qwen3.5-122B-A10B-NVFP4
-    dir: qwen3.5-122b-a10b
-    env_prefix: VLLM_QWEN122B
-    port: 8004
-    # 128K, not the native 262K: ~22 GiB of KV remain on a GB10 after the weights
-    ctx_target: 131072
-    ctx_floor: 131072
-    # Sole tenant of its card, so the KV pool is sized for real concurrency
-    concurrent_sessions: 12
-    # 1 fits a GB10 whole; a 96 GiB card needs 2, which then serve nothing else
-    tensor_parallel: 1
-    priority: 15
-    placement: pool
-    share: 60
-
-  # Coding, smaller. FP8. Picker choice; superseded by qwen3-coder-next where
-  # 75 GiB fits.
-  - id: qwen3-coder-30b
-    hf_repo: Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
-    dir: qwen3-coder-30b
-    env_prefix: VLLM_CODER30B
-    port: 8006
-    # 48 full-attention layers at 48 KiB/token: the most KV-expensive model here
-    ctx_floor: 32768
-
-  # Dense model. Picker choice; nothing routes here by default.
-  - id: qwen3.6-27b
-    hf_repo: Qwen/Qwen3.6-27B
-    dir: qwen3.6-27b
-    env_prefix: VLLM_QWEN27B
-    port: 8007
-    ctx_floor: 32768
 
   # Transcription. Reached through whisper-shim at /tools/stt, not a LiteLLM
   # chat route; LiteLLM registers OpenRouter STT only while WHISPER_URLS is empty.

@@ -1,11 +1,8 @@
 # GPU-node services. Started per node by the scheduler over SSH; LiteLLM reaches
 # them through VLLM_*_URL in the orchestrator's .env.
 #
-#   vllm-qwen35b    default chat — Qwen3.6-35B-A3B (vision, 262K)
-#   vllm-qwen122b   top chat — Qwen3.5-122B-A10B (vision, 128K, 78 GiB)
-#   vllm-coder30b   coding — Qwen3-Coder-30B-A3B (FP8)
+#   vllm-qwen27b    default chat — Qwen3.8-27B (dense, vision, 262K)
 #   vllm-codernext  coding — Qwen3-Coder-Next-80B (FP8, 262K)
-#   vllm-qwen27b    dense — Qwen3.6-27B
 #   vllm-rerank     retrieval reranking — BAAI/bge-reranker-v2-m3
 #   vllm-bgem3      retrieval embeddings — BAAI/bge-m3
 #   vllm-whisper    transcription — openai/whisper-large-v3
@@ -16,8 +13,8 @@
 name: kloudchat-vllm
 
 services:
-  vllm-qwen35b:
-    container_name: vllm-qwen35b
+  vllm-qwen27b:
+    container_name: vllm-qwen27b
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     # One image for every vLLM service; install-vllm.sh builds it and records
     # VLLM_IMAGE and VLLM_BASE_IMAGE in .env.
@@ -31,21 +28,21 @@ services:
       - --model
       - /model
       - --served-model-name
-      - local/qwen3.6-35b
+      - local/qwen3.8-27b
       - --host
       - 0.0.0.0
       - --port
       - "8000"
       - --max-model-len
-      - "${VLLM_QWEN35B_MAX_LEN:-262144}"
+      - "${VLLM_QWEN27B_MAX_LEN:-262144}"
       - --gpu-memory-utilization
-      - "${VLLM_QWEN35B_GPU_UTIL:-0.55}"
+      - "${VLLM_QWEN27B_GPU_UTIL:-0.55}"
       - --kv-cache-dtype
       - fp8
       # >= 16384 for the vision mm-budget
       - --max-num-batched-tokens
-      - "${VLLM_QWEN35B_MAX_BATCHED_TOKENS:-16384}"
-      # Qwen3.6 tool-call and <think> formats
+      - "${VLLM_QWEN27B_MAX_BATCHED_TOKENS:-16384}"
+      # Qwen3.8 tool-call and <think> formats
       - --enable-auto-tool-choice
       - --tool-call-parser
       - qwen3_xml
@@ -56,124 +53,21 @@ services:
       - '{"enable_thinking": false}'
       # Required: the hybrid model's conv-state cache bounds CUDA-graph capture
       - --max-num-seqs
-      - "${VLLM_QWEN35B_MAX_NUM_SEQS:-128}"
+      - "${VLLM_QWEN27B_MAX_NUM_SEQS:-64}"
+      # MTP speculative decoding from the checkpoint's own draft head; a dense
+      # 27B is bandwidth-bound on GB10 without it
+      - --speculative-config
+      - '{"method":"mtp","num_speculative_tokens":${VLLM_QWEN27B_SPEC_TOKENS:-5}}'
       - --tensor-parallel-size
-      - "${VLLM_QWEN35B_TP:-1}"
+      - "${VLLM_QWEN27B_TP:-1}"
       - --trust-remote-code
     volumes:
-      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_QWEN35B_DIR:-qwen3.6-35b-nvfp4}:/model:ro
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_QWEN27B_DIR:-qwen3.8-27b-nvfp4}:/model:ro
     ports:
       - "8001:8000"
     environment:
       HF_TOKEN: ${HF_TOKEN}
-      NVIDIA_VISIBLE_DEVICES: ${VLLM_QWEN35B_DEVICES:-all}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 600s
-
-  # Top chat. Same parsers as vllm-qwen35b; 128K rather than the native 262K
-  # because 78 GiB of weights leave ~22 GiB of KV.
-  vllm-qwen122b:
-    container_name: vllm-qwen122b
-    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
-    restart: unless-stopped
-    ipc: host
-    command:
-      - --model
-      - /model
-      - --served-model-name
-      - local/qwen3.5-122b-a10b
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --max-model-len
-      - "${VLLM_QWEN122B_MAX_LEN:-131072}"
-      - --gpu-memory-utilization
-      - "${VLLM_QWEN122B_GPU_UTIL:-0.85}"
-      - --kv-cache-dtype
-      - fp8
-      - --max-num-batched-tokens
-      - "${VLLM_QWEN122B_MAX_BATCHED_TOKENS:-16384}"
-      - --enable-auto-tool-choice
-      - --tool-call-parser
-      - qwen3_xml
-      - --reasoning-parser
-      - qwen3
-      - --default-chat-template-kwargs
-      - '{"enable_thinking": false}'
-      # 21.4 MiB of conv state per sequence out of a ~22 GiB pool
-      - --max-num-seqs
-      - "${VLLM_QWEN122B_MAX_NUM_SEQS:-32}"
-      # 2 on 96 GiB cards, where the weights do not fit one
-      - --tensor-parallel-size
-      - "${VLLM_QWEN122B_TP:-1}"
-      - --trust-remote-code
-    volumes:
-      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_QWEN122B_DIR:-qwen3.5-122b-a10b}:/model:ro
-    ports:
-      - "8004:8000"
-    environment:
-      HF_TOKEN: ${HF_TOKEN}
-      NVIDIA_VISIBLE_DEVICES: ${VLLM_QWEN122B_DEVICES:-all}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 1200s
-
-  # Coding. Qwen3-Coder's own tool dialect (`qwen3_coder`); no thinking mode.
-  vllm-coder30b:
-    container_name: vllm-coder30b
-    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
-    restart: unless-stopped
-    ipc: host
-    command:
-      - --model
-      - /model
-      - --served-model-name
-      - local/qwen3-coder-30b
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --max-model-len
-      - "${VLLM_CODER30B_MAX_LEN:-131072}"
-      - --gpu-memory-utilization
-      - "${VLLM_CODER30B_GPU_UTIL:-0.60}"
-      - --kv-cache-dtype
-      - fp8
-      - --enable-auto-tool-choice
-      - --tool-call-parser
-      - qwen3_coder
-      - --tensor-parallel-size
-      - "${VLLM_CODER30B_TP:-1}"
-      - --trust-remote-code
-    volumes:
-      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_CODER30B_DIR:-qwen3-coder-30b}:/model:ro
-    ports:
-      - "8006:8000"
-    environment:
-      HF_TOKEN: ${HF_TOKEN}
-      NVIDIA_VISIBLE_DEVICES: ${VLLM_CODER30B_DEVICES:-all}
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_QWEN27B_DEVICES:-all}
     deploy:
       resources:
         reservations:
@@ -224,60 +118,6 @@ services:
       # 0 on GB10: DeepGEMM rejects this checkpoint's FP8 scale-factor layout
       VLLM_USE_DEEP_GEMM: ${VLLM_CODERNEXT_DEEP_GEMM:-0}
       NVIDIA_VISIBLE_DEVICES: ${VLLM_CODERNEXT_DEVICES:-all}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 600s
-
-  # Dense. Same parsers as vllm-qwen35b.
-  vllm-qwen27b:
-    container_name: vllm-qwen27b
-    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
-    restart: unless-stopped
-    ipc: host
-    command:
-      - --model
-      - /model
-      - --served-model-name
-      - local/qwen3.6-27b
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --max-model-len
-      - "${VLLM_QWEN27B_MAX_LEN:-131072}"
-      - --gpu-memory-utilization
-      - "${VLLM_QWEN27B_GPU_UTIL:-0.45}"
-      - --kv-cache-dtype
-      - fp8
-      - --max-num-batched-tokens
-      - "${VLLM_QWEN27B_MAX_BATCHED_TOKENS:-16384}"
-      - --enable-auto-tool-choice
-      - --tool-call-parser
-      - qwen3_xml
-      - --reasoning-parser
-      - qwen3
-      - --default-chat-template-kwargs
-      - '{"enable_thinking": false}'
-      - --tensor-parallel-size
-      - "${VLLM_QWEN27B_TP:-1}"
-      - --trust-remote-code
-    volumes:
-      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_QWEN27B_DIR:-qwen3.6-27b}:/model:ro
-    ports:
-      - "8007:8000"
-    environment:
-      HF_TOKEN: ${HF_TOKEN}
-      NVIDIA_VISIBLE_DEVICES: ${VLLM_QWEN27B_DEVICES:-all}
     deploy:
       resources:
         reservations:

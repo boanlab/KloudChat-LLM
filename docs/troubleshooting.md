@@ -38,14 +38,14 @@ Symptom: a `vllm-*` container restarts forever in `starting`, with
 `Engine core initialization failed` in the log.
 
 ```bash
-docker logs vllm-qwen35b 2>&1 | grep -B 5 "Engine core initialization\|CUDA\|out of memory" | head -30
+docker logs vllm-qwen27b 2>&1 | grep -B 5 "Engine core initialization\|CUDA\|out of memory" | head -30
 sudo dmesg -T | grep -iE "nvrm|oom" | tail -10
 ```
 
 | Symptom | Cause | Action |
 |---|---|---|
 | `_initialize_kv_caches` fails | `--gpu-memory-utilization` too low: no room for weights plus KV | Raise that model's `VLLM_<MODEL>_GPU_UTIL` in the node's `.env`, or re-run [placement](../scheduler/README.md) |
-| `max_num_seqs (...) exceeds available Mamba cache blocks` | The hybrid Gated-DeltaNet in qwen3.6-35b requires `max_num_seqs ≤ state blocks` during cudagraph capture | Lower `VLLM_QWEN35B_MAX_NUM_SEQS` below the cap; the log prints the block count |
+| `max_num_seqs (...) exceeds available Mamba cache blocks` | The hybrid Gated-DeltaNet in qwen3.8-27b requires `max_num_seqs ≤ state blocks` during cudagraph capture | Lower `VLLM_QWEN27B_MAX_NUM_SEQS` below the cap; the log prints the block count |
 | `Assertion error (layout.hpp:60): Unknown SF transformation` | DeepGEMM rejects an FP8 block-quantised scale-factor layout on this card. Fails after the weights load | Set `VLLM_CODERNEXT_DEEP_GEMM=0` in the node's `.env` |
 | `ModuleNotFoundError: 'pytest'` | The derived image is missing its pytest layer | `install-vllm.sh --reinstall` |
 | `NVRM: Out of memory` (dmesg) | Unified memory (GB10): page cache plus co-resident vLLM | `sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'`. If it recurs, shrink that node's models and re-run [placement](../scheduler/README.md) |
@@ -74,14 +74,13 @@ The vLLM discovery in `gen-litellm-config.sh` hit a TCP failure. If no local
 models appear in the UI, discovery returned nothing.
 
 ```bash
-# Ports: qwen35b 8001, bge-m3 8003, qwen122b 8004, coder30b 8006, qwen27b 8007,
-# codernext 8008, rerank 8009, whisper 9000
+# Ports: qwen27b 8001, bge-m3 8003, codernext 8008, rerank 8009, whisper 9000
 curl -sf http://<vllm-host>:8001/v1/models | jq '.data[].id'
 ss -tlnp | grep -E '800[1-9]|9000'
 docker ps --filter name=vllm- --format '{{.Names}}\t{{.Status}}'
 ```
 
-- Container not up: `./scripts/manage-vllm.sh up vllm-qwen35b` on the GPU
+- Container not up: `./scripts/manage-vllm.sh up vllm-qwen27b` on the GPU
   node, then try again.
 - Restarting forever: see [vLLM cold-start failure](#vllm-cold-start-failure).
 
@@ -138,7 +137,7 @@ through, so an input over the serving context fails outright.
 # 1) The serving context of the research model
 KEY=$(grep ^LITELLM_MASTER_KEY .env | cut -d= -f2)
 curl -sf -H "Authorization: Bearer $KEY" http://localhost:8080/litellm/v1/model/info \
-  | jq '.data[] | select(.model_name=="local/qwen3.5-122b-a10b") | {model_name, api_base: .litellm_params.api_base, max_input: .model_info.max_input_tokens}'
+  | jq '.data[] | select(.model_name=="local/qwen3.8-27b") | {model_name, api_base: .litellm_params.api_base, max_input: .model_info.max_input_tokens}'
 
 # 2) If it is absent, diagnose placement
 ./scripts/setup.sh scheduler inventory   # per-node GPU class, VRAM, running containers

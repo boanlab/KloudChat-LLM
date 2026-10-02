@@ -42,8 +42,8 @@ URL.
 | Model disk | 100 GB |
 
 **24 GiB cards are out of scope** (RTX 4090, RTX 3090, L4, A10). The int4 build
-executes there, but at 26 GB of weights it does not fit. `manage-vllm.sh up`
-refuses below 32 GiB usable.
+executes there, but 17 GB of weights plus runtime leaves no room for a usable
+context. `manage-vllm.sh up` refuses below 32 GiB usable.
 
 **NVIDIA only.** The inventory reads capacity and card class from `nvidia-smi`,
 compose reserves `driver: nvidia`, and the quantisation gate is written in
@@ -57,7 +57,7 @@ property of the card rather than of its name:
 |---|---|---|
 | NVFP4 (default lineup) | cc ≥ 10.0 | GB10, RTX 5090, PRO 5000/6000 |
 | FP8 | cc ≥ 8.9 | Ada and later, RTX 4090 included |
-| AWQ int4 (`qwen3.6-35b-awq`) | cc ≥ 7.5 | Turing and later |
+| AWQ int4 (`qwen3.8-27b-awq`) | cc ≥ 7.5 | Turing and later |
 
 `download-vllm-models.sh` refuses weights the card cannot execute or hold, with
 the reason.
@@ -66,12 +66,11 @@ VRAM per model:
 
 | Model | Requirement |
 |---|---|
-| Chat (`qwen3.6-35b`, 21 GiB) | RTX 5090 32 GB minimum, at a reduced context. PRO 5000 48 GB or better recommended |
-| Top chat (`qwen3.5-122b-a10b`, 78 GiB) | GB10, or PRO 6000 ×2 with tensor parallelism. Alone on its cards |
+| Chat (`qwen3.8-27b`, 21 GiB) | RTX 5090 32 GB minimum, at a reduced context. PRO 5000 48 GB or better recommended |
 | Coding (`qwen3-coder-next`, 75 GiB) | GB10 or PRO 6000, alone on the card |
 
-Deep research runs on `DEEP_RESEARCH_MODEL` (`local/qwen3.5-122b-a10b` by
-default), which the scheduler holds at a 128K context floor. Occupancy figures
+Deep research runs on `DEEP_RESEARCH_MODEL` (`local/qwen3.8-27b` by
+default), which the scheduler holds at its native 256K context. Occupancy figures
 are in the [GPU memory guide](gpu-memory.md).
 
 ### What runs where
@@ -102,7 +101,7 @@ the derived one.
 - vLLM base image per architecture: amd64 `vllm/vllm-openai:cu129-nightly`,
   GB10 (arm64) `vllm/vllm-openai:nightly-aarch64`. Compose runs the derived
   `kloudchat-vllm:local`.
-- RTX 4090: no FP4, so the default lineup cannot run on it. `qwen3.6-35b-awq`
+- RTX 4090: no FP4, so the default lineup cannot run on it. `qwen3.8-27b-awq`
   can, on 48 GB cards.
 
 ## OpenRouter (no GPU required)
