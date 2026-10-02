@@ -36,10 +36,9 @@ POLL_TTL = float(os.environ.get("CONCURRENCY_GATE_TTL", "1.5"))
 SCRAPE_TIMEOUT = float(os.environ.get("CONCURRENCY_GATE_SCRAPE_TIMEOUT", "1.0"))
 # Age past which a strict alias's last good sample no longer counts.
 STRICT_STATE_TTL = max(POLL_TTL * 3, POLL_TTL + SCRAPE_TIMEOUT * 2)
-# In-flight caps by LiteLLM model_name. A key with no matching deployment is
-# logged by _load_gate_map. The 27B's cap follows its KV pool: ~30 GiB at 256K
-# is under 4 full-length requests, and queueing past the cap preempts running
-# sequences.
+# In-flight caps by LiteLLM model_name; a key with no matching deployment is
+# logged by _load_gate_map. 27B: the KV pool (~30 GiB at 256K) holds under 4
+# full-length requests, and requests queued past the cap preempt running ones.
 DEFAULT_CAPS = {
     "local/qwen3.8-27b": 32,
     "strict-local/qwen3.8-27b": 32,
@@ -331,7 +330,7 @@ class ConcurrencyGate(CustomLogger):
         if not isinstance(request_data, dict) or not _strict_request(request_data):
             return None
         # An HTTPException returned here becomes the client-facing error.
-        # Lazy import keeps the unit tests free of the proxy dependency graph.
+        # Lazy import: the unit tests run without the proxy dependency graph.
         from fastapi import HTTPException
 
         return HTTPException(
@@ -348,7 +347,7 @@ class ConcurrencyGate(CustomLogger):
 
 gate_instance = ConcurrencyGate()
 
-# Self-registration, in case the config only triggers the import.
+# Self-registration for a config that only imports the module.
 try:
     import litellm as _litellm
     if gate_instance not in _litellm.callbacks:

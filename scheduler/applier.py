@@ -24,7 +24,8 @@ from scheduler.types import NodeSpec
 MANAGED_SERVICE_PREFIX = "vllm-"
 
 #: Transcription model. Its URL CSV is written as ``WHISPER_URLS`` (read by
-#: whisper-shim) instead of ``{env_prefix}_URL``; empty routes STT to OpenRouter.
+#: whisper-shim) instead of ``{env_prefix}_URL``; with no backend answering,
+#: gen-litellm-config.sh registers OpenRouter STT.
 STT_MODEL_ID = "whisper-large-v3"
 
 
@@ -164,14 +165,14 @@ def compute_diff(
                 (f"{spec.env_prefix}_MAX_LEN", str(p.ctx)),
                 (f"{spec.env_prefix}_GPU_UTIL", f"{p.gpu_util:.2f}"),
             ]
-            # TP 1 is the compose default: written only to undo a sharded node,
-            # since any new key costs a recreate
+            # TP 1 is the compose default; written only to undo a sharded node
+            # (a new key costs a recreate)
             tp_key = f"{spec.env_prefix}_TP"
             if p.tp > 1 or (here or {}).get(tp_key) not in (None, "", "1"):
                 options.append((tp_key, str(p.tp)))
 
-            # NVIDIA_VISIBLE_DEVICES, multi-card nodes only (CUDA_VISIBLE_DEVICES
-            # fails engine init on GB10)
+            # NVIDIA_VISIBLE_DEVICES, multi-card nodes only; CUDA_VISIBLE_DEVICES
+            # fails engine init on GB10
             dev_key = f"{spec.env_prefix}_DEVICES"
             devices = ",".join(str(d) for d in p.devices)
             node = next((n for n in nodes if n.node_id == node_id), None)

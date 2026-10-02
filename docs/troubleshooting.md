@@ -12,7 +12,7 @@ docker compose ps
 # 2) Gateway and per-capability reachability
 ./scripts/setup.sh urls
 
-# 3) Model catalogue (LiteLLM is not published; go through the gateway)
+# 3) Model catalogue (LiteLLM publishes no host port; go through the gateway)
 KEY=$(grep ^LITELLM_MASTER_KEY .env | cut -d= -f2)
 curl -sf -H "Authorization: Bearer $KEY" http://localhost:8080/litellm/v1/models | jq '.data | length'
 ```
@@ -44,10 +44,10 @@ sudo dmesg -T | grep -iE "nvrm|oom" | tail -10
 
 | Symptom | Cause | Action |
 |---|---|---|
-| `_initialize_kv_caches` fails | `--gpu-memory-utilization` too low: no room for weights plus KV | Raise that model's `VLLM_<MODEL>_GPU_UTIL` in the node's `.env`, or re-run [placement](../scheduler/README.md) |
-| `max_num_seqs (...) exceeds available Mamba cache blocks` | The hybrid Gated-DeltaNet in qwen3.8-27b requires `max_num_seqs ≤ state blocks` during cudagraph capture | Lower `VLLM_QWEN27B_MAX_NUM_SEQS` below the cap; the log prints the block count |
+| `_initialize_kv_caches` fails | `--gpu-memory-utilization` too low: no room for weights plus KV | Raise that model's `VLLM_<PREFIX>_GPU_UTIL` in the node's `.env`, or re-run [placement](../scheduler/README.md) |
+| `max_num_seqs (...) exceeds available Mamba cache blocks` | The hybrid conv-state cache in `qwen3.8-27b` requires `max_num_seqs ≤ state blocks` during cudagraph capture | Lower `VLLM_QWEN27B_MAX_NUM_SEQS`; the log prints the block count |
 | `Assertion error (layout.hpp:60): Unknown SF transformation` | DeepGEMM rejects an FP8 block-quantised scale-factor layout on this card. Fails after the weights load | Set `VLLM_CODERNEXT_DEEP_GEMM=0` in the node's `.env` |
-| `ModuleNotFoundError: 'pytest'` | The derived image is missing its pytest layer | `install-vllm.sh --reinstall` |
+| `ModuleNotFoundError: 'pytest'` | The derived image is missing its pytest layer | `./scripts/install-vllm.sh --reinstall` |
 | `NVRM: Out of memory` (dmesg) | Unified memory (GB10): page cache plus co-resident vLLM | `sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'`. If it recurs, shrink that node's models and re-run [placement](../scheduler/README.md) |
 | OS killer during weight load | RAM smaller than the weights | Stop other containers |
 
@@ -63,7 +63,7 @@ cat /proc/sys/vm/swappiness                              # 60 by default
 
 | Action | Notes |
 |---|---|
-| `./scripts/tune-host.sh` | Persists `vm.swappiness=10` and related sysctls |
+| `./scripts/tune-host.sh` | Persists `vm.swappiness=10` |
 | `sudo sysctl vm.swappiness=10` | Immediate, not persistent |
 | `sudo swapoff -a && sudo swapon -a` | Clears swap; risks OOM if RAM is tight |
 | Shrink `VLLM_MODELS` and re-apply placement | The real fix |
@@ -97,6 +97,7 @@ curl -sf http://localhost:8080/litellm/health/readiness    # verifies backends
 | `LITELLM_MASTER_KEY` empty | Re-run `gen-env.sh`, or fill it in |
 | Database migration failed | `docker logs kloudchat-litellm-db`: is postgres healthy |
 | Hit `:8000` directly | Use `/litellm/*`; the gateway is the only published port |
+| `manage.sh` cannot connect | Set `LITELLM_URL=http://localhost:8080/litellm` in the shell or `.env` |
 
 ## Models missing from the menu
 
@@ -122,6 +123,7 @@ API provisions the matching LiteLLM user and per-user key. `manage.sh` is the
 LiteLLM-side view of them.
 
 ```bash
+export LITELLM_URL=http://localhost:8080/litellm
 ./scripts/manage.sh user list                 # LiteLLM users
 ./scripts/manage.sh user usage --user <email> # this month's spend against budget
 ./scripts/manage.sh key list --user <email>
@@ -141,7 +143,7 @@ curl -sf -H "Authorization: Bearer $KEY" http://localhost:8080/litellm/v1/model/
 
 # 2) If it is absent, diagnose placement
 ./scripts/setup.sh scheduler inventory   # per-node GPU class, VRAM, running containers
-./scripts/setup.sh scheduler plan        # what context the planner chose, and why a model was delegated
+./scripts/setup.sh scheduler plan        # what the planner chose, and why a model was delegated
 
 # 3) The MCP itself
 docker logs kloudchat-deep-research --tail 50
@@ -149,20 +151,20 @@ docker logs kloudchat-deep-research --tail 50
 
 | Cause | Action |
 |---|---|
-| Research model not placed | `plan` prints the reason. Add a node or shrink `VLLM_MODELS`, then apply and re-run `gen-litellm-config.sh`. Until then the same name is served by OpenRouter |
+| Research model not placed | `plan` prints the reason. Add a node or shrink `VLLM_MODELS`, then apply and re-run `gen-litellm-config.sh`. Without a GPU, set `DEEP_RESEARCH_MODEL` to a served name (`qwen/qwen3.8-27b`) |
 | Placed but still failing | LDR's accumulated input exceeds the serving context. Reduce `LDR_SEARCH_ITERATIONS` in `docker-compose.yml`, or point `DEEP_RESEARCH_MODEL` at a model with a larger context |
 
 ## file_search returns nothing
 
-Retrieval is opt-in. Without the `index` profile KloudChat falls back to
-lexical search, so empty results are a configuration answer before they are a
-fault. See [models.md](models.md#retrieval) for the two stages.
+Retrieval is opt-in. Without the `index` profile the UI falls back to lexical
+search, so empty results are a configuration answer before they are a fault.
+See [models.md](models.md#retrieval) for the two stages.
 
 | Cause | Action |
 |---|---|
 | `index` not in `COMPOSE_PROFILES` | Add it and re-run `setup.sh up`; `index-db` and `index-shim` do not start otherwise |
 | No embedding deployment | `INDEX_EMBED_MODELS` is tried in order: `local/bge-m3` needs a vLLM placement, `text-embedding-3-small` needs `OPENAI_API_KEY`. `GET /tools/index/health` reports whether embeddings answer |
-| Collection never indexed | The index starts empty; KloudChat fills it through `PUT /tools/index/documents`. Losing the volume costs a re-index, not a document |
+| Collection never indexed | The index starts empty; the UI fills it through `PUT /tools/index/documents`. Losing the volume costs a re-index, not a document |
 | Results arrive but are weak | The reranker may be missing; the search response carries `"reranked": true\|false`. Without it search falls back to vector order |
 
 ## Diagnostic helpers
@@ -177,7 +179,7 @@ fault. See [models.md](models.md#retrieval) for the two stages.
 | `manage-vllm.sh logs <svc>` | vLLM logs |
 | `setup.sh scheduler inventory` | Per-node GPU class, VRAM, running containers |
 | `setup.sh scheduler plan` | Target placement (dry run) |
-| `tune-host.sh --check` | Recommended sysctl values against the current ones |
+| `tune-host.sh --check` | Current `vm.swappiness` against the recommended value |
 | `gen-litellm-config.sh --check-prices` | Declared prices against the OpenRouter catalogue |
 
 ## Operator knobs

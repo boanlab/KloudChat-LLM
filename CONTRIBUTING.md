@@ -38,7 +38,7 @@ CI runs exactly these. Run them before opening a pull request:
 bash -n scripts/*.sh
 shellcheck -S warning -e SC1091 scripts/*.sh          # settings in .shellcheckrc
 ruff check scheduler services                         # rules in pyproject.toml
-pytest scheduler/tests services/litellm/tests -q
+pytest scheduler/tests services/litellm/tests services/crawl4ai-shim/tests services/search-shim/tests -q
 docker compose -f docker-compose.yml config --quiet
 docker compose -f docker-compose.vllm.yml config --quiet
 ```
@@ -48,12 +48,12 @@ No shellcheck installed?
 
 CI additionally verifies the pinned LiteLLM image redacts spend logs
 (`services/litellm/tests/verify_spend_log_redaction.py`), checks that the
-image list agrees across the compose file, `build-push-images.sh` and the
+image list agrees across the compose files, `build-push-images.sh` and the
 publish workflow, and checks every relative link and anchor in `*.md`.
 
 The tests need no GPU, no network and no Docker: they exercise the memory
-arithmetic, the placement policy and the LiteLLM config generation against
-synthetic inputs.
+arithmetic, the placement policy, the LiteLLM config generation and the shims'
+guards against synthetic inputs.
 
 ## Conventions
 
@@ -93,10 +93,10 @@ images: `crawl4ai-shim`, `search-shim`, `whisper-shim`, `code-interpreter`,
 | Tag `v*` | All of them | `v1.2.3`, `1.2.3`, `1.2`, `latest` |
 | Manual run | All, or one chosen image | The tag you type, plus `latest` |
 
-A change outside `services/` publishes nothing. Adding an image means one entry
-in the `catalogue` in the `select` job, one in the manual dropdown, one in
-`BUILD_TABLE` in `scripts/build-push-images.sh`, and the compose `image:`; CI
-fails when the four disagree.
+A change outside `services/` publishes nothing. Adding an image means one
+entry in the `catalogue` in the `select` job, one in the manual dropdown, one
+in `BUILD_TABLE` in `scripts/build-push-images.sh`, and the compose `image:`;
+CI fails when the four disagree.
 
 ## Commit and pull request style
 
@@ -106,7 +106,7 @@ Short imperative subject, body explaining the reasoning:
 scheduler: keep resident services out of the stop set
 
 docker ps returns every container on a node, including ones the planner
-never placed. Stopping those took the node's STT backend down.
+never placed. Stopping those takes the node's STT backend down.
 ```
 
 Pull requests say how the change was verified. For anything that only runs on

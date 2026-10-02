@@ -95,8 +95,8 @@ cmd_team_delete() {
   litellm_post "/team/delete" "{\"team_ids\":[\"$id\"]}" | jq .
 }
 
-# Every team's model allowlist → the current catalogue. Run after a catalogue
-# change, or existing teams reject the new models.
+# Every team's allowlist → the current catalogue; needed after a catalogue
+# change, or existing teams reject the new models
 cmd_team_sync() {
   local models; models="$(litellm_chat_models_csv)"
   [[ -z "$models" ]] && { err "0 litellm chat models — run gen-litellm-config + restart first"; exit 1; }
@@ -116,8 +116,8 @@ cmd_team_sync() {
   echo "team/sync: $n_ok/$n updated, $n_fail failed (models: $(echo "$models" | tr ',' '\n' | wc -l))"
 }
 
-# strict-local/<m> for every team that already allows local/<m>. Empty lists
-# (unrestricted teams) are left alone.
+# strict-local/<m> for every team that already allows local/<m>; empty lists
+# (unrestricted teams) are left alone
 cmd_team_add_strict() {
   local catalogue strict_json teams
   catalogue="$(litellm_chat_models_csv)"
@@ -165,7 +165,7 @@ cmd_user_list() {
     | "\(.user_id)\t\(.user_role)\tspend:\(.spend // 0)$"'
 }
 
-# Per-user spend vs monthly budget; RESET = next budget reset date.
+# Per-user spend vs monthly budget; RESET = next budget reset date
 cmd_user_usage() {
   local user_id=""
   while [[ $# -gt 0 ]]; do case "$1" in --user) need_val "$@"; user_id="$2"; shift 2 ;; *) shift ;; esac; done
@@ -183,8 +183,8 @@ cmd_user_usage() {
   else printf '%s\n' "$out"; fi
 }
 
-# Restore original_budget for topups whose expires_at (the budget_reset_at at
-# topup time) has passed. Runs lazily from user usage/topup.
+# Restores original_budget for topups whose expires_at (the budget_reset_at at
+# topup time) has passed; runs from user usage/topup
 reconcile_topups() {
   local f="${DATA_DIR}/topups.json"
   [[ -s "$f" ]] || return 0
@@ -210,10 +210,9 @@ reconcile_topups() {
   return 0
 }
 
-# Temporary raise of max_budget by --amount; spend is untouched. The ledger
-# (data/ledger/topups.json) records original_budget and expiry, and
-# reconcile_topups restores the original after the monthly reset. Repeated
-# topups in one month accumulate against the first original.
+# max_budget += --amount, spend untouched; data/ledger/topups.json records
+# original_budget and expiry for reconcile_topups. Repeated topups in one month
+# accumulate against the first original.
 cmd_user_topup() {
   local user_id="" amount=""
   while [[ $# -gt 0 ]]; do case "$1" in
@@ -252,8 +251,8 @@ cmd_user_delete() {
   litellm_post "/user/delete" "{\"user_ids\":[\"$id\"]}" | jq .
 }
 
-# Plaintext key ledger (data/ledger/keys.json, mode 600). LiteLLM stores only
-# the hash.
+# Plaintext key ledger (data/ledger/keys.json, mode 600); LiteLLM keeps only
+# the hash
 record_issued_key() {
   local user_id="$1" key_alias="$2" team_id="$3" key="$4" budget="$5"
   mkdir -p "$DATA_DIR"
@@ -290,7 +289,7 @@ cmd_key_issue() {
     local result
     if ! result=$(litellm_post "/key/generate" "$payload" 2>&1); then
       if echo "$result" | grep -q 'already exists'; then
-        # No plaintext to recover from LiteLLM: rotate by hand.
+        # LiteLLM holds no plaintext to recover
         err "service key alias '$alias' already exists in LiteLLM."
         err "  → check with ./scripts/manage.sh key list, then rotate: key revoke --key <stale>"
         err "    or use a different alias: key issue --service $service --alias <new>"
@@ -327,13 +326,13 @@ cmd_key_issue() {
 cmd_key_list() {
   local user_id=""
   while [[ $# -gt 0 ]]; do case "$1" in --user) need_val "$@"; user_id="$2"; shift 2 ;; *) shift ;; esac; done
-  # return_full_object=true: .keys[] are objects rather than hash strings
+  # return_full_object=true: .keys[] as objects rather than hash strings
   local ep="/key/list?return_full_object=true"; [[ -n "$user_id" ]] && ep+="&user_id=${user_id}"
   litellm_get "$ep" | jq -r '.keys[]
     | "\(.key_alias // "unnamed")\t\((.token // "?")[0:20])...\tuser:\(.user_id // "-")\tbudget:\(.max_budget)$\tspend:\(.spend // 0)$"'
 }
 
-# Plaintext keys from the ledger; --user filters.
+# Plaintext keys from the ledger; --user filters
 cmd_key_show() {
   local user_id=""
   while [[ $# -gt 0 ]]; do case "$1" in --user) need_val "$@"; user_id="$2"; shift 2 ;; *) shift ;; esac; done

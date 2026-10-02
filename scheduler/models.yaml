@@ -3,9 +3,9 @@
 # Undeclared fields are derived from the checkpoint's config.json and its size
 # on disk — see "Derived values" at the bottom.
 #
-# placement: "head" is the first target in NODES_VLLM (default chat, retrieval,
-# transcription); "pool" is every other node (large picker models); unset is
-# anywhere. A single-node cluster has no pool and the field is ignored.
+# placement: "head" is the first target in NODES_VLLM (retrieval, transcription);
+# "pool" is every other node (the coder); unset is anywhere (chat). A single-node
+# cluster has no pool and the field is ignored.
 
 models:
   # Unified chat: default chat, titles, memory extraction, deep research,
@@ -32,7 +32,8 @@ models:
     placement: pool
 
   # Transcription. Reached through whisper-shim at /tools/stt, not a LiteLLM
-  # chat route; LiteLLM registers OpenRouter STT only while WHISPER_URLS is empty.
+  # chat route; LiteLLM registers OpenRouter STT while no WHISPER_URLS backend
+  # answers.
   - id: whisper-large-v3
     hf_repo: openai/whisper-large-v3
     dir: whisper-large-v3
@@ -41,8 +42,8 @@ models:
     port: 9000
     runner: transcription
     placement: head
-    # Below bge-m3: losing this falls back to OpenRouter, losing embeddings
-    # degrades /tools/index to lexical search
+    # Below bge-m3: STT has an OpenRouter fallback, embeddings only degrade
+    # /tools/index to lexical search
     priority: 4
     # Decoder context is 448 tokens; longer audio is split server-side
     concurrent_sessions: 4
@@ -63,8 +64,8 @@ models:
     env_prefix: VLLM_BGEM3
     port: 8003
     runner: pooling
-    # Above the optional chat models (6 GiB, the whole retrieval path); below
-    # the card-sized ones
+    # Above whisper and the reranker (6 GiB, the whole retrieval path); below
+    # the card-sized chat models
     priority: 5
     placement: head
     # One chunk at a time

@@ -1,12 +1,11 @@
 """OpenAI-compatible transcription front end over the GPU nodes' vllm-whisper backends.
 
 One endpoint, `/v1/audio/transcriptions`, forwarded to the healthy backend with
-the fewest in-flight requests. The `model` field is rewritten to the name every
-backend serves, since vLLM 404s any other name and clients default to
-`whisper-1`. With every backend unhealthy the first one is still tried, so the
-caller gets a 5xx rather than a silent drop. No OpenRouter fallback here: an
-empty WHISPER_URLS means this shim is not deployed and LiteLLM registers
-OpenRouter STT instead.
+the fewest in-flight requests. The `model` field is rewritten to MODEL_NAME:
+vLLM 404s any other name, and clients default to `whisper-1`. With every
+backend unhealthy the first one is still tried, so the caller gets a 5xx. No
+OpenRouter fallback here: with WHISPER_URLS empty this shim is not deployed and
+LiteLLM registers OpenRouter STT instead.
 """
 from __future__ import annotations
 
@@ -41,7 +40,7 @@ HEALTH_PROBE_TIMEOUT_SEC = float(os.getenv("HEALTH_PROBE_TIMEOUT_SEC", "2.0"))
 HEALTH_CACHE_TTL_SEC    = float(os.getenv("HEALTH_CACHE_TTL_SEC", "10"))
 TRANSCRIBE_TIMEOUT_SEC  = float(os.getenv("TRANSCRIBE_TIMEOUT_SEC", "900"))
 
-# In-flight count per backend. In-process: one shim replica per stack.
+# In-flight count per backend; in-process state, one shim replica per stack.
 _INFLIGHT: dict[str, int] = defaultdict(int)
 _INFLIGHT_LOCK = asyncio.Lock()
 
@@ -169,7 +168,7 @@ async def transcribe(request: Request) -> Response:
         finally:
             await _dec_inflight(backend)
 
-    # Mirror status and headers (Content-Type varies with response_format);
+    # Status and headers mirrored (Content-Type varies with response_format);
     # hop-by-hop headers dropped, Content-Length regenerated.
     excluded = {"content-length", "transfer-encoding", "connection"}
     headers = {k: v for k, v in r.headers.items() if k.lower() not in excluded}

@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
 # Usage: gen-searxng-config.sh
 #
-# services/searxng/settings.yml from settings.yml.example, with the
-# __SEARXNG_SECRET_KEY__ sentinel replaced by .env's SEARXNG_SECRET_KEY
-# (SearXNG takes no secret_key from the environment). The file is derived
-# entirely from those two inputs, so it is rewritten whenever it differs from
-# what they give and left alone when it does not. SearXNG reads it at start:
-# after a rewrite, restart the container (setup.sh does).
+# services/searxng/settings.yml from settings.yml.example, the __SEARXNG_SECRET_KEY__
+# and __NAVER_*__ sentinels filled from .env (SearXNG takes no secret_key from the
+# environment). Rewritten only when the result differs; SearXNG reads it at start,
+# so setup.sh restarts the container after a rewrite.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Self-contained: no lib.sh dependency.
+# No lib.sh dependency
 err()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 info() { printf '  %s\n' "$*"; }
 
@@ -37,10 +35,8 @@ SEARXNG_SECRET_KEY="$(grep -E '^SEARXNG_SECRET_KEY=' "$ENV_FILE" | tail -n1 | cu
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-# The secret_key line only; the sentinel also appears in a comment.
-# NAVER Search API (API HUB) credentials are optional: both set enables the two naver
-# engines, otherwise they are written disabled and never called.
-# `|| true`: with pipefail an absent line is a failed pipeline, and absent is fine here.
+# NAVER credentials are optional: both set enables the naver engines, otherwise
+# they are written disabled. `|| true`: an absent line is fine under pipefail.
 NAVER_CLIENT_ID="$( (grep -E '^NAVER_CLIENT_ID=' "$ENV_FILE" || true) | tail -n1 | cut -d= -f2-)"
 NAVER_CLIENT_SECRET="$( (grep -E '^NAVER_CLIENT_SECRET=' "$ENV_FILE" || true) | tail -n1 | cut -d= -f2-)"
 if [[ -n "$NAVER_CLIENT_ID" && -n "$NAVER_CLIENT_SECRET" ]]; then
@@ -49,6 +45,7 @@ else
   NAVER_DISABLED=true
   NAVER_CLIENT_ID="unset"; NAVER_CLIENT_SECRET="unset"
 fi
+# The secret_key line only; the sentinel also appears in a comment
 sed -e "/^[[:space:]]*secret_key:/ s|${SENTINEL}|${SEARXNG_SECRET_KEY}|" \
     -e "s|__NAVER_CLIENT_ID__|${NAVER_CLIENT_ID}|g" \
     -e "s|__NAVER_CLIENT_SECRET__|${NAVER_CLIENT_SECRET}|g" \
@@ -64,7 +61,7 @@ if ! grep -qE "^[[:space:]]*secret_key: \"?${SEARXNG_SECRET_KEY}\"?[[:space:]]*$
   exit 1
 fi
 
-# An unreadable existing file (root-owned after a sudo run) is simply replaced.
+# An unreadable existing file (root-owned after a sudo run) is replaced
 if [[ -r "$CONFIG_FILE" ]] && cmp -s "$tmp" "$CONFIG_FILE"; then
   info "$CONFIG_FILE is up to date."
   exit 0

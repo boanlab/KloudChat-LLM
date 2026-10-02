@@ -241,7 +241,6 @@ if [ "${sum:-0}" -gt 0 ]; then echo "$sum"; else du -sb %(path)s 2>/dev/null | c
 
 def measure_weight_bytes(host: str, path: str) -> Optional[int]:
     """Measured weight size on the node; None on failure."""
-    import subprocess
     try:
         r = subprocess.run(
             ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=6",

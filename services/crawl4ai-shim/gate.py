@@ -1,10 +1,9 @@
-"""Two small guards in front of the one shared browser.
+"""Two guards in front of the one shared browser.
 
-`Gate` caps how many pages render at once and makes the rest wait a bounded
-time — past the cap every tab used to slow every other until all hit the page
-timeout together. `PageCache` remembers a successful scrape for a while: the
-top search results are the same pages for everyone asking about the same
-thing that hour.
+`Gate` caps the pages rendering at once and bounds the wait for the rest: past
+the cap every tab slows every other until all hit the page timeout. `PageCache`
+keeps a successful scrape for a while: the top search results are the same
+pages for everyone asking about one topic that hour.
 """
 from __future__ import annotations
 

@@ -98,7 +98,7 @@ jobs:
           options = [o.strip() for o in
                      re.search(r"^\s*options: \[(.*?)\]", wf, re.M).group(1).split(",")]
 
-          # Entries are "<short>|<dockerfile>|<context>[|<platform>]".
+          # Entries are "<short>|<dockerfile>|<context>".
           def table(name):
               body = re.search(rf"^{name}=\((.*?)^\)", sh, re.S | re.M).group(1)
               return [e.split("|")[0] for e in re.findall(r'"([^"]+)"', body)]

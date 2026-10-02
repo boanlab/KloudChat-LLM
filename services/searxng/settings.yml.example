@@ -1,9 +1,8 @@
-# Only the engines named below exist; nothing arrives with the defaults. The
-# audience is a Korean university (students and researchers across faculties,
-# office and research staff), and this host's address is one datacentre IP that
-# google, bing, duckduckgo, naver and most smaller scrapers refuse, so the set
-# is what answers from here and what this audience asks for. Re-measured
-# 2026-09-11; to re-test an engine:
+# Only the engines named below exist; none of SearXNG's defaults. The audience
+# is a Korean university (students, researchers, office and research staff);
+# this host's address is one datacentre IP that google, bing, duckduckgo, naver
+# and most smaller scrapers refuse, so the set is what answers from here and
+# what this audience asks for. To test an engine:
 #
 #   curl -s -G 'http://<host>/tools/search/search' --data-urlencode 'q=<query>' \
 #     -d format=json -d engines=<name> | python3 -c 'import sys,json; \
@@ -36,8 +35,8 @@ use_default_settings:
       - huggingface
 
 search:
-  # Language and region: engines that take a market or country prefer Korean
-  # results with the region present. Applies when a request carries no language.
+  # Default when a request carries no language. Engines that take a market or
+  # country prefer Korean results only with the region present.
   default_lang: "ko-KR"
   # Strict. The search shim also forces safesearch=2 on every request it forwards.
   safe_search: 2
@@ -45,10 +44,10 @@ search:
   autocomplete: ""
   ban_time_on_fail: 5
   max_ban_time_on_fail: 120
-  # Engine suspension after a block. The defaults (CAPTCHA: an hour) turn one
-  # burst into an hour without general search for everyone, and the suspension
-  # is shared by all workers through valkey. Short enough to recover on its
-  # own; the search shim's cache and cap keep the bursts from happening.
+  # Engine suspension after a block, shared by all workers through valkey.
+  # SearXNG's defaults (CAPTCHA: an hour) turn one burst into an hour without
+  # general search for everyone; the search shim's cache and cap keep bursts
+  # rare.
   suspended_times:
     SearxEngineAccessDenied: 120
     SearxEngineCaptcha: 300
@@ -97,13 +96,9 @@ categories_as_tabs:
 engines:
 
   # ── general: everyday, administrative and business questions ────────
-  # yandex is the one scraped engine that answers Korean everyday queries
-  # from this address (Naver blogs, 지식iN, news sites; 15/15 on-topic).
-  # brave answers well (17/20) but is rate-limited and often suspended, so
-  # it adds when present. bing answered with TikTok and Microsoft home
-  # pages for anything, google/duckduckgo/naver/startpage/qwant/mojeek/
-  # presearch/yep/ask/aol/seznam/mwmbl/karmasearch/yahoo return nothing.
-  # Off in SearXNG's defaults
+  # yandex: the one scraped engine that answers Korean everyday queries
+  # from this address (Naver blogs, 지식iN, news sites); off in SearXNG's
+  # defaults. brave: good answers, rate-limited and often suspended.
   - name: yandex
     weight: 1.5
     timeout: 6.0
@@ -122,9 +117,7 @@ engines:
     disabled: false
 
   # ── news: current events; the UI's news lane ────────────────────────
-  # Korean news: duckduckgo news 22/22, bing news 9/9. google news, yahoo
-  # news, qwant news, yep news, mojeek news, startpage news, karmasearch
-  # news and wikinews return nothing. reuters is English only.
+  # duckduckgo news and bing news answer Korean news; reuters is English only.
   - name: duckduckgo news
     weight: 1.2
     timeout: 6.0
@@ -138,9 +131,7 @@ engines:
     timeout: 6.0
 
   # ── science: graduate students, researchers; the UI's papers lane ───
-  # All answered 10/10 for English and Korean topics. crossref answered a
-  # Korean education query with 1/20 on-topic and is left out; openaire
-  # datasets and pdbe return nothing.
+  # All answer English and Korean topics.
   - name: google scholar
     weight: 1.2
     timeout: 8.0
@@ -167,7 +158,6 @@ engines:
     timeout: 8.0
 
   # ── it: engineering; the UI's code lane ─────────────────────────────
-  # pypi, askubuntu, superuser, hackernews and reddit return nothing.
   - name: github
     weight: 1.2
 
@@ -189,19 +179,16 @@ engines:
     disabled: false
 
   # ── NAVER Search API (NAVER API HUB) ─────────────────────────────────
-  # Not the scraping `naver` engine above (blocked from this network) but the
-  # Search API, through SearXNG's generic JSON engine. The Korean web as Korean
-  # users see it — web documents and news — from the source. Since 2026-06 the
-  # API is served by NAVER API HUB on NAVER Cloud Platform
-  # (naverapihub.apigw.ntruss.com, X-NCP-APIGW-* headers); the developers.naver.com
-  # endpoints stop for new applications on 2026-07-31 and for everyone on
-  # 2027-06-30. Quota: the search APIs share 775,000 calls a month per
-  # application at 50 requests a second per key, free at present; a search costs
-  # one call per engine below. Each API (웹문서, 뉴스) must be enabled on the
-  # application in the NCP console or the HUB answers 401 "활성화되어 있지 않습니다".
-  # gen-searxng-config.sh fills the credentials from NAVER_CLIENT_ID /
-  # NAVER_CLIENT_SECRET in .env and enables the two engines only when both
-  # are set; without them they stay disabled and cost nothing.
+  # The Search API through SearXNG's generic JSON engine, not the scraping
+  # `naver` engine (blocked from this network): Korean web documents and news
+  # from the source. Served by NAVER API HUB on NAVER Cloud Platform
+  # (naverapihub.apigw.ntruss.com, X-NCP-APIGW-* headers). Quota: the search
+  # APIs share 775,000 calls a month per application at 50 requests a second
+  # per key; a search costs one call per engine below. Each API (웹문서, 뉴스)
+  # must be enabled on the application in the NCP console, or the HUB answers
+  # 401 "활성화되어 있지 않습니다". gen-searxng-config.sh fills the credentials
+  # from NAVER_CLIENT_ID / NAVER_CLIENT_SECRET in .env and enables the two
+  # engines only when both are set.
   - name: naver web
     engine: json_engine
     shortcut: nvw
@@ -226,9 +213,8 @@ engines:
     shortcut: nvn
     categories: [news]
     paging: false
-    # Relevance order: `sort=date` puts the newest article first whatever it is
-    # about (personnel notices, weekly digests); `sim` still answers with
-    # today's articles when the subject is in the news.
+    # sort=sim: relevance order. sort=date puts the newest article first
+    # whatever its subject.
     search_url: https://naverapihub.apigw.ntruss.com/search/v1/news?query={query}&display=10&sort=sim
     headers:
       X-NCP-APIGW-API-KEY-ID: "__NAVER_CLIENT_ID__"

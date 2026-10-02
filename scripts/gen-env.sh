@@ -35,9 +35,8 @@ while IFS= read -r line; do
     key="${BASH_REMATCH[1]}"
     case "$key" in
       # LiteLLM key convention: sk- prefix
-      LITELLM_MASTER_KEY)  secret="sk-$(gen_secret 32)" ;;
-      *MASTER_KEY*|JWT_*)  secret="$(gen_secret 32)" ;;
-      *)                   secret="$(gen_secret 16)" ;;
+      LITELLM_MASTER_KEY) secret="sk-$(gen_secret 32)" ;;
+      *)                  secret="$(gen_secret 16)" ;;
     esac
     GENERATED["$key"]="$secret"
     echo "${key}=${secret}"

@@ -13,31 +13,30 @@ Unplaced models are delegated to OpenRouter with a reason.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional, Sequence
 
+from scheduler.inventory import UNSUPPORTED_GPU_CLASS
 from scheduler.kv_model import (
     ADMISSION_MARGIN,
     kv_bytes_per_token,
     sliding_bytes_per_sequence,
 )
-from scheduler.inventory import UNSUPPORTED_GPU_CLASS
-from scheduler.registry import ModelSpec, replace
+from scheduler.registry import ModelSpec
 from scheduler.types import GB, Dtype, NodeSpec
 
 #: --gpu-memory-utilization bounds; 1.0 fails engine init
 MAX_GPU_UTIL = 0.95
 MIN_GPU_UTIL = 0.05
 
-#: Runtime headroom for a generate runner: activation, CUDA-graph capture, hybrid
-#: conv state (GB10 measurement: budget minus weights minus reported KV cache)
+#: Runtime headroom for a generate runner: activation, CUDA-graph capture,
+#: hybrid conv state
 ACTIVATION_BYTES = 10 * GB
 
 #: Pooling runners capture no decode graphs and keep no per-sequence state
 POOLING_ACTIVATION_BYTES = 2 * GB
 
-#: Activation ceiling as a fraction of the card; the figure above scales with
-#: concurrency, which a small card never reaches
+#: Activation ceiling as a fraction of the card
 ACTIVATION_MAX_FRACTION: float = 0.12
 
 #: Capacity differences below this do not decide placement

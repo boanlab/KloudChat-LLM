@@ -15,8 +15,9 @@ human fills in are external keys and node addresses.
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | token | Hugging Face gated repositories. Weight downloads only |
-| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (default chat, retrieval, transcription); the rest are the pool (large picker models). See [models.md](models.md#where-models-are-defined) |
-| `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml` |
+| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (retrieval, transcription); the rest are the pool (the coder). See [models.md](models.md#where-models-are-defined) |
+| `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml`. Default `qwen3.8-27b,bge-m3,bge-reranker-v2-m3,whisper-large-v3` |
+| `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | optional | NAVER API HUB credentials; both set enables the `naver web` and `naver news` engines |
 | `OPENAI_API_KEY` | optional | Registers `text-embedding-3-small` as the embedding fallback. Not in `.env.example`; add it by hand |
 
 `setup.sh` refuses to continue unless at least one of `OPENROUTER_API_KEY` or a
@@ -35,7 +36,7 @@ Filled in by `gen-env.sh`. If you create them yourself, keep the formats below.
 
 | Variable | Format | Used by |
 |---|---|---|
-| `LITELLM_MASTER_KEY` | `sk-` + 64 hex | LiteLLM admin API. Entered in the UI admin screen. Also the password for LiteLLM's own admin UI at `http://<host>:<GATEWAY_PORT>/litellm/ui/` (user `admin`), which is reachable on purpose: the gateway is only exposed on the internal network |
+| `LITELLM_MASTER_KEY` | `sk-` + 64 hex | LiteLLM admin API. Entered in the UI admin screen. Also the password for LiteLLM's admin UI at `http://<host>:<GATEWAY_PORT>/litellm/ui/`, reachable on purpose: the gateway is only exposed on the internal network |
 | `LITELLM_DB_PASSWORD` | 32 hex | LiteLLM's postgres |
 | `LITELLM_DB_USER` | string | `kloudchat-litellm` by default |
 | `SEARXNG_SECRET_KEY` | 32 hex | SearXNG session signing |
@@ -56,12 +57,12 @@ Do not set these by hand. The placement step of `setup.sh all` writes them; set
 
 | Variable | Where | Contents |
 |---|---|---|
-| `VLLM_<MODEL>_URL` | compose host | CSV of node addresses serving that model. Empty for a model that is not placed |
+| `VLLM_<PREFIX>_URL` | compose host | CSV of node addresses serving that model. Empty for a model that is not placed |
 | `WHISPER_URLS` | compose host | CSV of the nodes the transcription model was placed on. Empty sends STT to OpenRouter |
-| `VLLM_<MODEL>_MAX_LEN` | node | Context decided for it |
-| `VLLM_<MODEL>_GPU_UTIL` | node | `--gpu-memory-utilization` decided for it |
-| `VLLM_<MODEL>_TP` | node | Cards to shard across, from `tensor_parallel` in models.yaml. Written only when it is not 1 |
-| `VLLM_<MODEL>_DEVICES` | node | `NVIDIA_VISIBLE_DEVICES` for the container. Written only on multi-card nodes |
+| `VLLM_<PREFIX>_MAX_LEN` | node (`.env` under `KLOUDCHAT_REMOTE_DIR`) | Context decided for it |
+| `VLLM_<PREFIX>_GPU_UTIL` | node | `--gpu-memory-utilization` decided for it |
+| `VLLM_<PREFIX>_TP` | node | Cards to shard across, from `tensor_parallel` in models.yaml. Written only when it is not 1 |
+| `VLLM_<PREFIX>_DEVICES` | node | `NVIDIA_VISIBLE_DEVICES` for the container. Written only on multi-card nodes |
 
 ## 5. Images
 
@@ -86,12 +87,11 @@ placement is skipped.
 | `VLLM_IMAGE` | `kloudchat-vllm:local` | The image compose runs: this repo's layer over the upstream vLLM image, built and recorded by `install-vllm.sh` |
 | `VLLM_BASE_IMAGE` / `VLLM_BASE_DIGEST` | (empty) | Upstream image and the digest it resolved to, recorded by `install-vllm.sh`. A rebuild pins to the digest |
 | `VLLM_MODELS_ROOT` | `/var/lib/vllm/models` | Checkpoint root on the node |
-| `VLLM_<MODEL>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root |
-| `VLLM_<MODEL>_MAX_BATCHED_TOKENS` | `16384` | Lower bound for the vision mm-budget |
-| `VLLM_<MODEL>_MAX_NUM_SEQS` | `64` | CUDA-graph capture limit for the hybrid models |
+| `VLLM_<PREFIX>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root (`VLLM_QWEN27B_DIR`, `VLLM_CODERNEXT_DIR`, `VLLM_BGEM3_DIR`, `VLLM_RERANK_DIR`, `VLLM_WHISPER_DIR`) |
+| `VLLM_QWEN27B_MAX_BATCHED_TOKENS` | `16384` | Lower bound for the vision mm-budget |
+| `VLLM_QWEN27B_MAX_NUM_SEQS` | `64` | CUDA-graph capture limit for the hybrid conv-state cache |
 | `VLLM_QWEN27B_SPEC_TOKENS` | `5` | MTP speculative tokens per step for `vllm-qwen27b` |
 | `VLLM_CODERNEXT_DEEP_GEMM` | `0` | `VLLM_USE_DEEP_GEMM` for `vllm-codernext`. DeepGEMM rejects this checkpoint's FP8 scale-factor layout on GB10; `1` where the kernel takes it |
-| `VLLM_WHISPER_DIR` | `whisper-large-v3` | Transcription checkpoint directory |
 | `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling for `vllm-whisper` (`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`) |
 
 Defaults and their rationale are in [GPU memory](gpu-memory.md#tuning-knobs).
@@ -100,7 +100,7 @@ Defaults and their rationale are in [GPU memory](gpu-memory.md#tuning-knobs).
 
 | Variable | Default | Notes |
 |---|---|---|
-| `DEEP_RESEARCH_MODEL` | `local/qwen3.8-27b` | Model for iterative search. The scheduler holds it at its native 256K context |
+| `DEEP_RESEARCH_MODEL` | `local/qwen3.8-27b` | Model for iterative search, served at its native 262144 context |
 | `DEEP_RESEARCH_LLM_URL` | `http://litellm:8000/v1` | LiteLLM on the same network |
 
 ## 8. Retrieval index (profile `index`)
@@ -120,10 +120,11 @@ Defaults and their rationale are in [GPU memory](gpu-memory.md#tuning-knobs).
 |---|---|---|
 | `LITELLM_NUM_WORKERS` | `4` | ~600 MB per worker |
 | `LITELLM_LOG` | `INFO` | |
-| `CONCURRENCY_GATE_CAPS` | built-in per-model caps | JSON map of model aliases to positive concurrency caps |
+| `LITELLM_URL` | `http://localhost:8000` | Where `manage.sh` reaches LiteLLM. LiteLLM publishes no host port, so set it to the gateway: `http://localhost:<GATEWAY_PORT>/litellm`. Read from the shell first, then `.env` |
+| `CONCURRENCY_GATE_CAPS` | built-in per-model caps (32 for `local/qwen3.8-27b`) | JSON map of model aliases to positive concurrency caps |
 | `CONCURRENCY_GATE_TTL` | `1.5` | Seconds between vLLM capacity polls |
 | `CONCURRENCY_GATE_SCRAPE_TIMEOUT` | `1.0` | Timeout in seconds for one vLLM metrics request |
-| `CONCURRENCY_GATE_DEBUG` | (empty) | Log the overload gate's decisions |
+| `CONCURRENCY_GATE_DEBUG` | (empty) | `1` logs the overload gate's decisions |
 | `CONCURRENCY_GATE_FORCE` | (empty) | Comma-separated model aliases to force through the saturated path, for testing |
 
 Read by `gen-litellm-config.sh` from the shell, not from `.env`:
@@ -159,14 +160,14 @@ Changing the others means editing `docker-compose.yml`.
 | index-shim | `INDEX_MAX_DOC_CHARS` | `2000000` | Documents are truncated beyond this |
 | index-shim | `EMBED_MODELS`, `RERANK_*`, `LITELLM_URL` | see section 8 | Compose maps them from the `INDEX_*` keys |
 | crawl4ai-shim | `DEFAULT_TIMEOUT_MS` | `30000` | Page load timeout |
-| crawl4ai-shim | `MAX_CONCURRENT_PAGES` / `QUEUE_TIMEOUT_MS` / `CACHE_TTL_S` | `8` / `15000` / `900` | Pages rendering at once, the wait for a slot, and how long a good scrape is reused |
+| crawl4ai-shim | `MAX_CONCURRENT_PAGES` / `QUEUE_TIMEOUT_MS` / `CACHE_TTL_S` / `CACHE_MAX_ENTRIES` | `8` / `15000` / `900` / `512` | Pages rendering at once, the wait for a slot, how long a good scrape is reused, and how many are kept |
 | crawl4ai-shim | `ADULT_HOSTS_FILE` | `/app/adult-hosts.txt` | Hosts file of adult sites a scrape refuses; baked into the image |
+| crawl4ai-shim | `USER_AGENT` | browser-like string | Sent by Chromium |
 | search-shim | `SEARXNG_URL` | `http://searxng:8080` | The SearXNG behind it |
 | search-shim | `MAX_CONCURRENT_SEARCHES` / `QUEUE_TIMEOUT_MS` | `12` / `10000` | Searches SearXNG runs at once, and the wait for a slot before `503 busy` |
 | search-shim | `CACHE_TTL_S` / `STALE_TTL_S` / `CACHE_MAX_ENTRIES` | `900` / `21600` / `2048` | How long an answer with results is reused, how much longer it is served while SearXNG cannot answer, and how many are kept |
 | search-shim | `UPSTREAM_TIMEOUT_S` / `CONNECT_TIMEOUT_S` | `20` / `3` | Whole-call and connect timeouts towards SearXNG |
 | search-shim | `SAFESEARCH` | `2` | Forced on every search: 0 off, 1 moderate, 2 strict |
-| crawl4ai-shim | `USER_AGENT` | `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 KloudChat/1.0` | |
 | code-interpreter | `MAX_EXECUTION_TIME` / `MAX_MEMORY_MB` | `30` / `512` | Sandbox limits, set in compose |
 | all shims | `LOG_LEVEL` | `INFO` | |
 

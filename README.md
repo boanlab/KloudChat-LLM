@@ -40,10 +40,10 @@ $EDITOR .env                  # fill in the table below
 ```
 
 Images come from Docker Hub. `./scripts/setup.sh all --build` builds this
-working tree's images instead, for a service change that is not merged yet.
+working tree's images instead.
 
-The run ends by printing the addresses to paste into the UI admin screen. Print
-them again at any time:
+The run ends by printing the addresses to paste into the UI admin screen.
+Print them again at any time:
 
 ```bash
 ./scripts/setup.sh urls
@@ -55,11 +55,11 @@ them again at any time:
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | optional | Hugging Face gated repositories, for weight downloads |
-| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. The first is the head node (default chat, retrieval, transcription); the rest are the pool (large picker models) |
+| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. The first is the head node (retrieval, transcription); the rest are the pool (the coder) |
 | `VLLM_MODELS` | model id CSV | What to deploy. Defined in `scheduler/models.yaml` |
 
 `VLLM_*_URL` is written by the placement step inside `setup.sh all`. To manage
-those by hand, run it as `KLOUDCHAT_SKIP_SCHEDULER=1 ./scripts/setup.sh all`.
+those by hand, run `KLOUDCHAT_SKIP_SCHEDULER=1 ./scripts/setup.sh all`.
 
 At least one of an OpenRouter key or a vLLM node is required.
 
@@ -70,13 +70,12 @@ At least one of an OpenRouter key or a vLLM node is required.
 ./scripts/download-vllm-models.sh  # only weights this card can serve
 ```
 
-A GPU node has one role, `vllm`. Transcription (`whisper-large-v3`) is a vLLM
-service like the rest, on any architecture. With `NODES_VLLM` filled in,
-`setup.sh all` runs the installer on each node over SSH. Model downloads run on
-the node itself.
+Every model a GPU node serves, transcription (`whisper-large-v3`) included, is
+a vLLM container. With `NODES_VLLM` filled in, `setup.sh all` runs the
+installer on each node over SSH; model downloads run on the node itself.
 
-The downloader inspects the card first: weights that need a format the card
-cannot execute, or more memory than it has, are skipped with the reason.
+The downloader inspects the card first: weights that need more memory than the
+card has, or a card outside the supported set, are refused with the reason.
 
 ## Layout
 
@@ -101,8 +100,8 @@ services/                   one directory per service: Dockerfile, source, confi
 | `index` | retrieval index (pgvector) and its shim |
 
 The default is `tools,models`. To put tools on one machine and models on
-another, enable only the profile each machine needs: the UI accepts a different
-address per capability.
+another, enable only the profile each machine needs: the UI accepts a
+different address per capability.
 
 ## Operations
 
@@ -114,28 +113,28 @@ address per capability.
 
 ./scripts/setup.sh scheduler plan     # compute placement (changes nothing)
 ./scripts/setup.sh scheduler apply    # apply it
-./scripts/manage.sh user usage        # LiteLLM usage and budgets
 ./scripts/manage-vllm.sh status       # GPU node status (every vLLM service)
+
+LITELLM_URL=http://localhost:8080/litellm ./scripts/manage.sh user usage   # LiteLLM usage and budgets
 ```
 
-Every script prints its usage when run without arguments.
+LiteLLM publishes no host port; `manage.sh` reaches it through `LITELLM_URL`
+(shell or `.env`), which should point at the gateway. Every script prints its
+usage when run without arguments.
 
 ## Supported environments
 
 | Environment | Behaviour |
 |---|---|
 | Linux amd64, no GPU | OpenRouter only |
-| Linux amd64 + NVIDIA GPU (RTX 5090 / PRO 5000 / PRO 6000) | Local GPU with OpenRouter fallback |
+| Linux amd64 + RTX 5090 / RTX PRO 5000 Blackwell / RTX PRO 6000 Blackwell | Local GPU with OpenRouter fallback |
 | Linux arm64, GB10 | Local GPU with OpenRouter fallback |
-| AMD / ROCm, Apple, anything else | Not supported. OpenRouter only |
+| Any other card, AMD / ROCm, Apple, macOS, Windows | Not supported. OpenRouter only |
 
-Local serving is NVIDIA-only: detection, the container runtime reservation,
-device pinning and the quantisation gate all go through NVIDIA interfaces, and
-the default weights are NVFP4, a format with no AMD counterpart.
-
-Supported cards are GB10, RTX 5090 and RTX PRO 5000/6000; every script refuses
-anything else. 32 GiB usable is the floor. Where a model does not fit, the
-placement step says so and delegates to OpenRouter.
+Local serving is NVIDIA-only. Supported cards are GB10, RTX 5090, RTX PRO 5000
+and RTX PRO 6000; the download and manage scripts refuse anything else and the
+scheduler places nothing there. 32 GiB usable is the floor. Where a model does
+not fit, the placement step says so and delegates to OpenRouter.
 
 ## Documentation
 

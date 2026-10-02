@@ -10,7 +10,7 @@ source "${SCRIPT_DIR}/lib.sh"
 
 MARKER_START='# >>> KLOUDCHAT_AUTOGEN_START'
 MARKER_END='# <<< KLOUDCHAT_AUTOGEN_END'
-# router_settings.fallbacks: generated too, under its own marker pair.
+# router_settings.fallbacks marker pair
 FB_START='# >>> KLOUDCHAT_FALLBACKS_START'
 FB_END='# <<< KLOUDCHAT_FALLBACKS_END'
 
@@ -18,14 +18,14 @@ DRY_RUN=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
-    # Read-only: declared prices against the live catalogue
+    # Read-only
     --check-prices) or_price_drift; exit $? ;;
     -h|--help) echo "Usage: $(basename "$0") [--dry-run] [--check-prices]"; exit 0 ;;
     *)         err "Unknown: $arg"; exit 2 ;;
   esac
 done
 
-# config.yaml is gitignored; seeded from the example on first run.
+# config.yaml is gitignored; seeded from the example
 if [[ ! -f "$CONFIG_FILE" ]]; then
   [[ -f "$CONFIG_EXAMPLE" ]] || { err "neither $CONFIG_FILE nor $CONFIG_EXAMPLE exists."; exit 1; }
   cp "$CONFIG_EXAMPLE" "$CONFIG_FILE"
@@ -37,26 +37,25 @@ grep -qF "$MARKER_START" "$CONFIG_FILE" && grep -qF "$MARKER_END" "$CONFIG_FILE"
 grep -qF "$FB_START" "$CONFIG_FILE" && grep -qF "$FB_END" "$CONFIG_FILE" \
   || { err "FALLBACKS markers missing: $CONFIG_FILE — add them under router_settings"; exit 1; }
 
-# Context when a backend's max_model_len cannot be discovered from /v1/models.
+# Context when /v1/models yields no max_model_len
 CTX_FALLBACK=32768
 
-# Per-model request timeout (s): a stuck-request backstop, generous because
-# deep research runs for minutes. Load is the concurrency gate's job.
+# Per-model request timeout (s); deep research runs for minutes
 declare -A MODEL_TIMEOUT=( [qwen3.8-27b]=1800 )
 
-# OpenRouter provider-routing variant for chat routes: ":floor" (cheapest
-# provider), ":nitro" (throughput), "" (OpenRouter default). KC_OR_VARIANT.
+# OpenRouter provider-routing suffix on chat routes: ":floor" (cheapest),
+# ":nitro" (throughput), "" (OpenRouter default)
 OR_VARIANT="${KC_OR_VARIANT-:floor}"
 
-# Custom model_info fields KloudChat reads from /model/info. The id alone is
-# not a trust boundary: local/* can spill to OpenRouter under load.
+# model_info fields KloudChat reads from /model/info; local/* can spill to
+# OpenRouter under load, so the name alone is not the boundary
 emit_kchat_boundary() {  # $1=self_hosted|hybrid|external  $2=strict  $3=privacy_only
   echo "      kchat_data_boundary: $1"
   echo "      kchat_strict_local: $2"
   echo "      kchat_privacy_only: $3"
 }
 
-# Free models. The :free suffix stays in the name; price 0.
+# Free models; the :free suffix stays in the name
 emit_or_free() {
   local slug="$1"
   echo "  - model_name: ${slug}"
@@ -69,8 +68,8 @@ emit_or_free() {
   emit_kchat_boundary external false false
 }
 
-# Commercial model: name `<prov>/<id>`, route `openrouter/<route_prov>/<id>`.
-# route_prov (5th arg) when OpenRouter's slug provider differs from the display one.
+# Commercial model: name `<prov>/<id>`, route `openrouter/<route_prov>/<id>`;
+# route_prov (5th arg) when OpenRouter's slug provider differs from the display one
 emit_commercial_or() {
   local prov="$1" id="$2" in_pm="$3" out_pm="$4" route_prov="${5:-$1}"
   has_openrouter || return 0
@@ -84,8 +83,8 @@ emit_commercial_or() {
   emit_kchat_boundary external false false
 }
 
-# OpenRouter twin of a local vLLM model, the router_settings.fallbacks target.
-# Hidden from the picker; emitted only when the local primary is deployed.
+# OpenRouter twin of a deployed local model: the router_settings.fallbacks
+# target, hidden from the picker
 emit_or_fallback() {
   local local_url="$1" or_slug="$2" in_pm="$3" out_pm="$4"
   has_openrouter || return 0
@@ -101,8 +100,8 @@ emit_or_fallback() {
   echo "      kchat_hidden: true"
 }
 
-# max_input_tokens = ctx minus headroom for the tools schema and chat-template
-# wrapper, which enable_pre_call_checks does not count. KC_PRE_CALL_HEADROOM.
+# max_input_tokens = ctx minus KC_PRE_CALL_HEADROOM for the tools schema and
+# chat-template wrapper, which enable_pre_call_checks does not count
 __declared_max_input_tokens() {
   local ctx="$1" headroom="${KC_PRE_CALL_HEADROOM:-4096}"
   local v=$(( ctx - headroom ))
@@ -110,7 +109,7 @@ __declared_max_input_tokens() {
   echo "$v"
 }
 
-# Image models. `output_cost_per_token` carries the per-image-token price.
+# Image models; output_cost_per_token is the per-image-token price
 emit_or_image() {
   local id="$1" out_per_token="$2" in_pm="$3"
   has_openrouter || return 0
@@ -125,8 +124,8 @@ emit_or_image() {
   emit_kchat_boundary external false false
 }
 
-# STT through OpenRouter: a plain chat deployment called with an audio content
-# part (OpenRouter has no transcription endpoint). Hidden from the picker.
+# STT through OpenRouter: a chat deployment called with an audio content part
+# (OpenRouter has no transcription endpoint); hidden from the picker
 emit_or_stt() {
   local id="$1" in_pm="$2" out_pm="$3"
   has_openrouter || return 0
@@ -141,8 +140,7 @@ emit_or_stt() {
   echo "      kchat_hidden: true"
 }
 
-# Audio models (`mode: audio_speech`). Per-clip models carry
-# output_cost_per_request.
+# Audio models (mode: audio_speech); per-clip models carry output_cost_per_request
 emit_or_audio() {
   local id="$1" in_pm="$2" out_pm="$3" per_call="$4"
   has_openrouter || return 0
@@ -158,7 +156,7 @@ emit_or_audio() {
   emit_kchat_boundary external false false
 }
 
-# Local embedding deployment, only when the scheduler placed one.
+# Local embedding deployment, when placed
 emit_vllm_embed() {
   local m="$1" url_csv="$2" urls
   [[ -n "$url_csv" ]] || return 0
@@ -170,7 +168,7 @@ emit_vllm_embed() {
     echo "      model: hosted_vllm/local/${m}"
     echo "      api_base: ${url%/}/v1"
     echo "    model_info:"
-    # `mode: embedding`: not a picker surface
+    # mode: embedding keeps it out of the picker
     echo "      mode: embedding"
     echo "      input_cost_per_token: 0.0000000000"
     echo "      output_cost_per_token: 0.0000000000"
@@ -178,7 +176,7 @@ emit_vllm_embed() {
   done <<< "$urls"
 }
 
-# Local reranker, proxied as /v1/rerank through LiteLLM's hosted_vllm path.
+# Local reranker, /v1/rerank through LiteLLM's hosted_vllm path
 emit_vllm_rerank() {
   local m="$1" url_csv="$2" urls
   [[ -n "$url_csv" ]] || return 0
@@ -197,8 +195,8 @@ emit_vllm_rerank() {
   done <<< "$urls"
 }
 
-# OpenAI embedding fallback, only with OPENAI_API_KEY (OpenRouter serves no
-# embedding models).
+# OpenAI embedding fallback, with OPENAI_API_KEY only (OpenRouter serves no
+# embedding models)
 emit_openai_embed() {
   local m="$1" in_pm
   [[ -n "$(env_get OPENAI_API_KEY)" ]] || return 0
@@ -213,8 +211,8 @@ emit_openai_embed() {
   echo "      api_key: os.environ/OPENAI_API_KEY"
 }
 
-# URLs from the csv that serve this model_name; the whole csv when none answer
-# yet (LiteLLM's cooldown recovers once they do). Deduplicated.
+# URLs from the csv that serve this model_name, deduplicated; the whole csv
+# when none answer yet (LiteLLM's cooldown recovers once they do)
 __vllm_resolved_urls() {
   local want="$1" url_csv="$2" discovered
   discovered="$(vllm_union_node_models "$url_csv" \
@@ -235,14 +233,13 @@ emit_vllm_chat_entry() {
   out_pm="${MODEL_PRICE_OUT_PM[$m]:-}"
   echo "  - model_name: ${alias}"
   echo "    litellm_params:"
-  # strict-local/* is an alias over the same deployment; the served id stays local/<m>
+  # strict-local/* aliases the same deployment; the served id stays local/<m>
   echo "      model: hosted_vllm/local/${m}"
   echo "      api_base: ${url%/}/v1"
   tmo="${MODEL_TIMEOUT[$m]:-}"
   [[ -n "$tmo" ]] && echo "      timeout: ${tmo}"
   echo "    model_info:"
-  # Native tool calls (--enable-auto-tool-choice); without these flags the
-  # client falls back to ReAct text.
+  # Required: without them the client falls back to ReAct text
   echo "      supports_function_calling: true"
   echo "      supports_tool_choice: true"
   echo "      max_input_tokens: $(__declared_max_input_tokens "$ctx")"
@@ -258,7 +255,7 @@ emit_vllm_chat() {
   [[ -n "$url_csv" ]] || return 0
   regular_boundary=self_hosted
   has_openrouter && regular_boundary=hybrid
-  # Context per deployment from /v1/models (the scheduler sets it per node).
+  # Context per deployment from /v1/models; the scheduler sets it per node
   ctx_fallback="$CTX_FALLBACK"
   urls="$(__vllm_resolved_urls "local/${m}" "$url_csv")"
   while IFS= read -r url; do
@@ -269,13 +266,13 @@ emit_vllm_chat() {
       ctx="$ctx_fallback"
     fi
     emit_vllm_chat_entry "$m" "$url" "$ctx" "local/${m}" "$regular_boundary" false false
-    # Privacy-only alias: no fallback twin, the gate rejects overload instead.
+    # Privacy-only alias: no fallback twin; the gate rejects overload instead
     emit_vllm_chat_entry "$m" "$url" "$ctx" "strict-local/${m}" self_hosted true true
   done <<<"$urls"
 }
 
 # A local model's OpenRouter route when no vLLM serves it: a commercial entry
-# under its own slug, plus the tool flags LiteLLM's model map lacks for it.
+# under its own slug plus the tool flags LiteLLM's model map lacks for it
 emit_or_brain() {  # $1=or-slug  $2=in_pm  $3=out_pm
   echo "  - model_name: $1"
   echo "    litellm_params:"
@@ -290,17 +287,17 @@ emit_or_brain() {  # $1=or-slug  $2=in_pm  $3=out_pm
 }
 
 # Local model registration: local/ and strict-local/ over a vLLM URL, the
-# OpenRouter slug without one (local/* is never boundary external).
+# OpenRouter slug without one; local/* is never boundary external
 emit_brain() {  # $1=local-model  $2=url_csv  $3=or-slug  $4=or_in_pm  $5=or_out_pm
   if [[ -n "$2" ]]; then
     emit_vllm_chat "$1" "$2"
   elif has_openrouter; then
-    # Exclusive with emit_or_fallback (same model_name, URL set)
+    # Exclusive with emit_or_fallback (same model_name)
     emit_or_brain "$3" "$4" "$5"
   fi
 }
 
-# Live prices over the declared tables before anything is emitted.
+# Live prices over the declared tables
 PRICE_REFRESH="$(or_refresh_prices || true)"
 if [[ -n "$PRICE_REFRESH" ]]; then
   read -r PRICED MOVED <<<"$PRICE_REFRESH"
@@ -318,10 +315,10 @@ SECTION=$(
   # --- local (vLLM), or the OpenRouter slug where nothing is deployed ---
   emit_brain "qwen3.8-27b"   "$(env_get VLLM_QWEN27B_URL)"    "qwen/qwen3.8-27b" "$(or_price qwen/qwen3.8-27b in)" "$(or_price qwen/qwen3.8-27b out)"
   emit_brain "qwen3-coder-next" "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next" "$(or_price qwen/qwen3-coder-next in)" "$(or_price qwen/qwen3-coder-next out)"
-  # Retrieval: local when placed, the OpenAI catalogue below as fallback.
+  # Retrieval: local when placed; the OpenAI catalogue below is the fallback
   emit_vllm_embed "bge-m3" "$(env_get VLLM_BGEM3_URL)"
   emit_vllm_rerank "bge-reranker-v2-m3" "$(env_get VLLM_RERANK_URL)"
-  # STT fallback whenever no local whisper answers (a placed backend may be down).
+  # STT fallback whenever no local whisper answers
   vllm_any_url_alive "$(env_get WHISPER_URLS)" || emit_or_stt "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" "$(or_price "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" in)" "$(or_price "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" out)"
   # --- openai (commercial + embed fallback) ---
   for m in "${OPENAI_MODELS[@]}";        do emit_commercial_or openai "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
@@ -363,7 +360,7 @@ SECTION=$(
 )
 
 # router_settings.fallbacks: one line per deployed local model, same condition
-# as emit_or_fallback.
+# as emit_or_fallback
 fb_line() {  # $1=local-model  $2=url_csv  $3=or-slug
   has_openrouter || return 0
   [[ -n "$2" ]] || return 0
@@ -397,8 +394,8 @@ src = splice(src, "# >>> KLOUDCHAT_AUTOGEN_START", "# <<< KLOUDCHAT_AUTOGEN_END"
 src = splice(src, "# >>> KLOUDCHAT_FALLBACKS_START", "# <<< KLOUDCHAT_FALLBACKS_END",
              os.environ["KC_FALLBACKS"], "FALLBACKS")
 
-# general_settings.store_prompts_in_spend_logs: false, set textually so operator
-# comments and passthrough routes survive.
+# general_settings.store_prompts_in_spend_logs: false, spliced textually so
+# operator comments and passthrough routes survive
 lines = src.splitlines(keepends=True)
 general = next((i for i, line in enumerate(lines) if line.rstrip() == "general_settings:"), None)
 if general is None:

@@ -1,21 +1,17 @@
-# Tooling configuration. The scheduler is a plain package with one runtime
-# dependency (PyYAML) and is run as `python3 -m scheduler`, so there is no build
-# system section here — this file exists to pin lint and test behaviour.
+# Lint and test settings. The scheduler is a plain package run as
+# `python3 -m scheduler`; there is no build system.
 
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-extend-exclude = ["services/deep-research/patches", "services/vllm/patches"]
+extend-exclude = ["services/deep-research/patches"]
 
 [tool.ruff.lint]
-# Pyflakes plus the pycodestyle subset that catches real mistakes, isort, and the
-# bugbear checks that have bitten this codebase. Deliberately no `UP`: the code
-# uses `from __future__ import annotations` with `Optional[...]` throughout, and
-# rewriting that is churn rather than a fix.
+# Pyflakes, the pycodestyle subset that catches mistakes, isort, bugbear.
+# No `UP`: the code keeps `Optional[...]` under `from __future__ import annotations`.
 select = ["E4", "E7", "E9", "F", "I", "B"]
 ignore = [
-  "B008",  # FastAPI's Depends/Form defaults are calls by design
-  "E741",  # `l` reads fine in the memory arithmetic
+  "B008",  # frozen dataclass defaults in keyword-only arguments (scheduler.applier)
 ]
 
 [tool.pytest.ini_options]
