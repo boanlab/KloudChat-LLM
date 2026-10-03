@@ -142,7 +142,7 @@ registered; if the query fails, nothing is added. The filter is
 | Present | One route per model, named `<provider>/<id>` |
 | Absent | Not registered |
 
-`model_name` is canonical (`openai/gpt-5.6-sol`); `litellm_params.model` is
+`model_name` is canonical (`openai/gpt-6.1-sol`); `litellm_params.model` is
 `openrouter/<provider>/<id>:floor`. `:floor` picks the cheapest provider.
 `KC_OR_VARIANT` changes the suffix: `:nitro` for throughput, empty for the
 OpenRouter default. Embeddings are unaffected.
@@ -266,23 +266,25 @@ neither, the UI falls back to lexical retrieval.
 ## Commercial defaults
 
 ```bash
-OPENAI_MODELS=(gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5-nano gpt-5.3-codex)
-ANTHROPIC_MODELS=(claude-fable-5 claude-opus-5 claude-sonnet-5 claude-haiku-4.5)
-GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.7-flash gemini-3.1-flash-lite)
-XAI_MODELS=(grok-4.6)
+OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6-luna gpt-5.4-nano gpt-5.3-codex)
+ANTHROPIC_MODELS=(claude-fable-5.1 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-4.5)
+GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.8-flash gemini-3.5-flash-lite)
+XAI_MODELS=(grok-4.7)
 PERPLEXITY_MODELS=(sonar sonar-pro)
-TENCENT_MODELS=(hy3)
-DEEPSEEK_MODELS=(deepseek-v4-pro deepseek-v4-flash)
-ZAI_MODELS=(glm-5.3)
-XIAOMI_MODELS=(mimo-v2.5)
+# Open-weight tier
+TENCENT_MODELS=(hy4-preview)
+DEEPSEEK_MODELS=(deepseek-v4-pro-0813 deepseek-v4.1-flash)
+ZAI_MODELS=(glm-5.3 glm-5.3-flash)
+XIAOMI_MODELS=(mimo-v2.6-flash)
 MOONSHOTAI_MODELS=(kimi-k3)
-QWEN_MODELS=(qwen3.8-max qwen3.7-flash qwen3-coder-plus)
+# Qwen's hosted tier (not the local checkpoints)
+QWEN_MODELS=(qwen3.8-max-0902 qwen3.8-flash qwen3-coder-plus)
 MINIMAX_MODELS=(minimax-m3)
 ```
 
 | Need | Model | Declared price /1M |
 |---|---|---|
-| Bulk work where cost dominates | `qwen/qwen3.7-flash` | $0.03 / $0.13 |
+| Bulk work where cost dominates | `openai/gpt-6-luna` | $0.10 / $0.50 |
 | Commercial coding | `openai/gpt-5.3-codex`, `qwen/qwen3-coder-plus` | $1.75 / $14, $0.65 / $3.25 |
 | Search that reads more than a snippet | `perplexity/sonar-pro` | $3 / $15 |
 | Speech generation | `openai/gpt-audio-mini` | $0.60 / $2.40 audio |

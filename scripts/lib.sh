@@ -137,19 +137,19 @@ gpu_usable_vram_gb() {
 
 # OpenRouter commercial catalogue, one array per provider; array order is
 # picker order. Ids: https://openrouter.ai/api/v1/models
-OPENAI_MODELS=(gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5-nano gpt-5.3-codex)
-ANTHROPIC_MODELS=(claude-fable-5 claude-opus-5 claude-sonnet-5 claude-haiku-4.5)
-GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.7-flash gemini-3.1-flash-lite)
-XAI_MODELS=(grok-4.6)
+OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6-luna gpt-5.4-nano gpt-5.3-codex)
+ANTHROPIC_MODELS=(claude-fable-5.1 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-4.5)
+GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.8-flash gemini-3.5-flash-lite)
+XAI_MODELS=(grok-4.7)
 PERPLEXITY_MODELS=(sonar sonar-pro)
 # Open-weight tier
-TENCENT_MODELS=(hy3)
-DEEPSEEK_MODELS=(deepseek-v4-pro deepseek-v4-flash)
-ZAI_MODELS=(glm-5.3)
-XIAOMI_MODELS=(mimo-v2.5)
+TENCENT_MODELS=(hy4-preview)
+DEEPSEEK_MODELS=(deepseek-v4-pro-0813 deepseek-v4.1-flash)
+ZAI_MODELS=(glm-5.3 glm-5.3-flash)
+XIAOMI_MODELS=(mimo-v2.6-flash)
 MOONSHOTAI_MODELS=(kimi-k3)
 # Qwen's hosted tier (not the local checkpoints)
-QWEN_MODELS=(qwen3.8-max qwen3.7-flash qwen3-coder-plus)
+QWEN_MODELS=(qwen3.8-max-0902 qwen3.8-flash qwen3-coder-plus)
 MINIMAX_MODELS=(minimax-m3)
 
 # Image generation, cheapest first (picker default)
@@ -277,27 +277,27 @@ image_base_digest() {
 # Declared prices, USD per 1M tokens; or_refresh_prices overlays the live
 # catalogue. Local models are 0.
 declare -A MODEL_PRICE_IN_PM=(
-  [gpt-5.6-sol]=2.50     [gpt-5.6-terra]=2      [gpt-5.6-luna]=0.20    [gpt-5-nano]=0.05
+  [gpt-6-astra]=10       [gpt-6.1-sol]=2        [gpt-6-luna]=0.10      [gpt-5.4-nano]=0.20
   [gpt-5.3-codex]=1.75
-  [claude-fable-5]=10    [claude-opus-5]=5      [claude-sonnet-5]=2    [claude-haiku-4.5]=1
-  [gemini-3.1-pro-preview]=2   [gemini-3.7-flash]=0.375  [gemini-3.1-flash-lite]=0.25
-  [grok-4.6]=2           [sonar]=1.00              [sonar-pro]=3.00
-  [hy3]=0.132            [deepseek-v4-pro]=1.44    [deepseek-v4-flash]=0.0886
-  [glm-5.3]=1.40         [mimo-v2.5]=0.14          [kimi-k3]=3.00
-  [qwen3.8-max]=2.00     [qwen3.7-flash]=0.03      [qwen3-coder-plus]=0.65
+  [claude-fable-5.1]=10  [claude-opus-5.5]=4    [claude-sonnet-5.5]=2  [claude-haiku-4.5]=1
+  [gemini-3.1-pro-preview]=2   [gemini-3.8-flash]=0.75   [gemini-3.5-flash-lite]=0.30
+  [grok-4.7]=2           [sonar]=1.00              [sonar-pro]=3.00
+  [hy4-preview]=0.751    [deepseek-v4-pro-0813]=0.22  [deepseek-v4.1-flash]=0.30
+  [glm-5.3]=1.40         [glm-5.3-flash]=0.15      [mimo-v2.6-flash]=0.14    [kimi-k3]=0.99
+  [qwen3.8-max-0902]=2.00  [qwen3.8-flash]=0.15    [qwen3-coder-plus]=0.65
   [minimax-m3]=0.30
   [qwen3.8-27b]=0  [gemma-4-26b-a4b]=0  [qwen3-coder-next]=0
   [text-embedding-3-small]=0.02
 )
 declare -A MODEL_PRICE_OUT_PM=(
-  [gpt-5.6-sol]=15       [gpt-5.6-terra]=12     [gpt-5.6-luna]=1.20    [gpt-5-nano]=0.40
+  [gpt-6-astra]=50       [gpt-6.1-sol]=10       [gpt-6-luna]=0.50      [gpt-5.4-nano]=1.25
   [gpt-5.3-codex]=14.00
-  [claude-fable-5]=50    [claude-opus-5]=25     [claude-sonnet-5]=10   [claude-haiku-4.5]=5
-  [gemini-3.1-pro-preview]=12  [gemini-3.7-flash]=1.875  [gemini-3.1-flash-lite]=1.50
-  [grok-4.6]=6           [sonar]=1.00              [sonar-pro]=15.00
-  [hy3]=0.528            [deepseek-v4-pro]=2.88    [deepseek-v4-flash]=0.1772
-  [glm-5.3]=4.40         [mimo-v2.5]=0.28          [kimi-k3]=15.00
-  [qwen3.8-max]=6.00     [qwen3.7-flash]=0.13      [qwen3-coder-plus]=3.25
+  [claude-fable-5.1]=50  [claude-opus-5.5]=20   [claude-sonnet-5.5]=10 [claude-haiku-4.5]=5
+  [gemini-3.1-pro-preview]=12  [gemini-3.8-flash]=3.75   [gemini-3.5-flash-lite]=2.50
+  [grok-4.7]=6           [sonar]=1.00              [sonar-pro]=15.00
+  [hy4-preview]=2.25     [deepseek-v4-pro-0813]=4.20  [deepseek-v4.1-flash]=1.20
+  [glm-5.3]=4.40         [glm-5.3-flash]=0.50      [mimo-v2.6-flash]=0.28    [kimi-k3]=13.00
+  [qwen3.8-max-0902]=6.00  [qwen3.8-flash]=0.47    [qwen3-coder-plus]=3.25
   [minimax-m3]=1.20
   [qwen3.8-27b]=0  [gemma-4-26b-a4b]=0  [qwen3-coder-next]=0
 )
