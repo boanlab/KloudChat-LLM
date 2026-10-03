@@ -15,7 +15,7 @@ human fills in are external keys and node addresses.
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | token | Hugging Face gated repositories. Weight downloads only |
-| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (retrieval, transcription); the rest are the pool (the coder). See [models.md](models.md#where-models-are-defined) |
+| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (retrieval, transcription); the rest are the pool (fast chat, the coder); chat replicas land on any node with room. See [models.md](models.md#where-models-are-defined) |
 | `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml`. Default `qwen3.8-27b,bge-m3,bge-reranker-v2-m3,whisper-large-v3` |
 | `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | optional | NAVER API HUB credentials; both set enables the `naver web` and `naver news` engines |
 | `OPENAI_API_KEY` | optional | Registers `text-embedding-3-small` as the embedding fallback. Not in `.env.example`; add it by hand |
@@ -87,9 +87,10 @@ placement is skipped.
 | `VLLM_IMAGE` | `kloudchat-vllm:local` | The image compose runs: this repo's layer over the upstream vLLM image, built and recorded by `install-vllm.sh` |
 | `VLLM_BASE_IMAGE` / `VLLM_BASE_DIGEST` | (empty) | Upstream image and the digest it resolved to, recorded by `install-vllm.sh`. A rebuild pins to the digest |
 | `VLLM_MODELS_ROOT` | `/var/lib/vllm/models` | Checkpoint root on the node |
-| `VLLM_<PREFIX>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root (`VLLM_QWEN27B_DIR`, `VLLM_CODERNEXT_DIR`, `VLLM_BGEM3_DIR`, `VLLM_RERANK_DIR`, `VLLM_WHISPER_DIR`) |
-| `VLLM_QWEN27B_MAX_BATCHED_TOKENS` | `16384` | Lower bound for the vision mm-budget |
+| `VLLM_<PREFIX>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root (`VLLM_QWEN27B_DIR`, `VLLM_GEMMA26B_DIR`, `VLLM_CODERNEXT_DIR`, `VLLM_BGEM3_DIR`, `VLLM_RERANK_DIR`, `VLLM_WHISPER_DIR`) |
+| `VLLM_QWEN27B_MAX_BATCHED_TOKENS`, `VLLM_GEMMA26B_MAX_BATCHED_TOKENS` | `16384` | Lower bound for the vision mm-budget |
 | `VLLM_QWEN27B_MAX_NUM_SEQS` | `64` | CUDA-graph capture limit for the hybrid conv-state cache |
+| `VLLM_GEMMA26B_MAX_NUM_SEQS` | `64` | Sequence cap for `vllm-gemma26b` |
 | `VLLM_QWEN27B_SPEC_TOKENS` | `5` | MTP speculative tokens per step for `vllm-qwen27b` |
 | `VLLM_CODERNEXT_DEEP_GEMM` | `0` | `VLLM_USE_DEEP_GEMM` for `vllm-codernext`. DeepGEMM rejects this checkpoint's FP8 scale-factor layout on GB10; `1` where the kernel takes it |
 | `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling for `vllm-whisper` (`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`) |

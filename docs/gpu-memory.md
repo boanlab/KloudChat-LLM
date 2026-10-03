@@ -12,6 +12,7 @@ sizing a node or diagnosing an OOM.
 | Model | Quant | Weights | Role |
 |---|---|---:|---|
 | `qwen3.8-27b` (Qwen3.8-27B) | NVFP4 | **21.3 GiB** (measured) | Chat. Dense, vision, 262144 context, MTP speculative decoding |
+| `gemma-4-26b-a4b` (Gemma 4 26B-A4B) | NVFP4 | **16.4 GiB** (measured) | Fast chat. MoE 3.8B active, vision, 131072 here |
 | `qwen3-coder-next` (Qwen3-Coder-Next-80B-A3B) | FP8 | **~75 GiB** (on disk) | Coding. Hybrid attention, 262144 context. A card to itself |
 | `bge-m3` | BF16 | **~2 GiB** | Retrieval embeddings. Pooling, shares a card |
 | `bge-reranker-v2-m3` | BF16 | **2.1 GiB** (measured) | Retrieval reranking. Pooling, shares a card |
@@ -28,19 +29,22 @@ sizing a node or diagnosing an OOM.
 ## KV cost
 
 Only 16 of the 64 layers in `qwen3.8-27b` carry KV; the other 48 are linear
-attention with fixed-size state. `qwen3-coder-next` holds KV on 12 of 48
-layers.
+attention with fixed-size state. `gemma-4-26b-a4b` holds KV on 4 of 30
+layers; the other 26 are 1024-token sliding windows. `qwen3-coder-next` holds
+KV on 12 of 48 layers.
 
 | Model | KV per token (fp8) | 128K | 256K |
 |---|---:|---:|---:|
 | `qwen3.8-27b` | **32 KiB** | 4.0 GiB | 8.0 GiB |
+| `gemma-4-26b-a4b` | **16 KiB** | 2.0 GiB | 4.0 GiB |
 | `qwen3-coder-next` | **12 KiB** | 1.5 GiB | 3.0 GiB |
 
 Measured on GB10, from vLLM's `GPU KV cache size` line:
 
-| Model | util | KV tokens | Concurrency at 256K |
+| Model | util | KV tokens | Concurrency |
 |---|---:|---:|---|
-| `qwen3.8-27b` | 0.56 | 993K | **3.8** sessions (MTP 5) |
+| `qwen3.8-27b` | 0.56 | 993K | **3.8** sessions at 256K (MTP 5) |
+| `gemma-4-26b-a4b` | 0.28 | 486K | **3.7** sessions at 128K |
 
 Pooling models hold no KV: `planner.kv_bytes` returns 0 and the charge is
 weights plus activation.
@@ -66,12 +70,12 @@ activation + 8.8 GiB of KV per concurrent 256K session (admission margin
 1.10), against the card minus its reserve (8%, clamped to 1–8 GiB; 12 GiB on
 unified memory).
 
-| Node | VRAM | `qwen3.8-27b` | `qwen3-coder-next` | Notes |
-|---|---:|---|---|---|
-| RTX 5090 | 32 G | ✗ | ✗ | 29.4 GiB of capacity against a 33.9 GiB need; the 27B is delegated. Retrieval and transcription fit |
-| PRO 5000 | 48 G | ○ 1 session | ✗ | util 0.74 |
-| PRO 6000 | 96 G | ○ 4 sessions | ○ alone | |
-| GB10 | 128 G (unified) | ○ 4 sessions | ○ alone | 116 GiB of capacity after the 12 GiB reserve |
+| Node | VRAM | `qwen3.8-27b` | `gemma-4-26b-a4b` | `qwen3-coder-next` | Notes |
+|---|---:|---|---|---|---|
+| RTX 5090 | 32 G | ✗ | ○ | ✗ | 29.4 GiB of capacity against the 27B's 33.9 GiB need; the 27B is delegated. The speed tier, retrieval and transcription fit |
+| PRO 5000 | 48 G | ○ 1 session | ○ | ✗ | 27B at util 0.74, or the speed tier beside retrieval |
+| PRO 6000 | 96 G | ○ 4 sessions | ○ beside the 27B | ○ alone | |
+| GB10 | 128 G (unified) | ○ 4 sessions | ○ beside the 27B (128K) | ○ alone | 116 GiB of capacity after the 12 GiB reserve |
 
 - GB10 is unified memory, so `nvidia-smi` reports free VRAM as `[N/A]`. The
   planner takes the total from `/proc/meminfo` and subtracts 12 GiB for the OS
@@ -133,14 +137,16 @@ sends STT to OpenRouter (`STT_OR_MODEL`).
 
 ## Throughput
 
-Measured on GB10, `qwen3.8-27b`, warm, 400-token generations:
+Measured on GB10, warm, 400-token generations:
 
-| Condition | tok/s |
-|---|---:|
-| Single stream, prose, MTP 5 | 15 |
-| Single stream, code, MTP 5 | 24 |
-| Single stream, no speculation | 11 |
-| 4 / 8 / 16 concurrent requests, aggregate | 45 / 81 / 141 |
+| Model | Condition | tok/s |
+|---|---|---:|
+| `qwen3.8-27b` | Single stream, prose, MTP 5 | 15 |
+| `qwen3.8-27b` | Single stream, code, MTP 5 | 24 |
+| `qwen3.8-27b` | Single stream, no speculation | 11 |
+| `qwen3.8-27b` | 4 / 8 / 16 concurrent requests, aggregate | 45 / 81 / 141 |
+| `gemma-4-26b-a4b` | Single stream, prose or code | 48 |
+| `gemma-4-26b-a4b` | 8 / 16 concurrent requests, aggregate | 291 / 494 |
 
 One instance batches; a second instance on the same card adds only a second
 copy of the weights. Utilisation sets KV capacity, not speed.

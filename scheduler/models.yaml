@@ -4,7 +4,7 @@
 # on disk — see "Derived values" at the bottom.
 #
 # placement: "head" is the first target in NODES_VLLM (retrieval, transcription);
-# "pool" is every other node (the coder); unset is anywhere (chat). A single-node
+# "pool" is every other node (fast chat, the coder); unset is anywhere (chat). A single-node
 # cluster has no pool and the field is ignored.
 
 models:
@@ -20,6 +20,18 @@ models:
     # rather than serving a shorter window
     ctx_floor: 262144
     priority: 20
+
+  # Fast chat: MoE, 3.8B of 25.2B active, vision, 262K. Sliding-window
+  # attention on 26 of 30 layers; 4 full-attention layers hold KV. NVFP4 build.
+  # Pool only: sits beside the chat replica, never on the head node.
+  - id: gemma-4-26b-a4b
+    hf_repo: google/gemma-4-26b-a4b-it
+    dir: gemma-4-26b-a4b-nvfp4
+    env_prefix: VLLM_GEMMA26B
+    port: 8002
+    ctx_floor: 131072
+    priority: 8
+    placement: pool
 
   # Coding. 80B-A3B, FP8, hybrid attention (12 of 48 layers hold KV). 75 GiB,
   # so it takes a pool card to itself.

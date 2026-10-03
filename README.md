@@ -55,7 +55,7 @@ Print them again at any time:
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | optional | Hugging Face gated repositories, for weight downloads |
-| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. The first is the head node (retrieval, transcription); the rest are the pool (the coder) |
+| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. The first is the head node (retrieval, transcription); the rest are the pool (fast chat, the coder) |
 | `VLLM_MODELS` | model id CSV | What to deploy. Defined in `scheduler/models.yaml` |
 
 `VLLM_*_URL` is written by the placement step inside `setup.sh all`. To manage
@@ -131,8 +131,11 @@ usage when run without arguments.
 | Linux arm64, GB10 | Local GPU with OpenRouter fallback |
 | Any other card, AMD / ROCm, Apple, macOS, Windows | Not supported. OpenRouter only |
 
-Local serving is NVIDIA-only. Supported cards are GB10, RTX 5090, RTX PRO 5000
-and RTX PRO 6000; the download and manage scripts refuse anything else and the
+The local lineup is `qwen3.8-27b` (chat, vision, coding, deep research),
+`gemma-4-26b-a4b` (fast chat for high-volume calls), `bge-m3` and
+`bge-reranker-v2-m3` (retrieval) and `whisper-large-v3` (transcription); see
+[docs/models.md](docs/models.md). Local serving is NVIDIA-only. Supported cards
+are GB10, RTX 5090, RTX PRO 5000 and RTX PRO 6000; the download and manage scripts refuse anything else and the
 scheduler places nothing there. 32 GiB usable is the floor. Where a model does
 not fit, the placement step says so and delegates to OpenRouter.
 

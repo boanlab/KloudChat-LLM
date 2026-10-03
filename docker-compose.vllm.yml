@@ -2,6 +2,7 @@
 # them through VLLM_*_URL in the orchestrator's .env.
 #
 #   vllm-qwen27b    default chat — Qwen3.8-27B (dense, vision, 262K)
+#   vllm-gemma26b   fast chat — Gemma 4 26B-A4B (MoE, vision, 262K)
 #   vllm-codernext  coding — Qwen3-Coder-Next-80B (FP8, 262K)
 #   vllm-rerank     retrieval reranking — BAAI/bge-reranker-v2-m3
 #   vllm-bgem3      retrieval embeddings — BAAI/bge-m3
@@ -67,6 +68,66 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN}
       NVIDIA_VISIBLE_DEVICES: ${VLLM_QWEN27B_DEVICES:-all}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+
+  # Fast chat. MoE 3.8B active; 4 full-attention layers hold KV, the rest are
+  # 1024-token sliding windows.
+  vllm-gemma26b:
+    container_name: vllm-gemma26b
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
+    restart: unless-stopped
+    ipc: host
+    command:
+      - --model
+      - /model
+      - --served-model-name
+      - local/gemma-4-26b-a4b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "${VLLM_GEMMA26B_MAX_LEN:-262144}"
+      - --gpu-memory-utilization
+      - "${VLLM_GEMMA26B_GPU_UTIL:-0.30}"
+      - --kv-cache-dtype
+      - fp8
+      # >= 16384 for the vision mm-budget
+      - --max-num-batched-tokens
+      - "${VLLM_GEMMA26B_MAX_BATCHED_TOKENS:-16384}"
+      # Gemma 4 tool-call and thinking formats
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - gemma4
+      - --reasoning-parser
+      - gemma4
+      # Thinking off by default; enabled per request via chat_template_kwargs
+      - --default-chat-template-kwargs
+      - '{"enable_thinking": false}'
+      - --max-num-seqs
+      - "${VLLM_GEMMA26B_MAX_NUM_SEQS:-64}"
+      - --tensor-parallel-size
+      - "${VLLM_GEMMA26B_TP:-1}"
+      - --trust-remote-code
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_GEMMA26B_DIR:-gemma-4-26b-a4b-nvfp4}:/model:ro
+    ports:
+      - "8002:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_GEMMA26B_DEVICES:-all}
     deploy:
       resources:
         reservations:

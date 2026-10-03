@@ -21,7 +21,7 @@ disables replication).
 ```bash
 # .env
 NODES_VLLM=ops@gpu-1,ops@gpu-2       # SSH targets, head node first
-VLLM_MODELS=qwen3.8-27b,qwen3-coder-next,bge-m3
+VLLM_MODELS=qwen3.8-27b,gemma-4-26b-a4b,bge-m3
 VLLM_MODELS_ROOT=/var/lib/vllm/models
 KLOUDCHAT_REMOTE_DIR=KloudChat-LLM   # compose workdir on each node (env or .env)
 ```

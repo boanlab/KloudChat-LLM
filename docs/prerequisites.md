@@ -53,7 +53,8 @@ VRAM per model, as the planner sizes it:
 
 | Model | Requirement |
 |---|---|
-| Chat (`qwen3.8-27b`, 21.3 GiB, 262144 context floor) | RTX PRO 5000 (48 GB) or larger. An RTX 5090 cannot hold it at the floor and delegates it |
+| Chat, quality tier (`qwen3.8-27b`, 21.3 GiB, 262144 context floor) | RTX PRO 5000 (48 GB) or larger. An RTX 5090 cannot hold it at the floor and delegates it |
+| Chat, speed tier (`gemma-4-26b-a4b`, 16.4 GiB, 131072 context floor) | Any supported card, beside other models |
 | Coding (`qwen3-coder-next`, 75 GiB) | GB10 or RTX PRO 6000, alone on the card |
 | Retrieval and transcription | Any supported card |
 

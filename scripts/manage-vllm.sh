@@ -26,7 +26,7 @@ source "${SCRIPT_DIR}/lib.sh"
 [[ -f "$COMPOSE_FILE" ]] || { err "$COMPOSE_FILE not found"; exit 1; }
 
 # Every service in docker-compose.vllm.yml, in `up` and `status` order
-VLLM_SERVICES=(vllm-qwen27b vllm-codernext vllm-bgem3 vllm-rerank vllm-whisper)
+VLLM_SERVICES=(vllm-qwen27b vllm-gemma26b vllm-codernext vllm-bgem3 vllm-rerank vllm-whisper)
 
 usage() {
   sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'
@@ -56,6 +56,7 @@ cmd_up() {
   local d
   declare -A svc_dir
   d="$(env_get VLLM_QWEN27B_DIR)";   svc_dir[vllm-qwen27b]="${d:-qwen3.8-27b-nvfp4}"
+  d="$(env_get VLLM_GEMMA26B_DIR)";  svc_dir[vllm-gemma26b]="${d:-gemma-4-26b-a4b-nvfp4}"
   d="$(env_get VLLM_CODERNEXT_DIR)"; svc_dir[vllm-codernext]="${d:-qwen3-coder-next}"
   d="$(env_get VLLM_BGEM3_DIR)";     svc_dir[vllm-bgem3]="${d:-bge-m3}"
   d="$(env_get VLLM_RERANK_DIR)";    svc_dir[vllm-rerank]="${d:-bge-reranker-v2-m3}"

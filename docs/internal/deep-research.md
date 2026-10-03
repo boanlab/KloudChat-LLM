@@ -34,8 +34,9 @@ Set under `deep-research.environment` in `docker-compose.yml` as `LDR_*`.
 | `LDR_SEARCH_ITERATIONS` | `2`, bounds run time |
 | `LDR_SEARCH_QUESTIONS_PER_ITERATION` | `1` |
 
-A run takes minutes to tens of minutes. The `local/qwen3.8-27b` deployment
-carries an 1800 s LiteLLM request timeout for this reason.
+A run takes minutes to tens of minutes. Deep research runs on
+`local/qwen3.8-27b`, whose deployment carries an 1800 s LiteLLM request
+timeout for this reason.
 
 ## Deployment
 

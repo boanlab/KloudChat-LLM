@@ -41,7 +41,9 @@ STRICT_STATE_TTL = max(POLL_TTL * 3, POLL_TTL + SCRAPE_TIMEOUT * 2)
 # full-length requests, and requests queued past the cap preempt running ones.
 DEFAULT_CAPS = {
     "local/qwen3.8-27b": 32,
+    "local/gemma-4-26b-a4b": 64,
     "strict-local/qwen3.8-27b": 32,
+    "strict-local/gemma-4-26b-a4b": 64,
 }
 
 

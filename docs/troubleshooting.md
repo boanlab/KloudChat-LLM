@@ -74,7 +74,8 @@ The vLLM discovery in `gen-litellm-config.sh` hit a TCP failure. If no local
 models appear in the UI, discovery returned nothing.
 
 ```bash
-# Ports: qwen27b 8001, bge-m3 8003, codernext 8008, rerank 8009, whisper 9000
+# Ports: qwen27b 8001, gemma26b 8002, bge-m3 8003, codernext 8008, rerank 8009,
+# whisper 9000
 curl -sf http://<vllm-host>:8001/v1/models | jq '.data[].id'
 ss -tlnp | grep -E '800[1-9]|9000'
 docker ps --filter name=vllm- --format '{{.Names}}\t{{.Status}}'

@@ -76,21 +76,32 @@ OpenRouter.
 | Model (alias) | Container | Port | Quant | Node | Priority | Role |
 |---|---|---|---|---|---|---|
 | `local/qwen3.8-27b` | `vllm-qwen27b` | 8001 | NVFP4 | any | 20 | Chat: conversation, vision, coding, deep research, titles, memory extraction. One replica per node with room |
+| `local/gemma-4-26b-a4b` | `vllm-gemma26b` | 8002 | NVFP4 | pool | 8 | Fast chat: titles, memory extraction, query rewriting, quick turns. MoE 3.8B active, vision, 131072 here |
 | `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | pool | 10 | Coding. Qwen3-Coder-Next-80B-A3B, hybrid attention, 12 of 48 layers hold KV |
 | `local/bge-m3` | `vllm-bgem3` | 8003 | BF16 | head | 5 | Retrieval embeddings. Pooling runner |
 | `local/bge-reranker-v2-m3` | `vllm-rerank` | 8009 | BF16 | head | 0 | Retrieval reranking. Pooling runner |
 | `local/whisper-large-v3` | `vllm-whisper` | 9000 | FP16 | head | 4 | Transcription, through `/tools/stt`, not a LiteLLM chat route |
 | `strict-local/<model>` | same backend as its `local/` twin | | | | | Privacy alias; fails rather than leaving vLLM |
 
-**One chat model.** `qwen3.8-27b` is dense with hybrid attention (16 of 64
-layers hold KV, 32 KiB per token in fp8), native 262144 context, and
-MTP speculative decoding from the checkpoint's own draft head
+**Two chat models.** `qwen3.8-27b` is the quality tier: dense with hybrid
+attention (16 of 64 layers hold KV, 32 KiB per token in fp8), native 262144
+context, and MTP speculative decoding from the checkpoint's own draft head
 (`VLLM_QWEN27B_SPEC_TOKENS`, default 5). Its context floor is the native
 262144: a card that cannot hold that delegates rather than serving a shorter
 window. It is unplaced, so every node with room gets a replica, all registered
 under `local/qwen3.8-27b`; LiteLLM spreads requests across them (`least-busy`).
 Each deployment carries a 1800 s request timeout and a concurrency-gate cap of
 32 in-flight requests.
+
+`gemma-4-26b-a4b` is the speed tier: a 25.2B MoE with 3.8B active, vision,
+4 of 30 layers holding KV (16 KiB per token in fp8) and 1024-token sliding
+windows on the rest. On GB10 it decodes at 48 tok/s single-stream against the
+27B's 15, and batches to ~490 tok/s at 16 concurrent requests. It is a pool
+model (priority 8, context floor 131072) that shares a card with a 27B
+replica, registered under `local/gemma-4-26b-a4b` with a 900 s timeout and a
+cap of 64. The UI points high-volume internal calls (titles, memory
+extraction, query rewriting) and quick turns here; default chat and deep research stay on
+the 27B.
 
 **Coder.** `qwen3-coder-next` is in the catalogue but not in the default
 `VLLM_MODELS`. Coverage seats every listed model once before any replica, so
@@ -107,6 +118,7 @@ name refuses below it.
 | Model | Tool parser | Reasoning parser | Notes |
 |---|---|---|---|
 | `qwen3.8-27b` | `qwen3_xml` | `qwen3` | Thinking off by default (`--default-chat-template-kwargs '{"enable_thinking": false}'`). `--max-num-seqs` bounds CUDA-graph capture for the hybrid conv-state cache |
+| `gemma-4-26b-a4b` | `gemma4` | `gemma4` | Thinking off by default (`enable_thinking` in the chat template) |
 | `qwen3-coder-next` | `qwen3_coder` | none | Qwen3-Coder's XML dialect |
 
 ## Free models
@@ -135,6 +147,7 @@ OpenRouter default. Embeddings are unaffected.
 | `model_name` | URL variable |
 |---|---|
 | `local/qwen3.8-27b` | `VLLM_QWEN27B_URL` |
+| `local/gemma-4-26b-a4b` | `VLLM_GEMMA26B_URL` |
 | `local/qwen3-coder-next` | `VLLM_CODERNEXT_URL` |
 | `local/bge-m3` | `VLLM_BGEM3_URL` |
 | `local/bge-reranker-v2-m3` | `VLLM_RERANK_URL` |
@@ -156,8 +169,8 @@ on the node. What fits on which card: [GPU memory](gpu-memory.md#per-node-class)
 
 **Ranking.** `placement` decides which cards a model may compete for;
 `priority` decides who wins among models competing for the same ones:
-`qwen3.8-27b` (20), `qwen3-coder-next` (10), `bge-m3` (5), `whisper-large-v3`
-(4), `bge-reranker-v2-m3` (0). Ties seat the largest model first. Once every
+`qwen3.8-27b` (20), `qwen3-coder-next` (10), `gemma-4-26b-a4b` (8), `bge-m3`
+(5), `whisper-large-v3` (4), `bge-reranker-v2-m3` (0). Ties seat the largest model first. Once every
 model has an instance, `share` weights extra instances among models competing
 for the same nodes; only the 27B replicates.
 
@@ -176,12 +189,14 @@ independent paths:
 - **Overload**: the `concurrency_gate` callback
   (`services/litellm/callbacks/concurrency_gate.py`) polls each gated model's
   vLLM `/metrics` every `CONCURRENCY_GATE_TTL` seconds. When running requests
-  reach the cap (32 for `local/qwen3.8-27b`), traffic spills to the OpenRouter
+  reach the cap (32 for `local/qwen3.8-27b`, 64 for `local/gemma-4-26b-a4b`),
+  traffic spills to the OpenRouter
   twin. Plain queueing never triggers `fallbacks`.
 
 | Local (primary) | OpenRouter fallback (declared $/1M in / out) |
 |---|---|
 | `local/qwen3.8-27b` | `qwen/qwen3.8-27b` (0.42 / 3.00) |
+| `local/gemma-4-26b-a4b` | `google/gemma-4-26b-a4b-it` (0.0675 / 0.225) |
 | `local/qwen3-coder-next` | `qwen/qwen3-coder-next` (live price) |
 
 - `emit_or_fallback` emits the twin only when the local primary is deployed.

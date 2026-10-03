@@ -203,6 +203,8 @@ OPENAI_EMBED_CATALOG=(text-embedding-3-small)
 declare -A VLLM_MODELS=(
   # Chat, NVFP4
   [qwen3.8-27b-nvfp4]="unsloth/Qwen3.8-27B-NVFP4"
+  # Fast chat, MoE 3.8B active, NVFP4
+  [gemma-4-26b-a4b-nvfp4]="unsloth/gemma-4-26B-A4B-it-NVFP4"
   # Coding, FP8
   [qwen3-coder-next]="Qwen/Qwen3-Coder-Next-FP8"
   # Retrieval embeddings and reranking, BF16
@@ -216,6 +218,7 @@ declare -A VLLM_MODELS=(
 # Checkpoint size on disk (GiB)
 declare -A VLLM_MODEL_WEIGHT_GB=(
   [qwen3.8-27b-nvfp4]=22
+  [gemma-4-26b-a4b-nvfp4]=17
   [qwen3-coder-next]=75
   [bge-m3]=3
   [bge-reranker-v2-m3]=3
@@ -283,7 +286,7 @@ declare -A MODEL_PRICE_IN_PM=(
   [glm-5.3]=1.40         [mimo-v2.5]=0.14          [kimi-k3]=3.00
   [qwen3.8-max]=2.00     [qwen3.7-flash]=0.03      [qwen3-coder-plus]=0.65
   [minimax-m3]=0.30
-  [qwen3.8-27b]=0
+  [qwen3.8-27b]=0  [gemma-4-26b-a4b]=0
   [text-embedding-3-small]=0.02
 )
 declare -A MODEL_PRICE_OUT_PM=(
@@ -296,17 +299,17 @@ declare -A MODEL_PRICE_OUT_PM=(
   [glm-5.3]=4.40         [mimo-v2.5]=0.28          [kimi-k3]=15.00
   [qwen3.8-max]=6.00     [qwen3.7-flash]=0.13      [qwen3-coder-plus]=3.25
   [minimax-m3]=1.20
-  [qwen3.8-27b]=0
+  [qwen3.8-27b]=0  [gemma-4-26b-a4b]=0
 )
 
 # OpenRouter twins of local models and the STT fallback, USD per 1M tokens,
 # keyed by slug; or_price prefers the live figure
 declare -A OR_TWIN_PRICE_IN_PM=(
-  [qwen/qwen3.8-27b]=0.42
+  [qwen/qwen3.8-27b]=0.42  [google/gemma-4-26b-a4b-it]=0.0675
   [mistralai/voxtral-small-24b-2507]=0.10
 )
 declare -A OR_TWIN_PRICE_OUT_PM=(
-  [qwen/qwen3.8-27b]=3.00
+  [qwen/qwen3.8-27b]=3.00  [google/gemma-4-26b-a4b-it]=0.225
   [mistralai/voxtral-small-24b-2507]=0.30
 )
 
@@ -673,6 +676,7 @@ vllm_wait_until_ready() {
 # LiteLLM team allowlist: every chat model gen-litellm-config.sh registers
 litellm_chat_models_csv() {
   local vllm_chat_url; vllm_chat_url="$(env_get VLLM_QWEN27B_URL 2>/dev/null || true)"
+  local vllm_fast_url; vllm_fast_url="$(env_get VLLM_GEMMA26B_URL 2>/dev/null || true)"
   local out=() m
   if has_openrouter; then
     for m in "${OPENAI_MODELS[@]}";     do out+=("openai/$m");     done
@@ -693,6 +697,11 @@ litellm_chat_models_csv() {
     out+=("local/qwen3.8-27b" "strict-local/qwen3.8-27b")
   elif has_openrouter; then
     out+=("qwen/qwen3.8-27b")
+  fi
+  if [[ -n "$vllm_fast_url" ]]; then
+    out+=("local/gemma-4-26b-a4b" "strict-local/gemma-4-26b-a4b")
+  elif has_openrouter; then
+    out+=("google/gemma-4-26b-a4b-it")
   fi
   if has_openrouter; then
     for m in "${OPENAI_EMBED_CATALOG[@]}"; do out+=("$m"); done

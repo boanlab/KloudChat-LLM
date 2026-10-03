@@ -41,7 +41,7 @@ grep -qF "$FB_START" "$CONFIG_FILE" && grep -qF "$FB_END" "$CONFIG_FILE" \
 CTX_FALLBACK=32768
 
 # Per-model request timeout (s); deep research runs for minutes
-declare -A MODEL_TIMEOUT=( [qwen3.8-27b]=1800 )
+declare -A MODEL_TIMEOUT=( [qwen3.8-27b]=1800 [gemma-4-26b-a4b]=900 )
 
 # OpenRouter provider-routing suffix on chat routes: ":floor" (cheapest),
 # ":nitro" (throughput), "" (OpenRouter default)
@@ -314,6 +314,7 @@ SECTION=$(
   echo "  ${MARKER_START}"
   # --- local (vLLM), or the OpenRouter slug where nothing is deployed ---
   emit_brain "qwen3.8-27b"   "$(env_get VLLM_QWEN27B_URL)"    "qwen/qwen3.8-27b" "$(or_price qwen/qwen3.8-27b in)" "$(or_price qwen/qwen3.8-27b out)"
+  emit_brain "gemma-4-26b-a4b" "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it" "$(or_price google/gemma-4-26b-a4b-it in)" "$(or_price google/gemma-4-26b-a4b-it out)"
   emit_brain "qwen3-coder-next" "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next" "$(or_price qwen/qwen3-coder-next in)" "$(or_price qwen/qwen3-coder-next out)"
   # Retrieval: local when placed; the OpenAI catalogue below is the fallback
   emit_vllm_embed "bge-m3" "$(env_get VLLM_BGEM3_URL)"
@@ -356,6 +357,7 @@ SECTION=$(
   done
   # --- OpenRouter twins of the deployed local models (fallback targets, hidden) ---
   emit_or_fallback "$(env_get VLLM_QWEN27B_URL)"  "qwen/qwen3.8-27b" "$(or_price qwen/qwen3.8-27b in)" "$(or_price qwen/qwen3.8-27b out)"
+  emit_or_fallback "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it" "$(or_price google/gemma-4-26b-a4b-it in)" "$(or_price google/gemma-4-26b-a4b-it out)"
   echo "  ${MARKER_END}"
 )
 
@@ -370,6 +372,7 @@ FALLBACKS=$(
   echo "  ${FB_START}"
   echo "  fallbacks:"
   fb_line "qwen3.8-27b"   "$(env_get VLLM_QWEN27B_URL)"  "qwen/qwen3.8-27b"
+  fb_line "gemma-4-26b-a4b" "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it"
   echo "  ${FB_END}"
 )
 
