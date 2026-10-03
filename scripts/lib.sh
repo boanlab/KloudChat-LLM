@@ -286,7 +286,7 @@ declare -A MODEL_PRICE_IN_PM=(
   [glm-5.3]=1.40         [mimo-v2.5]=0.14          [kimi-k3]=3.00
   [qwen3.8-max]=2.00     [qwen3.7-flash]=0.03      [qwen3-coder-plus]=0.65
   [minimax-m3]=0.30
-  [qwen3.8-27b]=0  [gemma-4-26b-a4b]=0
+  [qwen3.8-27b]=0  [gemma-4-26b-a4b]=0  [qwen3-coder-next]=0
   [text-embedding-3-small]=0.02
 )
 declare -A MODEL_PRICE_OUT_PM=(
@@ -299,17 +299,19 @@ declare -A MODEL_PRICE_OUT_PM=(
   [glm-5.3]=4.40         [mimo-v2.5]=0.28          [kimi-k3]=15.00
   [qwen3.8-max]=6.00     [qwen3.7-flash]=0.13      [qwen3-coder-plus]=3.25
   [minimax-m3]=1.20
-  [qwen3.8-27b]=0  [gemma-4-26b-a4b]=0
+  [qwen3.8-27b]=0  [gemma-4-26b-a4b]=0  [qwen3-coder-next]=0
 )
 
 # OpenRouter twins of local models and the STT fallback, USD per 1M tokens,
 # keyed by slug; or_price prefers the live figure
 declare -A OR_TWIN_PRICE_IN_PM=(
   [qwen/qwen3.8-27b]=0.42  [google/gemma-4-26b-a4b-it]=0.0675
+  [qwen/qwen3-coder-next]=0.12
   [mistralai/voxtral-small-24b-2507]=0.10
 )
 declare -A OR_TWIN_PRICE_OUT_PM=(
   [qwen/qwen3.8-27b]=3.00  [google/gemma-4-26b-a4b-it]=0.225
+  [qwen/qwen3-coder-next]=0.80
   [mistralai/voxtral-small-24b-2507]=0.30
 )
 
@@ -733,7 +735,7 @@ __litellm_call() {
   [[ -n "$payload" ]] && args+=(-H "Content-Type: application/json" -d "$payload")
   local resp; resp=$(curl "${args[@]}")
   local code; code=$(echo "$resp" | tail -1)
-  # `sed '$d'` rather than the GNU-only `head -n -1`
+  # Body: every line but the status code (portable)
   local body; body=$(echo "$resp" | sed '$d')
   if (( code < 200 || code >= 300 )); then
     echo "ERROR [HTTP $code]: $body" >&2; return 1

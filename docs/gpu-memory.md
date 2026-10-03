@@ -73,14 +73,21 @@ unified memory).
 | Node | VRAM | `qwen3.8-27b` | `gemma-4-26b-a4b` | `qwen3-coder-next` | Notes |
 |---|---:|---|---|---|---|
 | RTX 5090 | 32 G | ✗ | ○ | ✗ | 29.4 GiB of capacity against the 27B's 33.9 GiB need; the 27B is delegated. The speed tier, retrieval and transcription fit |
-| PRO 5000 | 48 G | ○ 1 session | ○ | ✗ | 27B at util 0.74, or the speed tier beside retrieval |
+| PRO 5000 | 48 G | ○ 1 session | ○ | ✗ | The 27B alone, or the speed tier beside retrieval |
 | PRO 6000 | 96 G | ○ 4 sessions | ○ beside the 27B | ○ alone | |
-| GB10 | 128 G (unified) | ○ 4 sessions | ○ beside the 27B (128K) | ○ alone | 116 GiB of capacity after the 12 GiB reserve |
+| GB10 | 128 G (unified) | ○ 4 sessions | ○ beside the 27B (128K) | ○ alone | System RAM less the 12 GiB reserve |
+
+Sessions are the planner's sizing assumption (`concurrent_sessions`, default
+4), halved down to what the card holds.
 
 - GB10 is unified memory, so `nvidia-smi` reports free VRAM as `[N/A]`. The
   planner takes the total from `/proc/meminfo` and subtracts 12 GiB for the OS
   (`scheduler/inventory.py::_UNIFIED_RESERVE_BYTES` and
   `lib.sh::UNIFIED_RESERVE_GB`; the two must agree).
+- GPU memory held by processes outside this stack (anything not in a `vllm-*`
+  container) is measured per card from `nvidia-smi` and charged to the card
+  holding it. A card classified `unsupported` holds nothing; the plan notes
+  it.
 - A node with more than one card is packed per card. `gpu_util` is a fraction
   of one device; the scheduler assigns device ordinals and writes them as
   `VLLM_<PREFIX>_DEVICES`, which compose passes as `NVIDIA_VISIBLE_DEVICES`.

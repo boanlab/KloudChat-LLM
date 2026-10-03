@@ -16,9 +16,9 @@ human fills in are external keys and node addresses.
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | token | Hugging Face gated repositories. Weight downloads only |
 | `NODES_VLLM` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (retrieval, transcription); the rest are the pool (fast chat, the coder); chat replicas land on any node with room. See [models.md](models.md#where-models-are-defined) |
-| `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml`. Default `qwen3.8-27b,bge-m3,bge-reranker-v2-m3,whisper-large-v3` |
+| `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml`. Default `qwen3.8-27b,gemma-4-26b-a4b,bge-m3,bge-reranker-v2-m3,whisper-large-v3`; `qwen3-coder-next` is in the catalogue but not in the default |
 | `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | optional | NAVER API HUB credentials; both set enables the `naver web` and `naver news` engines |
-| `OPENAI_API_KEY` | optional | Registers `text-embedding-3-small` as the embedding fallback. Not in `.env.example`; add it by hand |
+| `OPENAI_API_KEY` | optional | Registers `text-embedding-3-small` as the embedding fallback; passed to the LiteLLM container. Not in `.env.example`; add it by hand |
 
 `setup.sh` refuses to continue unless at least one of `OPENROUTER_API_KEY` or a
 vLLM node is present.
@@ -122,7 +122,7 @@ Defaults and their rationale are in [GPU memory](gpu-memory.md#tuning-knobs).
 | `LITELLM_NUM_WORKERS` | `4` | ~600 MB per worker |
 | `LITELLM_LOG` | `INFO` | |
 | `LITELLM_URL` | `http://localhost:8000` | Where `manage.sh` reaches LiteLLM. LiteLLM publishes no host port, so set it to the gateway: `http://localhost:<GATEWAY_PORT>/litellm`. Read from the shell first, then `.env` |
-| `CONCURRENCY_GATE_CAPS` | built-in per-model caps (32 for `local/qwen3.8-27b`) | JSON map of model aliases to positive concurrency caps |
+| `CONCURRENCY_GATE_CAPS` | built-in caps: 32 for `qwen3.8-27b`, 64 for `gemma-4-26b-a4b`, 32 for `qwen3-coder-next`, on both the `local/` and `strict-local/` alias | JSON map of model aliases to positive concurrency caps, overriding the built-in ones |
 | `CONCURRENCY_GATE_TTL` | `1.5` | Seconds between vLLM capacity polls |
 | `CONCURRENCY_GATE_SCRAPE_TIMEOUT` | `1.0` | Timeout in seconds for one vLLM metrics request |
 | `CONCURRENCY_GATE_DEBUG` | (empty) | `1` logs the overload gate's decisions |
@@ -179,7 +179,7 @@ Passed on the command line rather than through `.env`.
 | Variable | Effect |
 |---|---|
 | `KLOUDCHAT_SKIP_SCHEDULER=1` | Skip the placement step in `setup.sh all` |
-| `KLOUDCHAT_REMOTE_DIR` | Repository path on remote nodes (default `KloudChat-LLM`). rsync and the placement step both use it |
+| `KLOUDCHAT_REMOTE_DIR` | Repository path on remote nodes, resolved from the SSH user's home (default `KloudChat-LLM`). rsync and the placement step both use it; the scheduler also reads it from `.env` |
 | `KLOUDCHAT_VLLM_WAIT_TIMEOUT` | Deadline for waiting on vLLM readiness (default 1200 s) |
 | `KLOUDCHAT_VLLM_WAIT_INTERVAL` | Probe interval while waiting (default 10 s) |
 | `KLOUDCHAT_SERVICE_WAIT` | How long to wait for capabilities to answer after startup (default 180 s) |

@@ -8,8 +8,9 @@ Endpoints:
   GET    /health               readiness, embedding availability
 
 A collection is an opaque id minted by KloudChat per (owner, agent) and scopes
-every operation; nothing lists or searches across collections. Stored data is
-derived (chunks and vectors), rebuildable from KloudChat's source rows.
+every operation; nothing lists or searches across collections. A collection holds
+one embedding model's vectors: writes and searches use the model its rows hold.
+Stored data is derived (chunks and vectors), rebuildable from KloudChat's source rows.
 """
 from __future__ import annotations
 
@@ -43,8 +44,8 @@ RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.1"))
 #: relevance decision.
 RERANK_RECALL_DISTANCE = float(os.getenv("RERANK_RECALL_DISTANCE", "0.85"))
 
-#: Embedding models in preference order. The first that answers is used and its
-#: name is stored on every row, so vector spaces never mix.
+#: Embedding models in preference order. The first that answers embeds a new
+#: collection; its name is stored on every row, and the collection keeps it.
 EMBED_MODELS = [
     m.strip() for m in os.getenv("EMBED_MODELS", "local/bge-m3,text-embedding-3-small").split(",")
     if m.strip()
@@ -122,8 +123,10 @@ class _Embedder:
                     remember: bool = True) -> tuple[list[list[float]], str]:
         """Vectors and the model that produced them.
 
-        ``model`` pins one model with no fallback (a collection's own). ``remember``
-        off leaves the cached preference alone (health checks)."""
+        Args:
+            model: one model, no fallback (a collection's own).
+            remember: cache the answering model as the preference for the next
+                unpinned call; off for health checks."""
         if not texts:
             return [], model or self.model or ""
         if model:
@@ -282,8 +285,8 @@ async def put_document(doc: Document) -> dict[str, Any]:
                 # Empty document: a successful delete.
                 return {"chunks": 0, "model": ""}
 
-            # One vector space per collection: new rows use the model the
-            # collection already holds, or the write fails rather than mixing.
+            # One vector space per collection: rows join the model the collection
+            # holds, or the write fails.
             pinned = await collection_model(conn, doc.collection)
             vectors, model = await embedder.embed(pieces, model=pinned or None)
             await conn.executemany(

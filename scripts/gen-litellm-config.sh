@@ -297,18 +297,16 @@ emit_brain() {  # $1=local-model  $2=url_csv  $3=or-slug  $4=or_in_pm  $5=or_out
   fi
 }
 
-# Live prices over the declared tables
-# One catalogue download for the whole run; or_price runs in command
-# substitutions and reads the cached file.
+# Live prices over the declared tables; one catalogue download, cached for the
+# or_price command substitutions
 or_catalogue >/dev/null 2>&1 || true
 OR_PRICE_TOTAL=0; OR_PRICE_MOVED=0
 or_refresh_prices || true
 if (( OR_PRICE_TOTAL > 0 )); then
-  PRICED=$OR_PRICE_TOTAL; MOVED=$OR_PRICE_MOVED
-  if (( MOVED > 0 )); then
-    info "prices: ${PRICED} read from the catalogue, ${MOVED} differ from the declared fallback"
+  if (( OR_PRICE_MOVED > 0 )); then
+    info "prices: ${OR_PRICE_TOTAL} read from the catalogue, ${OR_PRICE_MOVED} differ from the declared fallback"
   else
-    info "prices: ${PRICED} read from the catalogue, all matching the declared fallback"
+    info "prices: ${OR_PRICE_TOTAL} read from the catalogue, all matching the declared fallback"
   fi
 else
   warn "prices: could not reach the catalogue — using the declared fallbacks"
@@ -362,6 +360,7 @@ SECTION=$(
   # --- OpenRouter twins of the deployed local models (fallback targets, hidden) ---
   emit_or_fallback "$(env_get VLLM_QWEN27B_URL)"  "qwen/qwen3.8-27b" "$(or_price qwen/qwen3.8-27b in)" "$(or_price qwen/qwen3.8-27b out)"
   emit_or_fallback "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it" "$(or_price google/gemma-4-26b-a4b-it in)" "$(or_price google/gemma-4-26b-a4b-it out)"
+  emit_or_fallback "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next" "$(or_price qwen/qwen3-coder-next in)" "$(or_price qwen/qwen3-coder-next out)"
   echo "  ${MARKER_END}"
 )
 
@@ -377,6 +376,7 @@ FALLBACKS=$(
   echo "  fallbacks:"
   fb_line "qwen3.8-27b"   "$(env_get VLLM_QWEN27B_URL)"  "qwen/qwen3.8-27b"
   fb_line "gemma-4-26b-a4b" "$(env_get VLLM_GEMMA26B_URL)" "google/gemma-4-26b-a4b-it"
+  fb_line "qwen3-coder-next" "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next"
   echo "  ${FB_END}"
 )
 

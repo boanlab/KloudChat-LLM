@@ -133,11 +133,13 @@ usage when run without arguments.
 
 The local lineup is `qwen3.8-27b` (chat, vision, coding, deep research),
 `gemma-4-26b-a4b` (fast chat for high-volume calls), `bge-m3` and
-`bge-reranker-v2-m3` (retrieval) and `whisper-large-v3` (transcription); see
-[docs/models.md](docs/models.md). Local serving is NVIDIA-only. Supported cards
-are GB10, RTX 5090, RTX PRO 5000 and RTX PRO 6000; the download and manage scripts refuse anything else and the
-scheduler places nothing there. 32 GiB usable is the floor. Where a model does
-not fit, the placement step says so and delegates to OpenRouter.
+`bge-reranker-v2-m3` (retrieval) and `whisper-large-v3` (transcription);
+`qwen3-coder-next` (coding) is in the catalogue but not deployed by default.
+See [docs/models.md](docs/models.md). Local serving is NVIDIA-only. Supported
+cards are GB10, RTX 5090, RTX PRO 5000 and RTX PRO 6000; the download and
+manage scripts refuse anything else and the scheduler places nothing there.
+32 GiB usable is the floor. Where a model does not fit, the placement step
+says so and delegates to OpenRouter.
 
 ## Documentation
 

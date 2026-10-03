@@ -921,10 +921,8 @@ def test_env_write_updates_in_place():
     assert "old" not in text
 
 
-
 def test_an_unsupported_card_holds_nothing():
     """A node classified "unsupported" is left out of placement with a note."""
-    from scheduler import planner
     spec = _spec("chat", weight=20 * GB)
     bad = NodeSpec(node_id="n1", hostname="n1", gpu_class="unsupported",
                    total_vram_bytes=96 * GB, arch="amd64")
@@ -932,7 +930,6 @@ def test_an_unsupported_card_holds_nothing():
     assert not result.placements
     assert [d.model_id for d in result.delegations] == ["chat"]
     assert any("unsupported card" in n for n in result.notes)
-
 
 
 def test_colliding_short_node_ids_fall_back_to_the_full_host():
@@ -960,7 +957,6 @@ def test_foreign_memory_is_charged_to_the_card_that_holds_it():
     assert [p.model_id for p in result.placements] == ["a"]
     assert result.placements[0].devices == (1,)
     assert [d.model_id for d in result.delegations] == ["b"]
-
 
 
 def test_a_failed_env_write_stops_that_node_and_drops_its_route():

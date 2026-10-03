@@ -28,8 +28,7 @@ UNRESOLVED = "host could not be resolved"
 
 
 def is_public(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """`is_global` follows the IANA special-purpose registries (loopback, private,
-    link-local, CGNAT, documentation, reserved); multicast and IPv4-in-IPv6 are explicit."""
+    """`is_global` covers the IANA special-purpose registries; multicast and IPv4-mapped are explicit."""
     mapped = getattr(address, "ipv4_mapped", None)
     if mapped is not None:
         return is_public(mapped)
@@ -44,23 +43,24 @@ def _resolve(host: str) -> list[str]:
     return [entry[4][0] for entry in found]
 
 
+_MISSING = object()
+
+
 class HostVerdicts:
-    """Per-host refusal cache for one browser context; bounded, no expiry."""
+    """Per-host refusal cache for one browser context; cleared whole at `limit`, no expiry."""
 
     def __init__(self, limit: int = 2048) -> None:
         self.limit = limit
         self._seen: dict[str, str | None] = {}
 
     def get(self, host: str):
+        """The cached verdict, or `_MISSING`."""
         return self._seen.get(host, _MISSING)
 
     def put(self, host: str, verdict: str | None) -> None:
         if len(self._seen) >= self.limit:
             self._seen.clear()
         self._seen[host] = verdict
-
-
-_MISSING = object()
 
 
 def subrequest_refusal(url: str, verdicts: HostVerdicts | None = None,

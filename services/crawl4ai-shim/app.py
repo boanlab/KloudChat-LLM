@@ -12,6 +12,7 @@ or {"success": false, "error"}.
 One persistent headless Chromium crawler, shared by every request. At most
 MAX_CONCURRENT_PAGES render at once (the rest wait up to QUEUE_TIMEOUT_MS and
 are then told "busy"), and a successful scrape is reused for CACHE_TTL_S.
+Every request a page makes passes the network guard before it leaves the browser.
 
 Page addresses are logged at DEBUG only; a warning names the host.
 """
@@ -58,7 +59,7 @@ QUEUE_TIMEOUT_MS = int(os.environ.get("QUEUE_TIMEOUT_MS", "15000"))
 # A successful scrape is answered from memory for this long.
 CACHE_TTL_S = int(os.environ.get("CACHE_TTL_S", "900"))
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "512"))
-# Redirect hops the guard follows before giving up
+# Redirect hops the route guard follows for one request
 MAX_REDIRECTS = 10
 # Hosts file of adult sites a scrape refuses; baked into the image.
 ADULT_HOSTS_FILE = os.environ.get("ADULT_HOSTS_FILE", "/app/adult-hosts.txt")
@@ -120,11 +121,10 @@ def _refusal(url: str) -> str | None:
 
 
 async def _guard_context(page, context=None, **_: Any):
-    """Crawl4AI hook: route every request of the new context through the network guard.
+    """Crawl4AI hook: every request of the new context passes the network guard.
 
-    Playwright does not route the requests a redirect produces, so the guard
-    follows redirects itself, judging each hop, and hands the browser the final
-    response."""
+    Playwright does not route redirected requests, so the guard follows redirects
+    itself, judges each hop, and fulfils the route with the final response."""
     verdicts = netguard.HostVerdicts()
     target = context or page.context
 
@@ -151,6 +151,11 @@ async def _guard_context(page, context=None, **_: Any):
                 method = "GET" if resp.status in (301, 302, 303) else None
                 resp = await route.fetch(url=hop, method=method, max_redirects=0)
                 hops += 1
+            if 300 <= resp.status < 400 and resp.headers.get("location"):
+                # Past MAX_REDIRECTS: never hand the browser a redirect to follow unrouted
+                LOG.warning("redirect chain too long for %s", _site(url))
+                await route.abort("failed")
+                return
             await route.fulfill(response=resp)
         except Exception as e:  # noqa: BLE001
             LOG.debug("request failed for %s: %r", _site(url), e)
@@ -182,8 +187,6 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
     url = payload.get("url")
     if not url:
         return {"success": False, "error": "url is required"}
-    # Resolved address and host checked before the browser opens the URL: the
-    # shim is unauthenticated and sits on the internal network.
     refused = await asyncio.to_thread(_refusal, url)
     if refused:
         LOG.warning("scrape refused for %s: %s", _site(url), refused)
@@ -236,12 +239,12 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
 
     if not getattr(result, "success", False):
         err = getattr(result, "error_message", None) or "crawl failed"
-        # The guard aborted the navigation (an internal redirect hop)
+        # ERR_BLOCKED_BY_CLIENT: the route guard aborted the navigation
         if "ERR_BLOCKED_BY_CLIENT" in err:
             err = netguard.INTERNAL
         LOG.warning("scrape failed on %s: %s", _site(url), err)
         return {"success": False, "error": err}
-    # The address reached after the browser's own redirects is checked too.
+    # The address the browser ended up at is judged once more.
     final_url = getattr(result, "redirected_url", None) or url
     if final_url != url:
         refused = await asyncio.to_thread(_refusal, final_url)

@@ -52,6 +52,7 @@ def _remote_workdir() -> str:
 
 
 def _resolve_hosts(arg: Optional[str]) -> dict[str, str]:
+    """Node id to SSH target from ``--hosts`` or NODES_VLLM; exits on a repeated target."""
     hosts = _csv(arg) if arg else _csv(_env("NODES_VLLM"))
     try:
         return inventory.node_ids_for_hosts(hosts)

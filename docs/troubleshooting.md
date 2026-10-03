@@ -51,6 +51,23 @@ sudo dmesg -T | grep -iE "nvrm|oom" | tail -10
 | `NVRM: Out of memory` (dmesg) | Unified memory (GB10): page cache plus co-resident vLLM | `sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'`. If it recurs, shrink that node's models and re-run [placement](../scheduler/README.md) |
 | OS killer during weight load | RAM smaller than the weights | Stop other containers |
 
+## Placement apply reports failures
+
+`./scripts/setup.sh scheduler apply` prints `failed: ...` per action and
+exits 1; the rest of the plan is applied. Inside `setup.sh all` the same
+failure is a warning (`placement failed`) and the run continues with the
+routes `apply` wrote to `.env`.
+
+- A failure on a node stops that node's remaining actions; other nodes
+  continue.
+- A service whose start or recreate failed is left out of the `VLLM_*_URL`
+  and `WHISPER_URLS` routes written to `.env`, so LiteLLM never registers it.
+- A node classified `unsupported` holds nothing; the plan says so in its
+  notes.
+
+Fix the node (`./scripts/manage-vllm.sh status` and `logs <svc>` there), then
+re-run `./scripts/setup.sh all`; an unchanged plan applies nothing.
+
 ## Swap thrash (mid-stream stall)
 
 When the vLLM KV cache is pushed into swap, per-token latency grows into

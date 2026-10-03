@@ -63,7 +63,8 @@ def default_reserve_bytes(total_vram_bytes: int) -> int:
 class NodeSpec:
     """Capacity of a probed GPU node."""
 
-    node_id: str                  # short identifier, usually the last IPv4 octet
+    node_id: str                  # inventory.node_ids_for_hosts: last IPv4 octet, first
+                                  # hostname label, or the bare host on a collision
     hostname: str                 # SSH target
     gpu_class: str                # "gb10", "pro5000", ...
     total_vram_bytes: int         # one GPU
@@ -74,7 +75,7 @@ class NodeSpec:
     gpu_count: int = 1
     #: GPU memory held by processes outside this stack, subtracted from capacity
     foreign_vram_bytes: int = 0
-    #: The same per card ordinal; empty spreads ``foreign_vram_bytes`` evenly
+    #: ``foreign_vram_bytes`` by CUDA device ordinal; empty spreads it evenly
     foreign_vram_by_card: tuple[int, ...] = ()
     #: "amd64" | "arm64" | "" on probe failure
     arch: str = ""
@@ -104,7 +105,11 @@ class NodeSpec:
         return self.planner_vram_bytes // max(1, self.gpu_count)
 
     def card_budget_bytes(self, reserved_bytes: int = 0) -> int:
-        """One card's share of the node budget before foreign memory."""
+        """One card's share of the node budget before foreign memory.
+
+        Args:
+            reserved_bytes: node-wide bytes held by resident workloads.
+        """
         cards = max(1, self.gpu_count)
         if self.usable_vram_bytes is not None:
             base = self.usable_vram_bytes
@@ -113,7 +118,7 @@ class NodeSpec:
         return max(0, base - reserved_bytes) // cards
 
     def card_free_bytes(self, reserved_bytes: int = 0) -> list[int]:
-        """Free bytes per card: the card budget minus that card's foreign memory."""
+        """Free bytes by CUDA device ordinal: the card budget less that card's foreign memory."""
         cards = max(1, self.gpu_count)
         budget = self.card_budget_bytes(reserved_bytes)
         if self.foreign_vram_by_card:

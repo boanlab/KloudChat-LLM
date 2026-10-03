@@ -6,7 +6,7 @@ Per placement:
     (c) ``{env_prefix}_URL`` in the orchestrator's .env, read by gen-litellm-config.sh
 
 A ChangePlan is built first and executed after confirmation. Re-applying an
-unchanged plan is a no-op.
+unchanged plan is a no-op. Failure contract: ``apply``.
 """
 
 from __future__ import annotations
@@ -175,8 +175,8 @@ def compute_diff(
             if p.tp > 1 or (here or {}).get(tp_key) not in (None, "", "1"):
                 options.append((tp_key, str(p.tp)))
 
-            # NVIDIA_VISIBLE_DEVICES, multi-card nodes only; CUDA_VISIBLE_DEVICES
-            # fails engine init on GB10
+            # NVIDIA_VISIBLE_DEVICES in docker-compose.vllm.yml; multi-card nodes
+            # only, or to overwrite a stale value
             dev_key = f"{spec.env_prefix}_DEVICES"
             devices = ",".join(str(d) for d in p.devices)
             node = next((n for n in nodes if n.node_id == node_id), None)
@@ -247,12 +247,14 @@ def apply(
     local_env_path: Optional[str] = None,
     runner: Callable[[str, str], tuple[int, str]] = _run,
 ) -> list[str]:
-    """Execute the changes; returns failures.
+    """Execute the changes; returns one line per failed or skipped action.
 
-    A failure stops the rest of that node's actions (an env write that failed
-    must not be followed by the recreate that would read it) and leaves the
-    other nodes alone. A service whose start or recreate failed is dropped from
-    the URL routes written to the orchestrator's .env."""
+    Actions run in order. The first failure on a node skips that node's remaining
+    actions (an env write must precede the recreate that reads it); other nodes
+    continue. The orchestrator .env is written last, with the URL of every
+    start or recreate that failed or was skipped removed from the values in
+    ``change.local_env``.
+    """
     failures: list[str] = []
     failed_nodes: set[str] = set()
     dead_urls: set[str] = set()

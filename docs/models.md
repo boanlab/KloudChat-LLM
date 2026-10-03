@@ -25,12 +25,13 @@ Which models are registered where, and how requests are routed to them.
 - Commercial: the OpenRouter catalogue price.
 - Local (`local/*` and `strict-local/*`): 0.
 - OpenRouter fallback for a local model: the price of the OpenRouter deployment that served it.
-- `text-embedding-3-small`: paid, through OpenAI.
+- `text-embedding-3-small`: paid, through OpenAI (`OPENAI_API_KEY`, passed to
+  the LiteLLM container).
 
-`gen-litellm-config.sh` fetches the OpenRouter catalogue once per run and
-emits the live price for every route; the `lib.sh` tables apply when the
-catalogue is unreachable. The run prints how many prices it read and how many
-differed from the declared values.
+`gen-litellm-config.sh` downloads the OpenRouter catalogue once per run,
+overlays the live prices on the declared tables and emits them for every
+route; the `lib.sh` tables apply when the catalogue is unreachable. The run
+prints how many prices it read and how many differed from the declared values.
 
 `./scripts/gen-litellm-config.sh --check-prices` compares the declared values
 against the catalogue and writes nothing. A declared id missing from the
@@ -76,7 +77,7 @@ OpenRouter.
 | Model (alias) | Container | Port | Quant | Node | Priority | Role |
 |---|---|---|---|---|---|---|
 | `local/qwen3.8-27b` | `vllm-qwen27b` | 8001 | NVFP4 | any | 20 | Chat: conversation, vision, coding, deep research, titles, memory extraction. One replica per node with room |
-| `local/gemma-4-26b-a4b` | `vllm-gemma26b` | 8002 | NVFP4 | pool | 8 | Fast chat: titles, memory extraction, query rewriting, quick turns. MoE 3.8B active, vision, 131072 here |
+| `local/gemma-4-26b-a4b` | `vllm-gemma26b` | 8002 | NVFP4 | pool | 8 | Fast chat: titles, memory extraction, query rewriting, quick turns. MoE 3.8B active, vision, context floor 131072 |
 | `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | pool | 10 | Coding. Qwen3-Coder-Next-80B-A3B, hybrid attention, 12 of 48 layers hold KV |
 | `local/bge-m3` | `vllm-bgem3` | 8003 | BF16 | head | 5 | Retrieval embeddings. Pooling runner |
 | `local/bge-reranker-v2-m3` | `vllm-rerank` | 8009 | BF16 | head | 0 | Retrieval reranking. Pooling runner |
@@ -95,18 +96,22 @@ Each deployment carries a 1800 s request timeout and a concurrency-gate cap of
 
 `gemma-4-26b-a4b` is the speed tier: a 25.2B MoE with 3.8B active, vision,
 4 of 30 layers holding KV (16 KiB per token in fp8) and 1024-token sliding
-windows on the rest. On GB10 it decodes at 48 tok/s single-stream against the
-27B's 15, and batches to ~490 tok/s at 16 concurrent requests. It is a pool
-model (priority 8, context floor 131072) that shares a card with a 27B
-replica, registered under `local/gemma-4-26b-a4b` with a 900 s timeout and a
-cap of 64. The UI points high-volume internal calls (titles, memory
-extraction, query rewriting) and quick turns here; default chat and deep research stay on
-the 27B.
+windows on the other 26. Measured on GB10 it decodes at 48 tok/s
+single-stream against the 27B's 15, and batches to 494 tok/s at 16 concurrent
+requests. It is a pool model (priority 8, context floor 131072) that shares a
+card with a 27B replica, registered under `local/gemma-4-26b-a4b` with a
+900 s timeout and a cap of 64. The UI points high-volume internal calls
+(titles, memory extraction, query rewriting) and quick turns here; default
+chat and deep research stay on the 27B.
 
 **Coder.** `qwen3-coder-next` is in the catalogue but not in the default
 `VLLM_MODELS`. Coverage seats every listed model once before any replica, so
 listing it gives a pool card to the coder instead of a second 27B. Unlisted,
-it is reachable as `qwen/qwen3-coder-next` through OpenRouter.
+it is reachable as `qwen/qwen3-coder-next` through OpenRouter. Deployed, it
+gets the same treatment as the chat tiers: a hidden OpenRouter twin
+(`qwen/qwen3-coder-next`, 0.12 / 0.80 $ per 1M), a `fallbacks` line, and a
+concurrency-gate cap of 32 on `local/` and `strict-local/`. `manage.sh team
+sync` includes whichever of the three names applies.
 
 **Quantisation.** Chat is NVFP4, the coder FP8, retrieval BF16, transcription
 FP16. The supported cards (GB10, RTX 5090, RTX PRO 5000, RTX PRO 6000) execute
@@ -197,7 +202,7 @@ independent paths:
 |---|---|
 | `local/qwen3.8-27b` | `qwen/qwen3.8-27b` (0.42 / 3.00) |
 | `local/gemma-4-26b-a4b` | `google/gemma-4-26b-a4b-it` (0.0675 / 0.225) |
-| `local/qwen3-coder-next` | `qwen/qwen3-coder-next` (live price) |
+| `local/qwen3-coder-next` | `qwen/qwen3-coder-next` (0.12 / 0.80) |
 
 - `emit_or_fallback` emits the twin only when the local primary is deployed.
   With no local primary, `emit_brain` registers the same slug as an ordinary
@@ -243,8 +248,10 @@ prompt and response bodies are not.
   as LiteLLM's `max_input_tokens`.
 - **Fallback**: a node that does not answer gets `CTX_FALLBACK` (32768).
 
-Both chat models serve 262144 (256K) when placed; the scheduler writes the
-per-node value as `VLLM_<PREFIX>_MAX_LEN`.
+`qwen3.8-27b` serves 262144 wherever it is placed (its floor is the native
+context). `gemma-4-26b-a4b` serves between its 131072 floor and 262144,
+depending on the room left on its card. The scheduler writes the per-node
+value as `VLLM_<PREFIX>_MAX_LEN`.
 
 ### Embeddings
 

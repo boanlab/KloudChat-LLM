@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: download-vllm-models.sh [alias|all|recommended] [...]
 #
-# Downloads weights after checking the card (compute capability, usable memory).
+# Downloads weights after checking the card (supported model, usable memory).
 # Weights this node cannot serve are skipped with the reason.
 #
 # No arguments: `recommended whisper-large-v3`.

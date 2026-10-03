@@ -17,15 +17,15 @@ import shlex
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
 
 from scheduler.types import GB, NodeSpec
 
-#: OS share on a unified-memory node, excluded from GPU capacity
-#: (lib.sh has the same figure)
+#: OS share on a unified-memory node, excluded from GPU capacity; must equal
+#: lib.sh::UNIFIED_RESERVE_GB
 _UNIFIED_RESERVE_BYTES: int = 12 * GB
 
-#: Containers this stack owns (applier.MANAGED_SERVICE_PREFIX)
+#: Containers this stack owns; must equal applier.MANAGED_SERVICE_PREFIX
 MANAGED_PREFIX: str = "vllm-"
 
 
@@ -102,7 +102,7 @@ UNSUPPORTED_GPU_CLASS: str = "unsupported"
 
 
 def _classify_gpu_name(name: str) -> str:
-    """Marketing name to class token, in lib.sh::detect_gpu_class's vocabulary."""
+    """Class token in lib.sh::detect_gpu_class's vocabulary; "unknown" for an empty name."""
     name = (name or "").lower()
     if "gb10" in name:
         return "gb10"
@@ -132,8 +132,7 @@ done
 
 
 def _probe_vram_by_owner(host: str, managed: frozenset) -> tuple[int, int, dict[int, int]]:
-    """(foreign bytes, our bytes, foreign bytes per card ordinal) of GPU memory held;
-    our containers are memory the plan may reassign."""
+    """GPU memory held: (bytes outside ``managed``, bytes inside it, outside bytes per card ordinal)."""
     code, out, _ = _ssh(host, _VRAM_BY_OWNER, timeout=10)
     if code != 0 or not out.strip():
         return 0, 0, {}
@@ -308,11 +307,16 @@ def node_id_from_host(host: str) -> str:
 
 
 def node_ids_for_hosts(hosts: Sequence[str]) -> dict[str, str]:
-    """Node id per SSH target, in order. A short id two targets would share falls
-    back to the full host; a target listed twice is an error."""
+    """Node id to SSH target, in input order.
+
+    A short id two targets share falls back to the bare host (no ``user@``).
+
+    Raises:
+        ValueError: a target listed twice.
+    """
     short = [node_id_from_host(h) for h in hosts]
     out: dict[str, str] = {}
-    for host, sid in zip(hosts, short):
+    for host, sid in zip(hosts, short, strict=True):
         nid = sid if short.count(sid) == 1 else host.split("@")[-1]
         if nid in out:
             raise ValueError(f"NODES_VLLM lists {host} twice")

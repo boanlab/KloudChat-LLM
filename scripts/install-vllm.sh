@@ -16,7 +16,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="${PROJECT_DIR}/.env"
-COMPOSE_FILE="${PROJECT_DIR}/docker-compose.vllm.yml"
 source "${SCRIPT_DIR}/lib.sh"
 
 REINSTALL=0
