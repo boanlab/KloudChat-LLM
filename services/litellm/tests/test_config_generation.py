@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -331,3 +332,24 @@ def test_every_chat_model_in_the_catalogue_is_registered() -> None:
                 f"{model_id} declares the OpenRouter twin {twin}, which the "
                 "generator does not name — its fallback would be wrong"
             )
+
+
+def test_every_env_the_generator_references_reaches_the_container() -> None:
+    """`os.environ/X` in generated config must be passed to the LiteLLM service by compose."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    passed = set((compose["services"]["litellm"].get("environment") or {}).keys())
+    referenced = set(re.findall(r"os\.environ/([A-Z0-9_]+)", GENERATOR.read_text()))
+    missing = referenced - passed
+    assert not missing, f"docker-compose.yml does not pass {sorted(missing)} to litellm"
+
+
+def test_every_chat_model_has_a_concurrency_gate_cap() -> None:
+    """Each generate-runner model gets local/ and strict-local/ caps, or strict requests are refused."""
+    catalogue = yaml.safe_load((ROOT / "scheduler" / "models.yaml").read_text())
+    gate = (ROOT / "services" / "litellm" / "callbacks" / "concurrency_gate.py").read_text()
+    caps = set(re.findall(r'"((?:strict-)?local/[^"]+)":\s*\d+', gate))
+    for entry in catalogue["models"]:
+        if (entry.get("runner") or "generate") != "generate":
+            continue
+        for alias in (f"local/{entry['id']}", f"strict-local/{entry['id']}"):
+            assert alias in caps, f"{alias} has no DEFAULT_CAPS entry"

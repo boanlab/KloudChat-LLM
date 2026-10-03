@@ -45,6 +45,8 @@ class NodeAction:
     kind: str          # "env" | "start" | "stop" | "recreate"
     description: str
     command: str
+    #: Route the service answers on once up (start and recreate only)
+    url: str = ""
 
 
 @dataclass
@@ -144,8 +146,10 @@ def compute_diff(
     for p in target.placements:
         target_by_node.setdefault(p.node_id, []).append(p)
 
+    by_service = {s.service: s for s in specs}
     for node_id in sorted(set(target_by_node) | set(current)):
         host = host_of.get(node_id, node_id)
+        bare_host = host.split("@")[-1]
         placements = target_by_node.get(node_id, [])
         want = {by_id[p.model_id].service for p in placements if p.model_id in by_id}
         # Managed services only
@@ -199,6 +203,7 @@ def compute_diff(
             change.actions.append(NodeAction(
                 node_id, host, "start", f"start {service}",
                 f"{cd} && {compose} up -d {shlex.quote(service)}",
+                url=_service_url(by_service.get(service), bare_host),
             ))
         # (b) Recreate only where an option moved — a recreate reloads the weights
         for service in sorted(want & have):
@@ -207,6 +212,7 @@ def compute_diff(
             change.actions.append(NodeAction(
                 node_id, host, "recreate", f"recreate {service}",
                 f"{cd} && {compose} up -d --force-recreate {shlex.quote(service)}",
+                url=_service_url(by_service.get(service), bare_host),
             ))
 
     if local_env_path:
@@ -231,21 +237,45 @@ def _run(host: str, command: str, *, timeout: int = 300) -> tuple[int, str]:
         return 1, str(exc)
 
 
+def _service_url(spec: Optional[ModelSpec], bare_host: str) -> str:
+    return f"http://{bare_host}:{spec.port}" if spec is not None else ""
+
+
 def apply(
     change: ChangePlan,
     *,
     local_env_path: Optional[str] = None,
     runner: Callable[[str, str], tuple[int, str]] = _run,
 ) -> list[str]:
-    """Execute the changes; returns failures. A failing node does not stop the others."""
+    """Execute the changes; returns failures.
+
+    A failure stops the rest of that node's actions (an env write that failed
+    must not be followed by the recreate that would read it) and leaves the
+    other nodes alone. A service whose start or recreate failed is dropped from
+    the URL routes written to the orchestrator's .env."""
     failures: list[str] = []
+    failed_nodes: set[str] = set()
+    dead_urls: set[str] = set()
     for action in change.actions:
+        if action.node_id in failed_nodes:
+            failures.append(f"{action.node_id} {action.description}: skipped after an earlier failure")
+            if action.url:
+                dead_urls.add(action.url)
+            continue
         rc, out = runner(action.host, action.command)
         if rc != 0:
             failures.append(f"{action.node_id} {action.description}: {out}")
+            failed_nodes.add(action.node_id)
+            if action.url:
+                dead_urls.add(action.url)
 
     if local_env_path and change.local_env:
-        _write_local_env(local_env_path, change.local_env)
+        values = {
+            k: ",".join(u for u in v.split(",") if u and u not in dead_urls)
+            if k.endswith("_URL") or k == "WHISPER_URLS" else v
+            for k, v in change.local_env.items()
+        }
+        _write_local_env(local_env_path, values)
     return failures
 
 

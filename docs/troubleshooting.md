@@ -174,7 +174,7 @@ See [models.md](models.md#retrieval) for the two stages.
 |---|---|
 | `manage.sh user list` / `team list` / `key list` | LiteLLM users, teams and virtual keys |
 | `manage.sh user usage [--user <email>]` | Per-user spend against the monthly budget |
-| `manage.sh user topup --user <email> --amount <N>` | Temporarily raise the monthly limit by $N. The original limit is recorded in `data/ledger/topups.json` and restored at the monthly reset |
+| `manage.sh user topup --user <email> --amount <N>` | Temporarily raise the monthly limit by $N. The original limit is recorded in `data/ledger/topups.json` and restored by the next `manage.sh user usage` or `topup` run after the monthly reset; a failed restore stays in the ledger and is retried then |
 | `manage.sh key show [--user <email>]` | Plaintext keys from the local ledger |
 | `manage-vllm.sh status` | vLLM container and healthcheck status |
 | `manage-vllm.sh logs <svc>` | vLLM logs |

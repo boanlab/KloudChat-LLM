@@ -53,7 +53,10 @@ def _remote_workdir() -> str:
 
 def _resolve_hosts(arg: Optional[str]) -> dict[str, str]:
     hosts = _csv(arg) if arg else _csv(_env("NODES_VLLM"))
-    return {inventory.node_id_from_host(h): h for h in hosts}
+    try:
+        return inventory.node_ids_for_hosts(hosts)
+    except ValueError as exc:
+        sys.exit(str(exc))
 
 
 def _head_node(hosts: dict[str, str]) -> Optional[str]:

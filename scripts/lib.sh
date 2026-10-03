@@ -351,7 +351,8 @@ or_price() {
   [[ -n "$live" && "$live" != "null" ]] && echo "$live" || echo "$fallback"
 }
 
-# Live prices over the declared tables, in place; prints "<total> <moved>"
+# Live prices over the declared tables, in place; sets OR_PRICE_TOTAL and
+# OR_PRICE_MOVED. Run in the current shell, never in a command substitution.
 or_refresh_prices() {
   has_openrouter || return 0
   local live; live="$(or_catalogue 2>/dev/null)" || return 0
@@ -381,7 +382,7 @@ or_refresh_prices() {
       MODEL_PRICE_OUT_PM[$m]="$lout"
     done
   done
-  echo "${total} ${moved}"
+  OR_PRICE_TOTAL=$total; OR_PRICE_MOVED=$moved
 }
 
 # OpenRouter's free chat models, one slug per line: zero price both ways, text
@@ -677,6 +678,7 @@ vllm_wait_until_ready() {
 litellm_chat_models_csv() {
   local vllm_chat_url; vllm_chat_url="$(env_get VLLM_QWEN27B_URL 2>/dev/null || true)"
   local vllm_fast_url; vllm_fast_url="$(env_get VLLM_GEMMA26B_URL 2>/dev/null || true)"
+  local vllm_coder_url; vllm_coder_url="$(env_get VLLM_CODERNEXT_URL 2>/dev/null || true)"
   local out=() m
   if has_openrouter; then
     for m in "${OPENAI_MODELS[@]}";     do out+=("openai/$m");     done
@@ -702,6 +704,11 @@ litellm_chat_models_csv() {
     out+=("local/gemma-4-26b-a4b" "strict-local/gemma-4-26b-a4b")
   elif has_openrouter; then
     out+=("google/gemma-4-26b-a4b-it")
+  fi
+  if [[ -n "$vllm_coder_url" ]]; then
+    out+=("local/qwen3-coder-next" "strict-local/qwen3-coder-next")
+  elif has_openrouter; then
+    out+=("qwen/qwen3-coder-next")
   fi
   if has_openrouter; then
     for m in "${OPENAI_EMBED_CATALOG[@]}"; do out+=("$m"); done

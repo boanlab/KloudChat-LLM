@@ -2,8 +2,10 @@
 
 The shim sits on the deployment's private network, next to LiteLLM, the databases and
 the other tool services, and `/tools/fetch` reaches it without authentication. A URL
-is therefore judged by the addresses its host resolves to, before the browser opens it,
-and again on the address the browser ended up at after redirects.
+is therefore judged by the addresses its host resolves to, before the browser opens it;
+every request the page then makes (navigation, redirect, script, XHR) passes through
+`subrequest_refusal` on a Playwright route before it leaves the browser; and the address
+the browser ended up at is checked once more on return.
 """
 from __future__ import annotations
 
@@ -40,6 +42,45 @@ def _resolve(host: str) -> list[str]:
     except socket.gaierror:
         return []
     return [entry[4][0] for entry in found]
+
+
+class HostVerdicts:
+    """Per-host refusal cache for one browser context; bounded, no expiry."""
+
+    def __init__(self, limit: int = 2048) -> None:
+        self.limit = limit
+        self._seen: dict[str, str | None] = {}
+
+    def get(self, host: str):
+        return self._seen.get(host, _MISSING)
+
+    def put(self, host: str, verdict: str | None) -> None:
+        if len(self._seen) >= self.limit:
+            self._seen.clear()
+        self._seen[host] = verdict
+
+
+_MISSING = object()
+
+
+def subrequest_refusal(url: str, verdicts: HostVerdicts | None = None,
+                       resolve=_resolve) -> str | None:
+    """Why a request the page makes may not leave the browser; None when it may.
+
+    Non-http(s) schemes (data:, blob:, about:) stay inside the browser and pass.
+    Blocking: call it off the loop."""
+    scheme = (url or "").split(":", 1)[0].lower()
+    if scheme not in ("http", "https"):
+        return None
+    host = (urlsplit(url).hostname or "").rstrip(".").lower()
+    if verdicts is not None:
+        cached = verdicts.get(host)
+        if cached is not _MISSING:
+            return cached
+    verdict = refusal(url, resolve=resolve)
+    if verdicts is not None and host:
+        verdicts.put(host, verdict)
+    return verdict
 
 
 def refusal(url: str, resolve=_resolve) -> str | None:

@@ -180,7 +180,9 @@ Chunks, embeds and stores documents in pgvector (`index-db`), and searches
 them with a two-stage recall/rerank pipeline through LiteLLM. Endpoints:
 `PUT /documents`, `POST /search`, `DELETE /documents/{id}`,
 `DELETE /collections/{name}`, `GET /health` (database and embedding
-availability reported separately). Runs under the `index` profile. Tuning is
+availability reported separately). A collection is searched and extended with
+the embedding model its rows hold; when that model is unavailable the call
+fails rather than mixing vector spaces. Runs under the `index` profile. Tuning is
 in [env-reference.md](env-reference.md), the model side in
 [models.md](models.md#retrieval).
 

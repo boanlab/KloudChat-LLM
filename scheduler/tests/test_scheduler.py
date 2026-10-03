@@ -934,6 +934,60 @@ def test_an_unsupported_card_holds_nothing():
     assert any("unsupported card" in n for n in result.notes)
 
 
+
+def test_colliding_short_node_ids_fall_back_to_the_full_host():
+    """`10.1.0.11` and `10.2.0.11` keep both nodes; a repeated target is an error."""
+    from scheduler import inventory
+    ids = inventory.node_ids_for_hosts(["ops@10.1.0.11", "ops@10.2.0.11", "ops@10.1.0.12"])
+    assert list(ids) == ["10.1.0.11", "10.2.0.11", "12"]
+    assert ids["10.2.0.11"] == "ops@10.2.0.11"
+    try:
+        inventory.node_ids_for_hosts(["ops@gpu-1", "ops@gpu-1"])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a duplicate target must be refused")
+
+
+def test_foreign_memory_is_charged_to_the_card_that_holds_it():
+    """Two 96 GiB cards, 80 GiB foreign on card 0: a 40 GiB model fits once, on card 1."""
+    node = NodeSpec(node_id="n1", hostname="n1", gpu_class="pro6000",
+                    total_vram_bytes=96 * GB, gpu_count=2,
+                    foreign_vram_bytes=80 * GB, foreign_vram_by_card=(80 * GB, 0))
+    spec_a = _spec("a", weight=40 * GB, ctx_floor=16384)
+    spec_b = _spec("b", weight=40 * GB, ctx_floor=16384)
+    result = planner.plan([spec_a, spec_b], [node], replicas=1)
+    assert [p.model_id for p in result.placements] == ["a"]
+    assert result.placements[0].devices == (1,)
+    assert [d.model_id for d in result.delegations] == ["b"]
+
+
+
+def test_a_failed_env_write_stops_that_node_and_drops_its_route():
+    """After an env failure the node's start is skipped, and its URL leaves the orchestrator .env."""
+    spec = _spec("a", weight=20 * GB, ctx_floor=16384)
+    nodes = [_node("n1", 96), _node("n2", 96)]
+    result = planner.plan([spec], nodes, replicas=2)
+    assert len(result.placements) == 2
+    with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+        f.write("VLLM_A_URL=old\n")
+        env_path = f.name
+    change = applier.compute_diff(target=result, current={}, specs=[spec], nodes=nodes,
+                                  node_env={"n1": {}, "n2": {}}, local_env_path=env_path)
+    attempted: list[tuple[str, str]] = []
+
+    def runner(host: str, command: str) -> tuple[int, str]:
+        attempted.append((host, command))
+        return (1, "disk full") if host.endswith("n1") and "MAX_LEN" in command else (0, "")
+
+    failures = applier.apply(change, local_env_path=env_path, runner=runner)
+    assert any("skipped after an earlier failure" in f for f in failures)
+    assert not any(h.endswith("n1") and "up -d" in c for h, c in attempted)
+    assert any(h.endswith("n2") and "up -d" in c for h, c in attempted)
+    text = Path(env_path).read_text()
+    assert "VLLM_A_URL=http://n2:8001" in text and "n1:8001" not in text
+
+
 if __name__ == "__main__":
     import sys
     failed = 0

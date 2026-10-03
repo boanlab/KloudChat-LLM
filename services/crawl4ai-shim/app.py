@@ -22,7 +22,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import netguard
 from adultlist import AdultList
@@ -58,6 +58,8 @@ QUEUE_TIMEOUT_MS = int(os.environ.get("QUEUE_TIMEOUT_MS", "15000"))
 # A successful scrape is answered from memory for this long.
 CACHE_TTL_S = int(os.environ.get("CACHE_TTL_S", "900"))
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "512"))
+# Redirect hops the guard follows before giving up
+MAX_REDIRECTS = 10
 # Hosts file of adult sites a scrape refuses; baked into the image.
 ADULT_HOSTS_FILE = os.environ.get("ADULT_HOSTS_FILE", "/app/adult-hosts.txt")
 
@@ -88,6 +90,8 @@ async def lifespan(_app: FastAPI):
     )
     crawler = AsyncWebCrawler(config=cfg)
     await crawler.start()
+    # Every request a page makes is judged before it leaves the browser.
+    crawler.crawler_strategy.set_hook("on_page_context_created", _guard_context)
     LOG.info("Crawl4AI ready")
     try:
         yield
@@ -113,6 +117,46 @@ async def health() -> dict[str, Any]:
 def _refusal(url: str) -> str | None:
     """Why `url` may not be scraped: off the network, or an adult site."""
     return netguard.refusal(url) or adult.refusal(url)
+
+
+async def _guard_context(page, context=None, **_: Any):
+    """Crawl4AI hook: route every request of the new context through the network guard.
+
+    Playwright does not route the requests a redirect produces, so the guard
+    follows redirects itself, judging each hop, and hands the browser the final
+    response."""
+    verdicts = netguard.HostVerdicts()
+    target = context or page.context
+
+    async def guard(route, request):
+        url = request.url
+        refused = await asyncio.to_thread(netguard.subrequest_refusal, url, verdicts)
+        if refused:
+            LOG.warning("request refused for %s: %s", _site(url), refused)
+            await route.abort("blockedbyclient")
+            return
+        if not url.lower().startswith(("http://", "https://")):
+            await route.continue_()
+            return
+        try:
+            resp = await route.fetch(max_redirects=0)
+            hops = 0
+            while 300 <= resp.status < 400 and resp.headers.get("location") and hops < MAX_REDIRECTS:
+                hop = urljoin(resp.url, resp.headers["location"])
+                refused = await asyncio.to_thread(netguard.subrequest_refusal, hop, verdicts)
+                if refused:
+                    LOG.warning("redirect refused %s -> %s: %s", _site(url), _site(hop), refused)
+                    await route.abort("blockedbyclient")
+                    return
+                method = "GET" if resp.status in (301, 302, 303) else None
+                resp = await route.fetch(url=hop, method=method, max_redirects=0)
+                hops += 1
+            await route.fulfill(response=resp)
+        except Exception as e:  # noqa: BLE001
+            LOG.debug("request failed for %s: %r", _site(url), e)
+            await route.abort("failed")
+
+    await target.route("**/*", guard)
 
 
 def _site(url: str) -> str:
@@ -192,6 +236,9 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
 
     if not getattr(result, "success", False):
         err = getattr(result, "error_message", None) or "crawl failed"
+        # The guard aborted the navigation (an internal redirect hop)
+        if "ERR_BLOCKED_BY_CLIENT" in err:
+            err = netguard.INTERNAL
         LOG.warning("scrape failed on %s: %s", _site(url), err)
         return {"success": False, "error": err}
     # The address reached after the browser's own redirects is checked too.

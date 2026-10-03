@@ -74,6 +74,8 @@ class NodeSpec:
     gpu_count: int = 1
     #: GPU memory held by processes outside this stack, subtracted from capacity
     foreign_vram_bytes: int = 0
+    #: The same per card ordinal; empty spreads ``foreign_vram_bytes`` evenly
+    foreign_vram_by_card: tuple[int, ...] = ()
     #: "amd64" | "arm64" | "" on probe failure
     arch: str = ""
     #: Checkpoint directories under VLLM_MODELS_ROOT. None: not probed, no
@@ -100,3 +102,23 @@ class NodeSpec:
     def per_gpu_planner_bytes(self) -> int:
         """Packing capacity of one card — what a tensor-parallel rank must fit."""
         return self.planner_vram_bytes // max(1, self.gpu_count)
+
+    def card_budget_bytes(self, reserved_bytes: int = 0) -> int:
+        """One card's share of the node budget before foreign memory."""
+        cards = max(1, self.gpu_count)
+        if self.usable_vram_bytes is not None:
+            base = self.usable_vram_bytes
+        else:
+            base = cards * self.total_vram_bytes - self.effective_reserve_bytes
+        return max(0, base - reserved_bytes) // cards
+
+    def card_free_bytes(self, reserved_bytes: int = 0) -> list[int]:
+        """Free bytes per card: the card budget minus that card's foreign memory."""
+        cards = max(1, self.gpu_count)
+        budget = self.card_budget_bytes(reserved_bytes)
+        if self.foreign_vram_by_card:
+            foreign = list(self.foreign_vram_by_card[:cards])
+            foreign += [0] * (cards - len(foreign))
+        else:
+            foreign = [self.foreign_vram_bytes // cards] * cards
+        return [max(0, budget - f) for f in foreign]

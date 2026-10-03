@@ -113,10 +113,14 @@ SEARXNG_CONFIG_CHANGED=0
 
 step_gen_configs() {
   hdr "2. Generating configuration"
-  local before after
-  before="$(sha256sum services/searxng/settings.yml 2>/dev/null | cut -d' ' -f1)"
+  local before="" after=""
+  if [[ -f services/searxng/settings.yml ]]; then
+    before="$(sha256sum services/searxng/settings.yml | cut -d' ' -f1)"
+  fi
   "${SCRIPT_DIR}/gen-searxng-config.sh"
-  after="$(sha256sum services/searxng/settings.yml 2>/dev/null | cut -d' ' -f1)"
+  if [[ -f services/searxng/settings.yml ]]; then
+    after="$(sha256sum services/searxng/settings.yml | cut -d' ' -f1)"
+  fi
   [[ "$before" == "$after" ]] || SEARXNG_CONFIG_CHANGED=1
   "${SCRIPT_DIR}/gen-litellm-config.sh"
 }
@@ -231,7 +235,7 @@ role_urls() {
   echo "  'not started' means that service's container is not running — check COMPOSE_PROFILES"
   echo "  The LiteLLM master key is LITELLM_MASTER_KEY in .env (enter it in the UI as well)"
   echo "  LiteLLM's own admin UI: ${base}/litellm/ui/ — user 'admin', password the master key."
-  echo "  It is left reachable on purpose: the gateway is bound to the internal network only"
+  echo "  It is left reachable on purpose: the gateway is reachable from the internal network only"
 }
 
 # ───────────────────────── node installation ─────────────────────────

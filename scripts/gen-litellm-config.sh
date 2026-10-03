@@ -298,9 +298,13 @@ emit_brain() {  # $1=local-model  $2=url_csv  $3=or-slug  $4=or_in_pm  $5=or_out
 }
 
 # Live prices over the declared tables
-PRICE_REFRESH="$(or_refresh_prices || true)"
-if [[ -n "$PRICE_REFRESH" ]]; then
-  read -r PRICED MOVED <<<"$PRICE_REFRESH"
+# One catalogue download for the whole run; or_price runs in command
+# substitutions and reads the cached file.
+or_catalogue >/dev/null 2>&1 || true
+OR_PRICE_TOTAL=0; OR_PRICE_MOVED=0
+or_refresh_prices || true
+if (( OR_PRICE_TOTAL > 0 )); then
+  PRICED=$OR_PRICE_TOTAL; MOVED=$OR_PRICE_MOVED
   if (( MOVED > 0 )); then
     info "prices: ${PRICED} read from the catalogue, ${MOVED} differ from the declared fallback"
   else
@@ -378,7 +382,7 @@ FALLBACKS=$(
 
 if (( DRY_RUN )); then echo "$SECTION"; echo "$FALLBACKS"; exit 0; fi
 
-tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
+tmp="$(mktemp)"; trap 'rm -f "$tmp" "${__OR_CATALOGUE_CACHE:-}"' EXIT
 KC_SECTION="$SECTION" KC_FALLBACKS="$FALLBACKS" python3 - "$CONFIG_FILE" "$tmp" <<'PY'
 import os, sys, pathlib
 
