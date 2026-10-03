@@ -40,11 +40,11 @@ STRICT_STATE_TTL = max(POLL_TTL * 3, POLL_TTL + SCRAPE_TIMEOUT * 2)
 # logged by _load_gate_map. vLLM preempts running requests once its KV pool is
 # full (27B: ~30 GiB, under 4 full-length 256K requests).
 DEFAULT_CAPS = {
-    "local/qwen3.8-27b": 32,
-    "local/gemma-4-26b-a4b": 64,
+    "local/qwen3.8-27b": 128,
+    "local/gemma-4-26b-a4b": 128,
     "local/qwen3-coder-next": 32,
-    "strict-local/qwen3.8-27b": 32,
-    "strict-local/gemma-4-26b-a4b": 64,
+    "strict-local/qwen3.8-27b": 128,
+    "strict-local/gemma-4-26b-a4b": 128,
     "strict-local/qwen3-coder-next": 32,
 }
 

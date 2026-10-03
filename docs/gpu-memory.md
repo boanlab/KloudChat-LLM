@@ -74,7 +74,7 @@ unified memory).
 |---|---:|---|---|---|---|
 | RTX 5090 | 32 G | ✗ | ○ | ✗ | 29.4 GiB of capacity against the 27B's 33.9 GiB need; the 27B is delegated. The speed tier, retrieval and transcription fit |
 | PRO 5000 | 48 G | ○ 1 session | ○ | ✗ | The 27B alone, or the speed tier beside retrieval |
-| PRO 6000 | 96 G | ○ 4 sessions | ○ beside the 27B | ○ alone | |
+| PRO 6000 | 96 G | ○ 4 sessions | ○ beside the 27B | ○ alone | The coder needs the card to itself |
 | GB10 | 128 G (unified) | ○ 4 sessions | ○ beside the 27B (128K) | ○ alone | System RAM less the 12 GiB reserve |
 
 Sessions are the planner's sizing assumption (`concurrent_sessions`, default
@@ -111,7 +111,7 @@ and compose defaults used when placement is skipped
 | `VLLM_QWEN27B_MAX_LEN` | `262144` | Native context |
 | `VLLM_QWEN27B_MAX_BATCHED_TOKENS` | `16384` | Lower bound for the vision mm-budget |
 | `VLLM_QWEN27B_SPEC_TOKENS` | `5` | MTP draft tokens per step |
-| `VLLM_QWEN27B_MAX_NUM_SEQS` | `64` | The hybrid conv-state cache bounds CUDA-graph capture; unset, capture OOMs |
+| `VLLM_QWEN27B_MAX_NUM_SEQS` | `128` | The hybrid conv-state cache bounds CUDA-graph capture; unset, capture OOMs |
 | `VLLM_CODERNEXT_GPU_UTIL` / `_MAX_LEN` | `0.85` / `262144` | 75 GiB of weights; 12 KiB/token keeps the native context affordable |
 | `VLLM_BGEM3_GPU_UTIL` / `_MAX_LEN` | `0.08` / `8192` | Compose defaults |
 | `VLLM_RERANK_GPU_UTIL` / `_MAX_LEN` | `0.06` / `8192` | Compose defaults |

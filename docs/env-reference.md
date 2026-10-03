@@ -89,8 +89,8 @@ placement is skipped.
 | `VLLM_MODELS_ROOT` | `/var/lib/vllm/models` | Checkpoint root on the node |
 | `VLLM_<PREFIX>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root (`VLLM_QWEN27B_DIR`, `VLLM_GEMMA26B_DIR`, `VLLM_CODERNEXT_DIR`, `VLLM_BGEM3_DIR`, `VLLM_RERANK_DIR`, `VLLM_WHISPER_DIR`) |
 | `VLLM_QWEN27B_MAX_BATCHED_TOKENS`, `VLLM_GEMMA26B_MAX_BATCHED_TOKENS` | `16384` | Lower bound for the vision mm-budget |
-| `VLLM_QWEN27B_MAX_NUM_SEQS` | `64` | CUDA-graph capture limit for the hybrid conv-state cache |
-| `VLLM_GEMMA26B_MAX_NUM_SEQS` | `64` | Sequence cap for `vllm-gemma26b` |
+| `VLLM_QWEN27B_MAX_NUM_SEQS` | `128` | CUDA-graph capture limit for the hybrid conv-state cache |
+| `VLLM_GEMMA26B_MAX_NUM_SEQS` | `128` | Sequence cap for `vllm-gemma26b` |
 | `VLLM_QWEN27B_SPEC_TOKENS` | `5` | MTP speculative tokens per step for `vllm-qwen27b` |
 | `VLLM_CODERNEXT_DEEP_GEMM` | `0` | `VLLM_USE_DEEP_GEMM` for `vllm-codernext`. DeepGEMM rejects this checkpoint's FP8 scale-factor layout on GB10; `1` where the kernel takes it |
 | `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling for `vllm-whisper` (`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`) |
@@ -122,7 +122,7 @@ Defaults and their rationale are in [GPU memory](gpu-memory.md#tuning-knobs).
 | `LITELLM_NUM_WORKERS` | `4` | ~600 MB per worker |
 | `LITELLM_LOG` | `INFO` | |
 | `LITELLM_URL` | `http://localhost:8000` | Where `manage.sh` reaches LiteLLM. LiteLLM publishes no host port, so set it to the gateway: `http://localhost:<GATEWAY_PORT>/litellm`. Read from the shell first, then `.env` |
-| `CONCURRENCY_GATE_CAPS` | built-in caps: 32 for `qwen3.8-27b`, 64 for `gemma-4-26b-a4b`, 32 for `qwen3-coder-next`, on both the `local/` and `strict-local/` alias | JSON map of model aliases to positive concurrency caps, overriding the built-in ones |
+| `CONCURRENCY_GATE_CAPS` | built-in caps: 128 for `qwen3.8-27b` and `gemma-4-26b-a4b`, 32 for `qwen3-coder-next`, on both the `local/` and `strict-local/` alias | JSON map of model aliases to positive concurrency caps, overriding the built-in ones |
 | `CONCURRENCY_GATE_TTL` | `1.5` | Seconds between vLLM capacity polls |
 | `CONCURRENCY_GATE_SCRAPE_TIMEOUT` | `1.0` | Timeout in seconds for one vLLM metrics request |
 | `CONCURRENCY_GATE_DEBUG` | (empty) | `1` logs the overload gate's decisions |

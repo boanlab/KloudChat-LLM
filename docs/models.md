@@ -77,10 +77,10 @@ OpenRouter.
 | Model (alias) | Container | Port | Quant | Node | Priority | Role |
 |---|---|---|---|---|---|---|
 | `local/qwen3.8-27b` | `vllm-qwen27b` | 8001 | NVFP4 | any | 20 | Chat: conversation, vision, coding, deep research, titles, memory extraction. One replica per node with room |
-| `local/gemma-4-26b-a4b` | `vllm-gemma26b` | 8002 | NVFP4 | pool | 8 | Fast chat: titles, memory extraction, query rewriting, quick turns. MoE 3.8B active, vision, context floor 131072 |
+| `local/gemma-4-26b-a4b` | `vllm-gemma26b` | 8002 | NVFP4 | pool | 1 | Fast chat: titles, memory extraction, query rewriting, quick turns. MoE 3.8B active, vision, context floor 131072 |
 | `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | pool | 10 | Coding. Qwen3-Coder-Next-80B-A3B, hybrid attention, 12 of 48 layers hold KV |
 | `local/bge-m3` | `vllm-bgem3` | 8003 | BF16 | head | 5 | Retrieval embeddings. Pooling runner |
-| `local/bge-reranker-v2-m3` | `vllm-rerank` | 8009 | BF16 | head | 0 | Retrieval reranking. Pooling runner |
+| `local/bge-reranker-v2-m3` | `vllm-rerank` | 8009 | BF16 | head | 2 | Retrieval reranking. Pooling runner |
 | `local/whisper-large-v3` | `vllm-whisper` | 9000 | FP16 | head | 4 | Transcription, through `/tools/stt`, not a LiteLLM chat route |
 | `strict-local/<model>` | same backend as its `local/` twin | | | | | Privacy alias; fails rather than leaving vLLM |
 
@@ -92,15 +92,15 @@ context, and MTP speculative decoding from the checkpoint's own draft head
 window. It is unplaced, so every node with room gets a replica, all registered
 under `local/qwen3.8-27b`; LiteLLM spreads requests across them (`least-busy`).
 Each deployment carries a 1800 s request timeout and a concurrency-gate cap of
-32 in-flight requests.
+128 in-flight requests.
 
 `gemma-4-26b-a4b` is the speed tier: a 25.2B MoE with 3.8B active, vision,
 4 of 30 layers holding KV (16 KiB per token in fp8) and 1024-token sliding
 windows on the other 26. Measured on GB10 it decodes at 48 tok/s
 single-stream against the 27B's 15, and batches to 494 tok/s at 16 concurrent
-requests. It is a pool model (priority 8, context floor 131072) that shares a
-card with a 27B replica, registered under `local/gemma-4-26b-a4b` with a
-900 s timeout and a cap of 64. The UI points high-volume internal calls
+requests. It is pool-placed (priority 1, context floor 131072) and takes what
+a pool node has left after the 27B, registered under `local/gemma-4-26b-a4b`
+with a 900 s timeout and a cap of 128. The UI points high-volume internal calls
 (titles, memory extraction, query rewriting) and quick turns here; default
 chat and deep research stay on the 27B.
 
@@ -174,10 +174,11 @@ on the node. What fits on which card: [GPU memory](gpu-memory.md#per-node-class)
 
 **Ranking.** `placement` decides which cards a model may compete for;
 `priority` decides who wins among models competing for the same ones:
-`qwen3.8-27b` (20), `qwen3-coder-next` (10), `gemma-4-26b-a4b` (8), `bge-m3`
-(5), `whisper-large-v3` (4), `bge-reranker-v2-m3` (0). Ties seat the largest model first. Once every
-model has an instance, `share` weights extra instances among models competing
-for the same nodes; only the 27B replicates.
+`qwen3.8-27b` (20), `qwen3-coder-next` (10), `bge-m3` (5),
+`whisper-large-v3` (4), `bge-reranker-v2-m3` (2), `gemma-4-26b-a4b` (1): the
+speed tier takes what a pool node has left. Ties seat the largest model first.
+Once every model has an instance, `share` weights extra instances among models
+competing for the same nodes.
 
 - **Artifacts**: no separate model. The UI produces artifacts on the chat
   deployment.
@@ -194,7 +195,7 @@ independent paths:
 - **Overload**: the `concurrency_gate` callback
   (`services/litellm/callbacks/concurrency_gate.py`) polls each gated model's
   vLLM `/metrics` every `CONCURRENCY_GATE_TTL` seconds. When running requests
-  reach the cap (32 for `local/qwen3.8-27b`, 64 for `local/gemma-4-26b-a4b`),
+  reach the cap (128 for `local/qwen3.8-27b` and `local/gemma-4-26b-a4b`),
   traffic spills to the OpenRouter
   twin. Plain queueing never triggers `fallbacks`.
 

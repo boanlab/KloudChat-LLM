@@ -54,7 +54,7 @@ services:
       - '{"enable_thinking": false}'
       # Required: the hybrid model's conv-state cache bounds CUDA-graph capture
       - --max-num-seqs
-      - "${VLLM_QWEN27B_MAX_NUM_SEQS:-64}"
+      - "${VLLM_QWEN27B_MAX_NUM_SEQS:-128}"
       # MTP speculative decoding from the checkpoint's own draft head
       - --speculative-config
       - '{"method":"mtp","num_speculative_tokens":${VLLM_QWEN27B_SPEC_TOKENS:-5}}'
@@ -117,7 +117,7 @@ services:
       - --default-chat-template-kwargs
       - '{"enable_thinking": false}'
       - --max-num-seqs
-      - "${VLLM_GEMMA26B_MAX_NUM_SEQS:-64}"
+      - "${VLLM_GEMMA26B_MAX_NUM_SEQS:-128}"
       - --tensor-parallel-size
       - "${VLLM_GEMMA26B_TP:-1}"
       - --trust-remote-code

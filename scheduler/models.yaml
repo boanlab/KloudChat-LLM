@@ -30,7 +30,7 @@ models:
     env_prefix: VLLM_GEMMA26B
     port: 8002
     ctx_floor: 131072
-    priority: 8
+    priority: 1
     placement: pool
 
   # Coding. 80B-A3B, FP8, hybrid attention (12 of 48 layers hold KV). 75 GiB:
@@ -68,6 +68,7 @@ models:
     runner: pooling
     # Query and passage share the window
     ctx_floor: 8192
+    priority: 2
     placement: head
 
   # Retrieval embeddings. OpenAI fallback wired in gen-litellm-config.sh.

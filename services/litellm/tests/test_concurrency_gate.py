@@ -163,7 +163,7 @@ def test_nonpositive_overrides_cannot_disable_strict_rejection(
 
     assert "local/qwen3.8-27b" not in gate
     assert gate["strict-local/qwen3.8-27b"]["mode"] == "reject"
-    assert gate["strict-local/qwen3.8-27b"]["cap"] == 32
+    assert gate["strict-local/qwen3.8-27b"]["cap"] == 128
 
 
 def test_strict_alias_starts_rejected_until_first_successful_poll(monkeypatch) -> None:
