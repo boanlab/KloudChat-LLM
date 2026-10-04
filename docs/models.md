@@ -91,7 +91,7 @@ context, and MTP speculative decoding from the checkpoint's own draft head
 262144: a card that cannot hold that delegates rather than serving a shorter
 window. It is unplaced, so every node with room gets a replica, all registered
 under `local/qwen3.8-27b`; LiteLLM spreads requests across them (`least-busy`).
-Each deployment carries a 1800 s request timeout and a concurrency-gate cap of
+Each deployment carries a 3600 s request timeout and a concurrency-gate cap of
 128 in-flight requests.
 
 `gemma-4-26b-a4b` is the speed tier: a 25.2B MoE with 3.8B active, vision,

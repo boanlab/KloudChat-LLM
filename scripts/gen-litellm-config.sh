@@ -41,7 +41,7 @@ grep -qF "$FB_START" "$CONFIG_FILE" && grep -qF "$FB_END" "$CONFIG_FILE" \
 CTX_FALLBACK=32768
 
 # Per-model request timeout (s); deep research runs for minutes
-declare -A MODEL_TIMEOUT=( [qwen3.8-27b]=1800 [gemma-4-26b-a4b]=900 )
+declare -A MODEL_TIMEOUT=( [qwen3.8-27b]=3600 [gemma-4-26b-a4b]=900 )
 
 # OpenRouter provider-routing suffix on chat routes: ":floor" (cheapest),
 # ":nitro" (throughput), "" (OpenRouter default)
