@@ -1,45 +1,42 @@
 # Models vLLM can serve. VLLM_MODELS in .env selects which are deployed.
 #
-# Undeclared fields are derived from the checkpoint's config.json and its size
-# on disk — see "Derived values" at the bottom.
+# Undeclared fields: derived from the checkpoint's config.json and size on disk
+# (see "Derived values" at the bottom).
 #
-# placement: "head" is the first target in NODES_VLLM (retrieval, transcription);
-# "pool" is every other node (the 122B, the coder); unset is anywhere (chat). A
-# single-node cluster has no pool and the field is ignored.
+# placement: "head" = first target in NODES_VLLM; "pool" = every other node;
+# unset = anywhere. Ignored on a single-node cluster.
 
 models:
   # Chat: conversation, vision, coding, deep research, titles, memory
-  # extraction. Dense, hybrid attention (16 of 64 layers hold KV). NVFP4 build.
-  # Any node; every node with room takes a replica, balanced by LiteLLM.
+  # extraction. Dense, hybrid attention (16 of 64 layers hold KV), NVFP4.
+  # Replicated onto every node with room.
   - id: qwen3.8-27b
-    hf_repo: Qwen/Qwen3.8-27B
+    hf_repo: unsloth/Qwen3.8-27B-NVFP4
     dir: qwen3.8-27b-nvfp4
     env_prefix: VLLM_QWEN27B
     port: 8001
-    # The native context is the floor: a node that cannot hold 256K delegates
-    # rather than serving a shorter window
+    # Native context as the floor: no shorter window
     ctx_floor: 262144
     priority: 20
 
-  # Quality and judging: hard questions, review, grading. MoE, 10B of 122B
-  # active, hybrid attention. NVFP4 build. Takes a pool node to itself (above
-  # the 27B's priority, so it seats first and the 27B lands elsewhere). On a
-  # single-node cluster it would crowd out the 27B: leave it out of VLLM_MODELS.
+  # Quality and judging: hard questions, review, grading. MoE (10B of 122B
+  # active), hybrid attention, NVFP4. A pool node to itself; seated before the
+  # 27B. Not for a single-node cluster (crowds out the 27B).
   - id: qwen3.5-122b
     hf_repo: txn545/Qwen3.5-122B-A10B-NVFP4
     dir: qwen3.5-122b-nvfp4
     env_prefix: VLLM_QWEN122B
     port: 8004
-    # Served at 131072, not the native 262144: the room goes to concurrency
+    # Half the native 262144; room spent on concurrency
     ctx_floor: 131072
     ctx_target: 131072
-    # Full-length sessions to size KV for; 16 comes to about 0.85 of a GB10
+    # Full-length sessions sized for
     concurrent_sessions: 16
     priority: 30
     placement: pool
 
-  # Coding. 80B-A3B, FP8, hybrid attention (12 of 48 layers hold KV). 75 GiB:
-  # a pool card to itself. In the catalogue, not in the default VLLM_MODELS.
+  # Coding. 80B-A3B, FP8, hybrid attention (12 of 48 layers hold KV), 75 GiB:
+  # a pool card to itself. Not in the default VLLM_MODELS.
   - id: qwen3-coder-next
     hf_repo: Qwen/Qwen3-Coder-Next-FP8
     dir: qwen3-coder-next
@@ -48,21 +45,19 @@ models:
     priority: 10
     placement: pool
 
-  # Transcription. Reached through whisper-shim at /tools/stt, not a LiteLLM
-  # chat route; LiteLLM registers OpenRouter STT while no WHISPER_URLS backend
-  # answers.
+  # Transcription, behind whisper-shim (/tools/stt); OpenRouter STT when no
+  # WHISPER_URLS backend answers
   - id: whisper-large-v3
     hf_repo: openai/whisper-large-v3
     dir: whisper-large-v3
     env_prefix: VLLM_WHISPER
-    # whisper-shim addresses its backends on 9000
+    # whisper-shim's backend port
     port: 9000
     runner: transcription
     placement: head
-    # Below bge-m3: STT has an OpenRouter fallback, embeddings only degrade
-    # /tools/index to lexical search
+    # Below bge-m3: STT has an OpenRouter fallback
     priority: 4
-    # Decoder context is 448 tokens; longer audio is split server-side
+    # 448-token decoder context; longer audio split server-side
     concurrent_sessions: 4
 
   # Retrieval reranking: second stage over vector search
@@ -76,14 +71,13 @@ models:
     priority: 2
     placement: head
 
-  # Retrieval embeddings. OpenAI fallback wired in gen-litellm-config.sh.
+  # Retrieval embeddings; OpenAI fallback in gen-litellm-config.sh
   - id: bge-m3
     hf_repo: BAAI/bge-m3
     env_prefix: VLLM_BGEM3
     port: 8003
     runner: pooling
-    # Above whisper and the reranker (6 GiB, the whole retrieval path); below
-    # the card-sized chat models
+    # Above whisper and the reranker: the whole retrieval path
     priority: 5
     placement: head
     # One chunk at a time
@@ -97,6 +91,8 @@ models:
 #   weight          measured size on disk
 #   ctx_target      max_position_embeddings from config.json
 #   ctx_floor       ctx_target / 4, never below 32768
+#   concurrent_sessions 4                    full-length sessions KV is sized for;
+#                                            halved on a card without room
 #   service         env_prefix lowercased    service in docker-compose.vllm.yml
 #   port            sequential from 8001     declared on every entry so an
 #                                            insertion does not shift the rest

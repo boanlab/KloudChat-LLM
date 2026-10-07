@@ -11,7 +11,5 @@
 <!-- Commands you ran and what they printed. "Not verified on hardware" is a fine
      answer for GPU-node changes — say so explicitly rather than leaving it blank. -->
 
-- [ ] `pytest scheduler/tests -q`
-- [ ] `bash -n scripts/*.sh` (or shellcheck)
-- [ ] `docker compose config --quiet` for any compose change
+- [ ] The checks under "Running the checks" in CONTRIBUTING.md pass
 - [ ] Docs updated for any flag, environment variable, or default that moved

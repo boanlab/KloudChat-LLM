@@ -31,7 +31,7 @@ if has_gb10; then
 fi
 
 if (( CHECK_ONLY )); then
-  [[ -f "$CONF" ]] && { ok "$CONF exists"; cat "$CONF" | sed 's/^/    /'; } \
+  [[ -f "$CONF" ]] && { ok "$CONF exists"; sed 's/^/    /' "$CONF"; } \
                    || warn "$CONF not found — not applied"
   exit 0
 fi

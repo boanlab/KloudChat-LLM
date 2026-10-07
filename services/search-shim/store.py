@@ -1,12 +1,9 @@
-"""Three guards between the callers and SearXNG.
+"""Cache, coalescing and concurrency cap in front of SearXNG.
 
-`ResultCache` remembers a search for a while: the queries a model writes for
-one topic converge, so the same words arrive many times an hour. An entry past
-its fresh window is still kept for a longer stale window and handed out when
-SearXNG cannot answer. `Coalescer` folds identical searches that are in flight
-at the same moment into one upstream call. `Gate` caps how many searches reach
-SearXNG at once — an engine bans on burst, not on volume — and makes the rest
-wait a bounded time.
+`ResultCache`: answers by normalised request, fresh for a TTL, then stale (served
+only when SearXNG cannot answer). `Coalescer`: identical in-flight searches share
+one upstream call. `Gate`: searches reaching SearXNG at once, with a bounded wait;
+engines ban on burst, not volume.
 """
 from __future__ import annotations
 
@@ -55,8 +52,7 @@ class ResultCache:
 
     @staticmethod
     def key(params: dict[str, str]) -> tuple:
-        """Case and whitespace in the query never change what an engine returns
-        enough to matter; every other parameter is taken as given."""
+        """Query case- and whitespace-folded; other parameters as given."""
         q = " ".join(params.get("q", "").split()).casefold()
         rest = tuple(sorted((k, v) for k, v in params.items() if k != "q"))
         return (q, rest)
@@ -94,11 +90,11 @@ class ResultCache:
 
 
 class Coalescer:
-    """Identical searches in flight at the same time share one upstream call.
+    """Identical in-flight searches share one upstream call.
 
-    The call runs as its own task, so a caller that goes away does not cancel
-    it for the others, and its outcome is always read, so a failure nobody
-    waited for is not reported by the loop as never retrieved."""
+    The call runs as its own task, so a departing caller does not cancel it for
+    the others; its outcome is always read, so an unawaited failure is not
+    reported as never retrieved."""
 
     def __init__(self) -> None:
         self._inflight: dict[tuple, asyncio.Task] = {}

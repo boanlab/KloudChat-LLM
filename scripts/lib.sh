@@ -46,7 +46,7 @@ env_set() {
   [[ -f "$file" ]] || { echo "[env_set] error: ${file} not found" >&2; return 1; }
   if grep -qE "^${key}=" "$file"; then sed -i "s|^${key}=.*|${key}=${val}|" "$file"
   else
-    # Trailing newline guard.
+    # File without a trailing newline
     [[ -s "$file" && -n "$(tail -c 1 "$file")" ]] && printf '\n' >> "$file"
     printf '%s=%s\n' "$key" "$val" >> "$file"
   fi
@@ -151,6 +151,10 @@ MOONSHOTAI_MODELS=(kimi-k3)
 # Qwen's hosted tier (not the local checkpoints)
 QWEN_MODELS=(qwen3.8-max-0902 qwen3.8-flash qwen3-coder-plus)
 MINIMAX_MODELS=(minimax-m3)
+# "<OpenRouter provider>:<array prefix>" for each *_MODELS array above
+OR_PROVIDERS=(openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI
+              perplexity:PERPLEXITY tencent:TENCENT deepseek:DEEPSEEK z-ai:ZAI
+              xiaomi:XIAOMI moonshotai:MOONSHOTAI qwen:QWEN minimax:MINIMAX)
 
 # Image generation, cheapest first (picker default)
 OR_IMAGE_MODELS=(
@@ -199,7 +203,7 @@ declare -A MODEL_IMAGE_IN_PM=(
 # RAG embedding fallback, registered with OPENAI_API_KEY
 OPENAI_EMBED_CATALOG=(text-embedding-3-small)
 
-# vLLM catalogue: download alias → HF repo.
+# vLLM catalogue: download alias → HF repo
 declare -A VLLM_MODELS=(
   # Chat, NVFP4
   [qwen3.8-27b-nvfp4]="unsloth/Qwen3.8-27B-NVFP4"
@@ -361,9 +365,7 @@ or_refresh_prices() {
   [[ -n "$live" ]] || return 0
 
   local prov disp var m slug pair moved=0 total=0
-  for prov in openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI \
-              perplexity:PERPLEXITY tencent:TENCENT deepseek:DEEPSEEK z-ai:ZAI \
-              xiaomi:XIAOMI moonshotai:MOONSHOTAI qwen:QWEN minimax:MINIMAX; do
+  for prov in "${OR_PROVIDERS[@]}"; do
     disp="${prov%%:*}"; var="${prov##*:}_MODELS[@]"
     for m in "${!var}"; do
       slug="${disp}/${m}"
@@ -412,9 +414,7 @@ or_price_drift() {
     echo "could not reach the OpenRouter catalogue" >&2; return 0; }
 
   local drift=0 slug m prov declared_in declared_out actual
-  for prov in openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI \
-              perplexity:PERPLEXITY tencent:TENCENT deepseek:DEEPSEEK z-ai:ZAI \
-              xiaomi:XIAOMI moonshotai:MOONSHOTAI qwen:QWEN minimax:MINIMAX; do
+  for prov in "${OR_PROVIDERS[@]}"; do
     local disp="${prov%%:*}" var="${prov##*:}_MODELS[@]"
     for m in "${!var}"; do
       slug="${disp}/${m}"
@@ -438,7 +438,6 @@ or_price_drift() {
     done
   done
   # Twins and the STT fallback
-  local slug
   for slug in "${!OR_TWIN_PRICE_IN_PM[@]}"; do
     actual="$(jq -r --arg s "$slug" '
       .data[] | select(.id == $s)
@@ -526,7 +525,7 @@ vllm_union_node_models() {
     __seen_url[$nu]=1
     tmp="$(__vllm_node_models "$u")"
     if [[ -z "$tmp" ]]; then
-      warn "vllm unreachable: $nu" >&2
+      warn "vllm unreachable: $nu"
       continue
     fi
     while IFS= read -r m; do
@@ -696,7 +695,7 @@ litellm_chat_models_csv() {
     for m in "${QWEN_MODELS[@]}";       do out+=("qwen/$m");       done
     for m in "${MINIMAX_MODELS[@]}";    do out+=("minimax/$m");    done
   fi
-  # Mirrors emit_brain
+  # Same routes as gen-litellm-config.sh emit_brain
   if [[ -n "$vllm_chat_url" ]]; then
     out+=("local/qwen3.8-27b" "strict-local/qwen3.8-27b")
   elif has_openrouter; then
@@ -720,10 +719,11 @@ litellm_chat_models_csv() {
 }
 
 LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-$(env_get LITELLM_MASTER_KEY)}"
-# LITELLM_URL: shell env, then .env, then localhost:8000; container hostnames
+# LITELLM_URL: shell env, then .env, then the gateway; container hostnames
 # rewritten for host-side calls
 LITELLM_URL="${LITELLM_URL:-$(env_get LITELLM_URL)}"
-LITELLM_URL="${LITELLM_URL:-http://localhost:8000}"
+__gateway_port="$(env_get GATEWAY_PORT)"
+LITELLM_URL="${LITELLM_URL:-http://localhost:${__gateway_port:-8080}/litellm}"
 LITELLM_URL="${LITELLM_URL//host.docker.internal/localhost}"
 LITELLM_URL="${LITELLM_URL//\/\/litellm:/\/\/localhost:}"
 DATA_DIR="${__PROJECT_DIR}/data/ledger"

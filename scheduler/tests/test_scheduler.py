@@ -242,13 +242,14 @@ def test_unsupported_arch_is_not_a_capacity_message():
     assert "architecture" in result.delegations[0].reason
 
 
-def test_reservation_shrinks_capacity():
-    # Fits the bare node (48 GiB less the 8 GiB reserve), not once 20 GiB is held
-    node = [_node("n1", 48)]
+def test_foreign_memory_shrinks_capacity():
+    """Fits the bare 48 GiB card (less the 8 GiB reserve), not once 20 GiB is held elsewhere."""
     weight = 38 * GB - planner.ACTIVATION_BYTES
     spec = _spec("a", weight=weight, ctx_floor=16384)
-    assert planner.plan([spec], node).placements
-    assert not planner.plan([spec], node, reserved={"n1": 20 * GB}).placements
+    assert planner.plan([spec], [_node("n1", 48)]).placements
+    busy = NodeSpec(node_id="n1", hostname="n1", gpu_class="pro5000",
+                    total_vram_bytes=48 * GB, foreign_vram_bytes=20 * GB)
+    assert not planner.plan([spec], [busy]).placements
 
 
 def test_a_pooling_model_is_not_charged_decode_headroom():
@@ -285,17 +286,6 @@ def test_a_model_too_big_for_one_card_fits_across_two():
     placed = planner.plan([sharded], [two_cards]).placements
     assert placed and placed[0].tp == 2
     assert placed[0].gpu_util < 1.0
-
-
-def test_a_reserved_workload_does_not_make_sharding_impossible():
-    """Per-card capacity is derived from node capacity after reservations, so sharded models still place."""
-    spec = registry.replace(_spec("a", weight=40 * GB, ctx_floor=16384),
-                            tensor_parallel=2)
-    node = NodeSpec(node_id="n1", hostname="n1", gpu_class="pro6000",
-                    total_vram_bytes=89 * GB, gpu_count=2, arch="amd64")
-    result = planner.plan([spec], [node], reserved={"n1": 6 * GB})
-    assert result.placements, result.delegations[0].reason
-    assert result.placements[0].tp == 2
 
 
 def test_tensor_parallel_needs_the_cards_and_says_so():
@@ -452,7 +442,7 @@ def test_headroom_never_eats_the_card():
     for gib in CARD_SIZES:
         node = _node("n1", gib)
         overhead = node.effective_reserve_bytes + planner.activation_bytes(
-            spec, node.per_gpu_planner_bytes
+            spec, node.card_budget_bytes()
         )
         assert overhead < gib * GB * 0.45, (
             f"{gib}GiB card: {overhead / GB:.1f}GiB of headroom before any weights"
@@ -515,7 +505,7 @@ def test_a_mixed_box_is_sized_by_its_smallest_card():
     assert min(sizes) * len(sizes) < sum(sizes)
     node = NodeSpec(node_id="n1", hostname="n1", gpu_class="mixed",
                     total_vram_bytes=min(sizes), gpu_count=len(sizes))
-    assert node.per_gpu_planner_bytes <= 24 * GB
+    assert node.card_budget_bytes() <= 24 * GB
     assert inventory.MANAGED_PREFIX == "vllm-"
 
 
@@ -534,10 +524,6 @@ def test_memory_someone_else_holds_is_not_offered():
 def test_the_reserve_scales_with_the_card():
     small, large = _node("s", 24), _node("l", 96)
     assert small.effective_reserve_bytes < large.effective_reserve_bytes
-    # An explicit figure wins
-    explicit = NodeSpec(node_id="e", hostname="e", gpu_class="x",
-                        total_vram_bytes=96 * GB, reserved_bytes=2 * GB)
-    assert explicit.effective_reserve_bytes == 2 * GB
 
 
 def test_activation_is_capped_by_the_card_not_the_constant():
@@ -583,12 +569,12 @@ def test_a_near_tie_does_not_move_a_running_model():
 def test_a_real_capacity_difference_still_moves_it():
     """A model that no longer fits its incumbent node moves."""
     spec = _spec("a", weight=10 * GB, ctx_floor=16384)
-    nodes = [_node("n1", 96), _node("n2", 96)]
-    result = planner.plan(
-        [spec], nodes,
-        reserved={"n1": 80 * GB},
-        deployed={"a": frozenset({"n1"})},
-    )
+    nodes = [
+        NodeSpec(node_id="n1", hostname="user@n1", gpu_class="pro6000",
+                 total_vram_bytes=96 * GB, arch="amd64", foreign_vram_bytes=80 * GB),
+        _node("n2", 96),
+    ]
+    result = planner.plan([spec], nodes, deployed={"a": frozenset({"n1"})})
     assert result.placements[0].node_id == "n2"
 
 

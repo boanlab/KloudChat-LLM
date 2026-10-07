@@ -37,27 +37,26 @@ LITELLM_KEY = os.getenv("LITELLM_MASTER_KEY", "")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "local/bge-reranker-v2-m3").strip()
 #: Vector candidates fetched per requested passage before reranking.
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "5"))
-#: Reranker score floor. bge-reranker-v2-m3 scores passages that answer the
-#: question 0.73–0.94, loosely related ones <= 0.025.
+#: Reranker score floor (bge-reranker-v2-m3: answering passages 0.73–0.94,
+#: loosely related <= 0.025)
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.1"))
-#: Cosine distance bound on reranker candidates: a recall filter, not a
-#: relevance decision.
+#: Cosine distance bound on reranker candidates; recall filter only
 RERANK_RECALL_DISTANCE = float(os.getenv("RERANK_RECALL_DISTANCE", "0.85"))
 
-#: Embedding models in preference order. The first that answers embeds a new
-#: collection; its name is stored on every row, and the collection keeps it.
+#: Embedding models in preference order; a collection keeps the model that
+#: first embedded it.
 EMBED_MODELS = [
     m.strip() for m in os.getenv("EMBED_MODELS", "local/bge-m3,text-embedding-3-small").split(",")
     if m.strip()
 ]
-#: Vector column width: the widest model in EMBED_MODELS (text-embedding-3-small
-#: is 1536, bge-m3 is 1024 and zero-padded). Changing it is a migration.
+#: Vector column width: widest model in EMBED_MODELS (text-embedding-3-small
+#: 1536; bge-m3 1024, zero-padded). Changing it is a migration.
 EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))
 
-#: Chunk size and overlap in characters. Matches KloudChat's lexical chunker.
+#: Chunk size and overlap in characters, matching KloudChat's lexical chunker
 CHUNK = int(os.getenv("INDEX_CHUNK_CHARS", "900"))
 OVERLAP = int(os.getenv("INDEX_CHUNK_OVERLAP", "150"))
-#: Per-document ceiling; the tail past it is dropped.
+#: Per-document ceiling; the tail is dropped
 MAX_CHARS = int(os.getenv("INDEX_MAX_DOC_CHARS", "2000000"))
 
 _SCHEMA = """
@@ -76,13 +75,12 @@ CREATE TABLE IF NOT EXISTS chunks (
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
--- Every read is scoped to one collection.
 CREATE INDEX IF NOT EXISTS ix_chunks_collection ON chunks (collection);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_chunks_doc_ordinal
     ON chunks (collection, doc_id, ordinal);
 """
 
-#: HNSW index, created after the table exists.
+#: HNSW index
 _ANN_INDEX = """
 CREATE INDEX IF NOT EXISTS ix_chunks_embedding
     ON chunks USING hnsw (embedding vector_cosine_ops)
@@ -170,7 +168,7 @@ def _to_pgvector(values: list[float]) -> str:
 embedder = _Embedder()
 
 
-#: The model a collection's rows were embedded with: the one holding most rows.
+#: A collection's embedding model: the one holding most rows
 _COLLECTION_MODEL = """
 SELECT embed_model
   FROM chunks
@@ -186,8 +184,7 @@ async def collection_model(conn, collection: str) -> str:
     return await conn.fetchval(_COLLECTION_MODEL, collection) or ""
 
 
-#: Declared width of the existing `embedding` column (pgvector stores it in
-#: atttypmod directly, no header offset).
+#: Declared width of the `embedding` column (pgvector's atttypmod, no header offset)
 _COLUMN_DIM = """
 SELECT a.atttypmod
   FROM pg_attribute a
@@ -199,8 +196,7 @@ SELECT a.atttypmod
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=8)
-    #: Set when the table's vector width differs from EMBED_DIM; reported by
-    #: /health and refused by the write path.
+    # Vector width mismatch with EMBED_DIM; reported by /health, refused on write/search
     app.state.dim_error = ""
     async with app.state.pool.acquire() as conn:
         await conn.execute(_SCHEMA % {"dim": EMBED_DIM})
@@ -215,7 +211,6 @@ async def lifespan(app: FastAPI):
         try:
             await conn.execute(_ANN_INDEX)
         except asyncpg.PostgresError as exc:
-            # Without the ANN index the search runs as an exact scan.
             log.warning("HNSW index unavailable, falling back to exact scan: %s", exc)
     log.info("index-shim ready (dim=%s, models=%s)", EMBED_DIM, ",".join(EMBED_MODELS))
     yield
@@ -237,8 +232,8 @@ class Query(BaseModel):
     collection: str = Field(min_length=1, max_length=200)
     query: str = Field(min_length=1, max_length=4000)
     limit: int = Field(default=4, ge=1, le=20)
-    #: Cosine distance cut when no reranker runs. bge-m3 similarity: answered
-    #: questions 0.50–0.55, unanswered 0.31–0.32.
+    #: Cosine distance cut without a reranker (bge-m3 similarity: answered
+    #: 0.50–0.55, unanswered 0.31–0.32)
     max_distance: float = Field(default=0.58, ge=0.0, le=2.0)
 
 
@@ -282,11 +277,10 @@ async def put_document(doc: Document) -> dict[str, Any]:
                 doc.doc_id,
             )
             if not pieces:
-                # Empty document: a successful delete.
+                # Empty document: delete only
                 return {"chunks": 0, "model": ""}
 
-            # One vector space per collection: rows join the model the collection
-            # holds, or the write fails.
+            # One vector space per collection
             pinned = await collection_model(conn, doc.collection)
             vectors, model = await embedder.embed(pieces, model=pinned or None)
             await conn.executemany(
@@ -371,7 +365,7 @@ async def search(q: Query) -> dict[str, Any]:
             q.collection,
             literal,
             model,
-            # Over-fetch: candidates for the reranker.
+            # Over-fetch for the reranker
             q.limit * RERANK_CANDIDATES if RERANK_MODEL else q.limit,
         )
     # With a reranker the cosine cut is only a recall bound.
@@ -390,7 +384,7 @@ async def search(q: Query) -> dict[str, Any]:
     ]
     reranked = await _rerank(q.query, passages)
     if reranked is None:
-        # Vector order with the cut tuned for it.
+        # No reranker: vector order, cosine cut
         passages = [p for p in passages if p["score"] >= 1.0 - q.max_distance]
     else:
         passages = reranked

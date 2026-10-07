@@ -54,7 +54,6 @@ class ChangePlan:
     actions: list[NodeAction] = field(default_factory=list)
     #: Orchestrator .env values to write
     local_env: dict[str, str] = field(default_factory=dict)
-    notes: list[str] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -93,8 +92,7 @@ def _read_env_keys(path: str, keys: Iterable[str]) -> dict[str, str]:
 def _url_csvs(target: Plan, specs: Sequence[ModelSpec],
               nodes: Sequence[NodeSpec],
               known: Sequence[ModelSpec] = ()) -> dict[str, str]:
-    """URL CSV per model; unplaced models (including ``known`` ones outside the
-    deployment) get an empty value so no stale route survives."""
+    """URL CSV per model; empty for unplaced and ``known``-only models."""
     host_of = {n.node_id: n.hostname.split("@")[-1] for n in nodes}
     by_id = {s.id: s for s in specs}
     urls: dict[str, set[str]] = {
@@ -134,7 +132,7 @@ def compute_diff(
         node_env: node id to its current .env values. Given, unchanged services
             are left alone; omitted, every placed service is recreated.
     """
-    change = ChangePlan(notes=list(target.notes))
+    change = ChangePlan()
     by_id = {s.id: s for s in specs}
     host_of = {n.node_id: n.hostname for n in nodes}
 
@@ -169,14 +167,12 @@ def compute_diff(
                 (f"{spec.env_prefix}_MAX_LEN", str(p.ctx)),
                 (f"{spec.env_prefix}_GPU_UTIL", f"{p.gpu_util:.2f}"),
             ]
-            # TP 1 is the compose default; written only to undo a sharded node
-            # (a new key costs a recreate)
+            # TP 1 is the compose default: written only to undo a sharded node
             tp_key = f"{spec.env_prefix}_TP"
             if p.tp > 1 or (here or {}).get(tp_key) not in (None, "", "1"):
                 options.append((tp_key, str(p.tp)))
 
-            # NVIDIA_VISIBLE_DEVICES in docker-compose.vllm.yml; multi-card nodes
-            # only, or to overwrite a stale value
+            # NVIDIA_VISIBLE_DEVICES: multi-card nodes, or to clear a stale value
             dev_key = f"{spec.env_prefix}_DEVICES"
             devices = ",".join(str(d) for d in p.devices)
             node = next((n for n in nodes if n.node_id == node_id), None)
@@ -205,7 +201,7 @@ def compute_diff(
                 f"{cd} && {compose} up -d {shlex.quote(service)}",
                 url=_service_url(by_service.get(service), bare_host),
             ))
-        # (b) Recreate only where an option moved — a recreate reloads the weights
+        # (b) Recreate only where an option moved
         for service in sorted(want & have):
             if node_env is not None and service not in restated:
                 continue

@@ -1,7 +1,7 @@
 # Prerequisites
 
-What must be in place before bringing KloudChat-LLM up. The baseline is local
-GPU first, OpenRouter as fallback.
+What must be in place before bringing KloudChat-LLM up: local GPU first,
+OpenRouter as fallback.
 
 - Local GPU: "Compose host" plus "GPU node requirements"
 - OpenRouter only: "Compose host" is enough
@@ -60,14 +60,6 @@ VRAM per model, as the planner sizes it:
 
 Occupancy figures are in the [GPU memory guide](gpu-memory.md).
 
-### What runs where
-
-- Every model a node serves is a vLLM container from `docker-compose.vllm.yml`.
-- Transcription is `vllm-whisper`, serving `openai/whisper-large-v3` from the
-  same image.
-- Backends publish their ports; LiteLLM reaches them through `VLLM_*_URL` and
-  whisper-shim through `WHISPER_URLS`, both written by the scheduler.
-
 ### Transcription (STT)
 
 - Transcribes audio uploaded through `/tools/stt`.
@@ -85,9 +77,8 @@ Occupancy figures are in the [GPU memory guide](gpu-memory.md).
 `./scripts/install-vllm.sh --reinstall` re-pulls the base image and rebuilds
 the derived one.
 
-- vLLM base image per architecture: amd64 `vllm/vllm-openai:cu129-nightly`,
-  GB10 (arm64) `vllm/vllm-openai:nightly-aarch64`. Compose runs the derived
-  `kloudchat-vllm:local`.
+Base images and the derived `kloudchat-vllm:local` are described in
+[models.md](models.md#the-model-set).
 
 ## OpenRouter (no GPU required)
 
@@ -95,8 +86,9 @@ the derived one.
 - Without a local GPU this alone serves commercial models. With one it adds
   fallback to the same model when a node goes down, plus the commercial
   catalogue.
-- Commercial models (OpenAI, Anthropic, Google, DeepSeek and others) all go
-  through OpenRouter. Direct native APIs are not supported.
+- Commercial chat models (OpenAI, Anthropic, Google, DeepSeek and others) all
+  go through OpenRouter. The one direct provider API is OpenAI embeddings
+  (`OPENAI_API_KEY`), the retrieval fallback.
 
 ## Multiple nodes
 
@@ -105,10 +97,8 @@ the derived one.
 - `./scripts/setup.sh vllm` rsyncs the repository to every node in
   `NODES_VLLM` (under `KLOUDCHAT_REMOTE_DIR`, default `KloudChat-LLM`) and
   runs `install-vllm.sh` there.
-- The scheduler names each node by the last octet of its IPv4 address, or the
-  first label of its hostname. Two targets that would share a name (for
-  example `10.1.0.11` and `10.2.0.11`) are named by their full host instead;
-  a target listed twice is an error.
+- Node naming and routing: [scheduler](../scheduler/README.md#node-ids) and
+  [models.md](models.md#vllm-local).
 
 **Adding a node**
 
@@ -131,22 +121,6 @@ ssh <your-user>@<gpu-node> "echo '<your-user> ALL=(ALL) NOPASSWD:ALL' | sudo tee
 
 - The SSH step can be skipped. `install-vllm.sh` and `tune-host.sh` still call
   `sudo`; type the password or add the NOPASSWD line locally.
-
-### vLLM routing
-
-- The scheduler inventories GPU class and VRAM per node and places models;
-  `gen-litellm-config.sh` registers one deployment per node holding each model.
-- A model on one node: requests go only there.
-- A model on several nodes: the router load-balances `least-busy`.
-- Heterogeneous GPUs work as-is: large models on large nodes, small models
-  everywhere.
-
-### Transcription routing
-
-- The shim keeps a 10-second `/health` cache to pick reachable nodes, then
-  routes by in-flight count.
-- Every backend serves the same checkpoint; the shim names it on each request.
-- No stickiness. Every call is self-contained.
 
 ## DGX Spark (GB10)
 

@@ -1,7 +1,8 @@
 # Troubleshooting
 
-The entry point when something will not start or has broken. Identify the
-symptom here; the neighbouring documents hold the reference detail.
+Symptoms and fixes. Reference detail lives in the neighbouring documents;
+shell knobs such as `KLOUDCHAT_VLLM_WAIT_TIMEOUT` are in the
+[environment variable reference](env-reference.md#shell-only-variables).
 
 ## After the first run: "this means it worked"
 
@@ -115,7 +116,7 @@ curl -sf http://localhost:8080/litellm/health/readiness    # verifies backends
 | `LITELLM_MASTER_KEY` empty | Re-run `gen-env.sh`, or fill it in |
 | Database migration failed | `docker logs kloudchat-litellm-db`: is postgres healthy |
 | Hit `:8000` directly | Use `/litellm/*`; the gateway is the only published port |
-| `manage.sh` cannot connect | Set `LITELLM_URL=http://localhost:8080/litellm` in the shell or `.env` |
+| `manage.sh` cannot connect | Gateway up on `GATEWAY_PORT`? Elsewhere: set `LITELLM_URL` to `http://<host>:<GATEWAY_PORT>/litellm` |
 
 ## Models missing from the menu
 
@@ -141,7 +142,6 @@ API provisions the matching LiteLLM user and per-user key. `manage.sh` is the
 LiteLLM-side view of them.
 
 ```bash
-export LITELLM_URL=http://localhost:8080/litellm
 ./scripts/manage.sh user list                 # LiteLLM users
 ./scripts/manage.sh user usage --user <email> # this month's spend against budget
 ./scripts/manage.sh key list --user <email>
@@ -191,7 +191,7 @@ See [models.md](models.md#retrieval) for the two stages.
 |---|---|
 | `manage.sh user list` / `team list` / `key list` | LiteLLM users, teams and virtual keys |
 | `manage.sh user usage [--user <email>]` | Per-user spend against the monthly budget |
-| `manage.sh user topup --user <email> --amount <N>` | Temporarily raise the monthly limit by $N. The original limit is recorded in `data/ledger/topups.json` and restored by the next `manage.sh user usage` or `topup` run after the monthly reset; a failed restore stays in the ledger and is retried then |
+| `manage.sh user topup --user <email> --amount <N>` | Raise this month's limit by $N. The original limit is kept in `data/ledger/topups.json` and restored by the first `user usage` or `topup` run after the monthly reset |
 | `manage.sh key show [--user <email>]` | Plaintext keys from the local ledger |
 | `manage-vllm.sh status` | vLLM container and healthcheck status |
 | `manage-vllm.sh logs <svc>` | vLLM logs |
@@ -199,19 +199,6 @@ See [models.md](models.md#retrieval) for the two stages.
 | `setup.sh scheduler plan` | Target placement (dry run) |
 | `tune-host.sh --check` | Current `vm.swappiness` against the recommended value |
 | `gen-litellm-config.sh --check-prices` | Declared prices against the OpenRouter catalogue |
-
-## Operator knobs
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `KLOUDCHAT_VLLM_WAIT_TIMEOUT` | 1200 s | Deadline for vLLM readiness |
-| `KLOUDCHAT_VLLM_WAIT_INTERVAL` | 10 s | Probe interval |
-| `KLOUDCHAT_SKIP_SCHEDULER` | (off) | Skip the placement step in `setup.sh all` |
-| `KLOUDCHAT_SERVICE_WAIT` | 180 s | How long to wait for capabilities after startup |
-| `KLOUDCHAT_REMOTE_DIR` | `KloudChat-LLM` | Repository path on remote nodes |
-
-All are shell variables. The full list is in the
-[environment variable reference](env-reference.md).
 
 ## Starting over (destructive)
 

@@ -1,8 +1,8 @@
 # Environment variables
 
-`.env` is produced by `./scripts/gen-env.sh` from `.env.example`. Every
-`change-me-*` value is replaced with a generated secret, so the only values a
-human fills in are external keys and node addresses.
+`./scripts/gen-env.sh` creates `.env` from `.env.example` and replaces every
+`change-me-*` value with a generated secret; what is left to fill in is
+external keys and node addresses.
 
 ```bash
 ./scripts/gen-env.sh          # create (skipped if .env exists)
@@ -23,12 +23,13 @@ human fills in are external keys and node addresses.
 `setup.sh` refuses to continue unless at least one of `OPENROUTER_API_KEY` or a
 vLLM node is present.
 
-## 2. Exposure
+## 2. Exposure and sizing
 
 | Variable | Default | Notes |
 |---|---|---|
 | `GATEWAY_PORT` | `8080` | The only published port |
 | `COMPOSE_PROFILES` | `tools,models` | What to run. `setup.sh` appends `whisper` once the transcription model is placed. Add `index` for the retrieval index |
+| `LITELLM_NUM_WORKERS` | `4` | LiteLLM workers, ~600 MB of RAM each |
 
 ## 3. Generated secrets
 
@@ -36,7 +37,7 @@ Filled in by `gen-env.sh`. If you create them yourself, keep the formats below.
 
 | Variable | Format | Used by |
 |---|---|---|
-| `LITELLM_MASTER_KEY` | `sk-` + 64 hex | LiteLLM admin API. Entered in the UI admin screen. Also the password for LiteLLM's admin UI at `http://<host>:<GATEWAY_PORT>/litellm/ui/`, reachable on purpose: the gateway is only exposed on the internal network |
+| `LITELLM_MASTER_KEY` | `sk-` + 64 hex | LiteLLM admin API, entered in the UI admin screen. Also the password for LiteLLM's admin UI at `http://<host>:<GATEWAY_PORT>/litellm/ui/` |
 | `LITELLM_DB_PASSWORD` | 32 hex | LiteLLM's postgres |
 | `LITELLM_DB_USER` | string | `kloudchat-litellm` by default |
 | `SEARXNG_SECRET_KEY` | 32 hex | SearXNG session signing |
@@ -88,14 +89,10 @@ placement is skipped.
 | `VLLM_BASE_IMAGE` / `VLLM_BASE_DIGEST` | (empty) | Upstream image and the digest it resolved to, recorded by `install-vllm.sh`. A rebuild pins to the digest |
 | `VLLM_MODELS_ROOT` | `/var/lib/vllm/models` | Checkpoint root on the node |
 | `VLLM_<PREFIX>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root (`VLLM_QWEN27B_DIR`, `VLLM_QWEN122B_DIR`, `VLLM_CODERNEXT_DIR`, `VLLM_BGEM3_DIR`, `VLLM_RERANK_DIR`, `VLLM_WHISPER_DIR`) |
-| `VLLM_QWEN27B_MAX_BATCHED_TOKENS`, `VLLM_QWEN122B_MAX_BATCHED_TOKENS` | `16384` | Tokens per scheduler step; for the 27B, the lower bound for the vision mm-budget |
-| `VLLM_QWEN27B_MAX_NUM_SEQS` | `128` | CUDA-graph capture limit for the hybrid conv-state cache |
-| `VLLM_QWEN122B_MAX_NUM_SEQS` | `32` | Sequence cap for `vllm-qwen122b` |
-| `VLLM_QWEN27B_SPEC_TOKENS` | `5` | MTP speculative tokens per step for `vllm-qwen27b` |
 | `VLLM_CODERNEXT_DEEP_GEMM` | `0` | `VLLM_USE_DEEP_GEMM` for `vllm-codernext`. DeepGEMM rejects this checkpoint's FP8 scale-factor layout on GB10; `1` where the kernel takes it |
 | `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling for `vllm-whisper` (`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`) |
 
-Defaults and their rationale are in [GPU memory](gpu-memory.md#tuning-knobs).
+Per-model `GPU_UTIL`, `MAX_LEN`, `MAX_BATCHED_TOKENS`, `MAX_NUM_SEQS` and `SPEC_TOKENS` defaults are in [GPU memory](gpu-memory.md#tuning-knobs).
 
 ## 7. Deep research
 
@@ -119,9 +116,8 @@ Defaults and their rationale are in [GPU memory](gpu-memory.md#tuning-knobs).
 
 | Variable | Default | Notes |
 |---|---|---|
-| `LITELLM_NUM_WORKERS` | `4` | ~600 MB per worker |
 | `LITELLM_LOG` | `INFO` | |
-| `LITELLM_URL` | `http://localhost:8000` | Where `manage.sh` reaches LiteLLM. LiteLLM publishes no host port, so set it to the gateway: `http://localhost:<GATEWAY_PORT>/litellm`. Read from the shell first, then `.env` |
+| `LITELLM_URL` | `http://localhost:<GATEWAY_PORT>/litellm` | Where `manage.sh` reaches LiteLLM. Read from the shell first, then `.env` |
 | `CONCURRENCY_GATE_CAPS` | built-in caps: 128 for `qwen3.8-27b`, 32 for `qwen3.5-122b` and `qwen3-coder-next`, on both the `local/` and `strict-local/` alias | JSON map of model aliases to positive concurrency caps, overriding the built-in ones |
 | `CONCURRENCY_GATE_TTL` | `1.5` | Seconds between vLLM capacity polls |
 | `CONCURRENCY_GATE_SCRAPE_TIMEOUT` | `1.0` | Timeout in seconds for one vLLM metrics request |
@@ -137,14 +133,7 @@ Read by `gen-litellm-config.sh` from the shell, not from `.env`:
 | `STT_OR_MODEL` | `mistralai/voxtral-small-24b-2507` | OpenRouter STT route, registered when no local whisper answers |
 | `KLOUDCHAT_ENV_FILE`, `KLOUDCHAT_LITELLM_CONFIG_FILE`, `KLOUDCHAT_LITELLM_CONFIG_EXAMPLE` | repository paths | Overrides used by the tests |
 
-## 10. Transcription shim
-
-| Variable | Default | Notes |
-|---|---|---|
-| `WHISPER_URLS` | (written by the scheduler) | Backends the shim balances across |
-| `TRANSCRIBE_TIMEOUT_SEC` | `3600` | Headroom for long recordings |
-
-## 11. Container-level defaults
+## 10. Container-level defaults
 
 Read by the service code, with the value compose passes where it passes one.
 Changing the others means editing `docker-compose.yml`.
@@ -154,7 +143,7 @@ Changing the others means editing `docker-compose.yml`.
 | whisper-shim | `WHISPER_MODEL_NAME` | `local/whisper-large-v3` | Name set on every forwarded request. Must be one of `vllm-whisper`'s `--served-model-name` values |
 | whisper-shim | `HEALTH_PROBE_TIMEOUT_SEC` | `2.0` | Per-backend health probe |
 | whisper-shim | `HEALTH_CACHE_TTL_SEC` | `10` | Health cache lifetime |
-| whisper-shim | `TRANSCRIBE_TIMEOUT_SEC` | `900`; compose passes `3600` | |
+| whisper-shim | `TRANSCRIBE_TIMEOUT_SEC` | `900`; compose passes `${TRANSCRIBE_TIMEOUT_SEC:-3600}` from `.env` | Per-request timeout, sized for long recordings |
 | index-shim | `EMBED_DIM` | `1536` | Vector column width: the widest model in `EMBED_MODELS` (`text-embedding-3-small` is 1536; `bge-m3` is 1024, zero-padded). Changing it after indexing is a migration; a mismatch makes `/health` report `degraded` |
 | index-shim | `INDEX_CHUNK_CHARS` | `900` | Chunk window |
 | index-shim | `INDEX_CHUNK_OVERLAP` | `150` | Chunk overlap |

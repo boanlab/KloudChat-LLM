@@ -23,10 +23,9 @@ general_settings:
   store_model_in_db: false
   # Request and response bodies never enter the spend log
   store_prompts_in_spend_logs: false
-  # OpenRouter Video API (Veo, Sora) passthrough. One submit path per model,
-  # resolution, audio and duration, each with a fixed cost_per_request (the
-  # OpenRouter $/s rate times the duration); /orvideo/job is polling and
-  # download, unbilled.
+  # OpenRouter Video API (Veo, Sora) passthrough. Submit path per model,
+  # resolution, audio and duration, cost_per_request = $/s × duration;
+  # /orvideo/job (polling, download) unbilled.
   pass_through_endpoints:
     - { path: "/orvideo/submit/veo-lite/720p/a/4", target: "https://openrouter.ai/api/v1/videos", headers: { Authorization: "Bearer os.environ/OPENROUTER_API_KEY" }, forward_headers: false, cost_per_request: 0.2 }
     - { path: "/orvideo/submit/veo-lite/720p/a/6", target: "https://openrouter.ai/api/v1/videos", headers: { Authorization: "Bearer os.environ/OPENROUTER_API_KEY" }, forward_headers: false, cost_per_request: 0.3 }
@@ -96,10 +95,7 @@ litellm_settings:
   max_internal_user_budget: 25
   internal_user_budget_duration: "1mo"
   # Ceilings for key creation; a key budget blocks before the user budget does.
-  # tpm: a document turn with three papers attached spends ~40k tokens a call and
-  # 60–130k a minute on the local model alone. Spend is capped by the user budget
-  # above, so the token ceiling only has to clear one person's heaviest turn with
-  # room for parallel ones.
+  # tpm clears one user's heaviest document turns; spend is bounded by the budget.
   upperbound_key_generate_params:
     max_budget: 9999
     tpm_limit: 1000000

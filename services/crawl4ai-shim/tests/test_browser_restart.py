@@ -1,6 +1,4 @@
-"""A browser that dies is replaced and the page tried once more; one that stays dead
-fails /health so the container restarts. On 2026-10-05 the browser died and every scrape
-failed for fifteen hours while /health said ok."""
+"""A dead browser is replaced and the page retried once; one that stays dead fails /health."""
 import asyncio
 import pathlib
 import sys

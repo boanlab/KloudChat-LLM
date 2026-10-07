@@ -1,8 +1,7 @@
-# Only the engines named below exist; none of SearXNG's defaults. The audience
-# is a Korean university (students, researchers, office and research staff);
-# this host's address is one datacentre IP that google, bing, duckduckgo, naver
-# and most smaller scrapers refuse, so the set is what answers from here and
-# what this audience asks for. To test an engine:
+# Only the engines named below; none of SearXNG's defaults. Chosen for a Korean
+# university audience and for answering from a datacentre IP (google, bing,
+# duckduckgo web, naver scraping and most smaller scrapers refuse it). To test
+# an engine:
 #
 #   curl -s -G 'http://<host>/tools/search/search' --data-urlencode 'q=<query>' \
 #     -d format=json -d engines=<name> | python3 -c 'import sys,json; \
@@ -35,25 +34,20 @@ use_default_settings:
       - huggingface
 
 search:
-  # Default when a request carries no language. Engines that take a market or
-  # country prefer Korean results only with the region present.
+  # Default language; market/country engines need the region for Korean results
   default_lang: "ko-KR"
-  # Strict. The search shim also forces safesearch=2 on every request it forwards.
+  # Strict; the search shim also forces it per request
   safe_search: 2
-  # HTML-page suggestions only; every provider is blocked from this address
+  # Off: every provider blocks this address
   autocomplete: ""
   ban_time_on_fail: 5
   max_ban_time_on_fail: 120
-  # Engine suspension after a block, shared by all workers through valkey.
-  # SearXNG's defaults (CAPTCHA: an hour) turn one burst into an hour without
-  # general search for everyone; the search shim's cache and cap keep bursts
-  # rare.
+  # Engine suspension after a block (seconds), shared through valkey; shorter than SearXNG's defaults
   suspended_times:
     SearxEngineAccessDenied: 120
     SearxEngineCaptcha: 300
     SearxEngineTooManyRequests: 120
-    # Cloudflare and reCAPTCHA challenges (brave sits behind Cloudflare); the
-    # defaults are 15, 1 and 7 days.
+    # Cloudflare (brave) and reCAPTCHA challenges
     cf_SearxEngineCaptcha: 600
     cf_SearxEngineAccessDenied: 300
     recaptcha_SearxEngineCaptcha: 600
@@ -96,9 +90,8 @@ categories_as_tabs:
 engines:
 
   # ── general: everyday, administrative and business questions ────────
-  # yandex: the one scraped engine that answers Korean everyday queries
-  # from this address (Naver blogs, 지식iN, news sites); off in SearXNG's
-  # defaults. brave: good answers, rate-limited and often suspended.
+  # yandex: scraped engine that answers Korean everyday queries from this
+  # address; off in SearXNG's defaults. brave: rate-limited, often suspended.
   - name: yandex
     weight: 1.5
     timeout: 6.0
@@ -111,7 +104,7 @@ engines:
   - name: wikipedia
     weight: 0.8
 
-  # Books, for the humanities. An API on its own host.
+  # Books (humanities)
   - name: openlibrary
     weight: 0.3
     disabled: false
@@ -179,16 +172,12 @@ engines:
     disabled: false
 
   # ── NAVER Search API (NAVER API HUB) ─────────────────────────────────
-  # The Search API through SearXNG's generic JSON engine, not the scraping
-  # `naver` engine (blocked from this network): Korean web documents and news
-  # from the source. Served by NAVER API HUB on NAVER Cloud Platform
-  # (naverapihub.apigw.ntruss.com, X-NCP-APIGW-* headers). Quota: the search
-  # APIs share 775,000 calls a month per application at 50 requests a second
-  # per key; a search costs one call per engine below. Each API (웹문서, 뉴스)
-  # must be enabled on the application in the NCP console, or the HUB answers
-  # 401 "활성화되어 있지 않습니다". gen-searxng-config.sh fills the credentials
-  # from NAVER_CLIENT_ID / NAVER_CLIENT_SECRET in .env and enables the two
-  # engines only when both are set.
+  # Via SearXNG's generic JSON engine (the scraping `naver` engine is blocked
+  # here). NAVER Cloud Platform API HUB, X-NCP-APIGW-* headers. Quota: 775,000
+  # calls/month per application, 50 req/s per key, one call per engine per
+  # search. Each API (웹문서, 뉴스) must be enabled in the NCP console, else 401.
+  # gen-searxng-config.sh fills NAVER_CLIENT_ID / NAVER_CLIENT_SECRET and enables
+  # both engines only when both are set.
   - name: naver web
     engine: json_engine
     shortcut: nvw
@@ -213,8 +202,7 @@ engines:
     shortcut: nvn
     categories: [news]
     paging: false
-    # sort=sim: relevance order. sort=date puts the newest article first
-    # whatever its subject.
+    # sort=sim: relevance order
     search_url: https://naverapihub.apigw.ntruss.com/search/v1/news?query={query}&display=10&sort=sim
     headers:
       X-NCP-APIGW-API-KEY-ID: "__NAVER_CLIENT_ID__"

@@ -1,8 +1,5 @@
 # Operator documentation
 
-What you need to bring the backend plane up and keep it running. This page is
-the index.
-
 ## Starting out
 
 1. [Prerequisites](prerequisites.md): hardware and software checklist
@@ -13,30 +10,14 @@ the index.
 
 ## Structure
 
-One gateway port is exposed. Behind it, seven capabilities are split by path.
-
-| Path | Service | Profile |
-|---|---|---|
-| `/litellm/*`, `/v1/*` | LiteLLM | `models` |
-| `/tools/search/*` | search-shim, in front of SearXNG | `tools` |
-| `/tools/fetch/*` | crawl4ai-shim | `tools` |
-| `/tools/exec/*` | code-interpreter | `tools` |
-| `/tools/research/*` | deep-research (MCP) | `tools` |
-| `/tools/stt/*` | whisper-shim | `whisper` |
-| `/tools/index/*` | index-shim + pgvector | `index` |
-
-GPU nodes live outside this stack. There is one node list, `NODES_VLLM`, and
-LiteLLM and whisper-shim call the nodes at the URLs the
-[scheduler](../scheduler/README.md) records in `.env`. Transcription is
-`openai/whisper-large-v3` on vLLM, placed like any other model; a cluster with
-no room for it leaves `WHISPER_URLS` empty and STT goes to OpenRouter.
+One gateway port is exposed; behind it, LiteLLM and six tools are split by
+path ([paths and profiles](tools.md#paths-and-the-calls-behind-them)). GPU
+nodes live outside this stack: LiteLLM and whisper-shim reach them at the URLs
+the [scheduler](../scheduler/README.md) writes into `.env`. A model with no
+room on any node, transcription included, is served through OpenRouter.
 
 `/tools/*` is unauthenticated. The gateway port must only be open inside a
 private network.
-
-Each backing store is on its own internal network, shared with exactly the one
-service that owns it: `litellm-db` with LiteLLM, `index-db` with index-shim,
-MinIO and redis with code-interpreter, valkey with SearXNG. None publish a port.
 
 ## Documents
 

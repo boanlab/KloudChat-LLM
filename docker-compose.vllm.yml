@@ -9,8 +9,8 @@
 #   vllm-whisper    transcription — openai/whisper-large-v3
 #
 # VLLM_<MODEL>_{MAX_LEN,GPU_UTIL,TP,DEVICES} are written by the scheduler.
-# Devices go through NVIDIA_VISIBLE_DEVICES, never CUDA_VISIBLE_DEVICES (no
-# "all" value; fails engine init on GB10).
+# Devices go through NVIDIA_VISIBLE_DEVICES; CUDA_VISIBLE_DEVICES has no "all"
+# value and fails engine init on GB10.
 name: kloudchat-vllm
 
 services:
@@ -83,7 +83,7 @@ services:
       start_period: 600s
 
   # Quality and judging. MoE 10B of 122B active, NVFP4; 0.85 of a GB10 node,
-  # so it never shares a node with the 27B.
+  # a pool node to itself.
   vllm-qwen122b:
     container_name: vllm-qwen122b
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}

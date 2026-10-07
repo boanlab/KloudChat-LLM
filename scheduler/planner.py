@@ -167,7 +167,6 @@ def plan(
     specs: Sequence[ModelSpec],
     nodes: Sequence[NodeSpec],
     *,
-    reserved: Optional[dict[str, int]] = None,
     replicas: Optional[int] = None,
     deployed: Optional[dict[str, frozenset[str]]] = None,
     head: Optional[str] = None,
@@ -177,17 +176,15 @@ def plan(
     Args:
         specs: models to deploy, with metadata bound.
         nodes: probed nodes.
-        reserved: per-node bytes held by resident workloads, subtracted first.
         replicas: cap on instances per model; None fills spare capacity, 1 disables.
         deployed: model id to node ids already running it; a near-tie keeps it there.
         head: head node id (first in NODES_VLLM). None on a single-node cluster,
             where ``placement`` constrains nothing.
     """
     result = Plan()
-    reserved = reserved or {}
     deployed = deployed or {}
 
-    # Unsupported cards hold nothing; the node stays visible in the notes
+    # Unsupported cards: nothing placed, node kept in the notes
     for n in nodes:
         if n.gpu_class == UNSUPPORTED_GPU_CLASS:
             result.notes.append(
@@ -201,10 +198,9 @@ def plan(
             result.delegations.append(Delegation(spec.id, "no GPU node available"))
         return result
 
-    # Per-card budget, fixed for this plan; free bytes per card by CUDA device
-    # ordinal, each card charged its own foreign memory
-    card_capacity = {n.node_id: n.card_budget_bytes(reserved.get(n.node_id, 0)) for n in nodes}
-    free = {n.node_id: n.card_free_bytes(reserved.get(n.node_id, 0)) for n in nodes}
+    # Per-card budget; free bytes per card by CUDA device ordinal
+    card_capacity = {n.node_id: n.card_budget_bytes() for n in nodes}
+    free = {n.node_id: n.card_free_bytes() for n in nodes}
     by_id = {n.node_id: n for n in nodes}
 
     # 1. Coverage: one each at the context floor, by priority then size
@@ -285,10 +281,7 @@ def _carries(node: NodeSpec, spec: ModelSpec) -> bool:
 
 def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[int]],
              card_capacity: dict[str, int]) -> str:
-    """Delegation reason: no eligible node, architecture, missing checkpoint, cards, or capacity.
-
-    Measured over ``nodes`` (what ``placement`` left), not the whole cluster.
-    """
+    """Delegation reason over ``nodes`` (what ``placement`` left): no node, arch, checkpoint, cards, or capacity."""
     if not nodes:
         if spec.placement == "head":
             return ("the head node — the first in NODES_VLLM — is not answering, "
@@ -327,9 +320,7 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
             f"card holds {roomiest_card_capacity / GB:.1f} GiB"
         )
 
-    freest = max(
-        (max(free[n.node_id]) for n in wide_enough), default=0
-    )
+    freest = max((max(free[n.node_id]) for n in wide_enough), default=0)
     if tp > 1:
         available = max(
             (sum(1 for f in free[n.node_id] if f >= per_gpu) for n in wide_enough),
@@ -347,7 +338,7 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
 
 
 def _scope(spec: ModelSpec) -> str:
-    """Scope a delegation reason's figures were measured over."""
+    """Scope of a delegation reason's figures."""
     return {"head": "the head node", "pool": "the pool"}.get(
         spec.placement, "this cluster"
     )

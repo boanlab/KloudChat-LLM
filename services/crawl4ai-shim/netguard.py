@@ -1,11 +1,9 @@
-"""Where a scrape may go: the public internet, nothing behind it.
+"""Public-internet-only guard for scrapes.
 
-The shim sits on the deployment's private network, next to LiteLLM, the databases and
-the other tool services, and `/tools/fetch` reaches it without authentication. A URL
-is therefore judged by the addresses its host resolves to, before the browser opens it;
-every request the page then makes (navigation, redirect, script, XHR) passes through
-`subrequest_refusal` on a Playwright route before it leaves the browser; and the address
-the browser ended up at is checked once more on return.
+The shim shares the deployment's private network with LiteLLM, the databases and the
+tool services. Checks: the URL's resolved addresses before the browser opens it; every
+request the page makes (navigation, redirect, script, XHR) via `subrequest_refusal` on a
+Playwright route; and the final address on return.
 """
 from __future__ import annotations
 

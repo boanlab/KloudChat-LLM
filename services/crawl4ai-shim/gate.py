@@ -1,9 +1,8 @@
-"""Two guards in front of the one shared browser.
+"""Render concurrency cap and page cache for the shared browser.
 
-`Gate` caps the pages rendering at once and bounds the wait for the rest: past
-the cap every tab slows every other until all hit the page timeout. `PageCache`
-keeps a successful scrape for a while: the top search results are the same
-pages for everyone asking about one topic that hour.
+`Gate`: pages rendering at once, with a bounded wait for the rest; past the cap
+every tab slows toward the page timeout. `PageCache`: successful scrapes, reused
+for a TTL.
 """
 from __future__ import annotations
 

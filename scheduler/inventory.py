@@ -16,8 +16,8 @@ from __future__ import annotations
 import shlex
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from typing import Mapping, Optional, Sequence
+from dataclasses import dataclass
+from typing import Iterable, Mapping, Optional, Sequence
 
 from scheduler.types import GB, NodeSpec
 
@@ -30,19 +30,13 @@ MANAGED_PREFIX: str = "vllm-"
 
 
 @dataclass(frozen=True)
-class RunningWorkload:
-    """One vLLM instance on a node."""
-
-    container_name: str
-
-
-@dataclass(frozen=True)
 class NodeProbe:
     spec: NodeSpec
     alive: bool
-    running_workloads: tuple[RunningWorkload, ...] = field(default_factory=tuple)
+    #: Catalogued services running on the node
+    running_services: frozenset[str] = frozenset()
     running_containers: frozenset[str] = frozenset()
-    raw_errors: tuple[str, ...] = field(default_factory=tuple)
+    raw_errors: tuple[str, ...] = ()
 
 
 def _ssh(host: str, cmd: str, *, timeout: int = 6) -> tuple[int, str, str]:
@@ -131,12 +125,12 @@ done
 """
 
 
-def _probe_vram_by_owner(host: str, managed: frozenset) -> tuple[int, int, dict[int, int]]:
-    """GPU memory held: (bytes outside ``managed``, bytes inside it, outside bytes per card ordinal)."""
+def _probe_foreign_vram(host: str, managed: frozenset) -> tuple[int, dict[int, int]]:
+    """GPU memory held outside ``managed``: (total bytes, bytes per card ordinal)."""
     code, out, _ = _ssh(host, _VRAM_BY_OWNER, timeout=10)
     if code != 0 or not out.strip():
-        return 0, 0, {}
-    foreign = ours = 0
+        return 0, {}
+    foreign = 0
     by_card: dict[int, int] = {}
     for line in out.strip().splitlines():
         parts = line.split()
@@ -144,12 +138,10 @@ def _probe_vram_by_owner(host: str, managed: frozenset) -> tuple[int, int, dict[
             continue
         name, mib = parts[0], int(parts[1])
         card = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-        if name in managed:
-            ours += mib * 1024 * 1024
-        else:
+        if name not in managed:
             foreign += mib * 1024 * 1024
             by_card[card] = by_card.get(card, 0) + mib * 1024 * 1024
-    return foreign, ours, by_card
+    return foreign, by_card
 
 
 def _probe_gpu_class(host: str) -> str:
@@ -194,20 +186,18 @@ def _probe_card_sizes(host: str) -> tuple[tuple[int, ...], bool]:
 
 def probe_node(
     node_id: str, host: str, *,
-    reserved_bytes: Optional[int] = None,
-    services: Optional[Mapping[str, int]] = None,
+    services: Iterable[str] = (),
     models_root: Optional[str] = None,
     retries: int = 1,
 ) -> NodeProbe:
     """Probe a node, retrying ``retries`` times while it looks dead.
 
     Args:
-        services: compose service name to port, identifying running vLLMs.
+        services: catalogued compose service names.
         models_root: VLLM_MODELS_ROOT on the node; omitted, checkpoints are not reported.
     """
     once = lambda: _probe_node_once(  # noqa: E731
-        node_id, host, reserved_bytes=reserved_bytes, services=services,
-        models_root=models_root,
+        node_id, host, services=services, models_root=models_root,
     )
     probe = once()
     attempts = max(0, retries)
@@ -219,8 +209,7 @@ def probe_node(
 
 def _probe_node_once(
     node_id: str, host: str, *,
-    reserved_bytes: Optional[int] = None,
-    services: Optional[Mapping[str, int]] = None,
+    services: Iterable[str] = (),
     models_root: Optional[str] = None,
 ) -> NodeProbe:
     errors: list[str] = []
@@ -233,16 +222,12 @@ def _probe_node_once(
     gpu_count = _probe_gpu_count(host)
     if card_sizes and len(card_sizes) != gpu_count and not unified:
         gpu_count = len(card_sizes)
-    # Smallest card: every card must hold what the planner promises
+    # Sized by the smallest card
     total_vram = min(card_sizes) if card_sizes else 0
     arch = _probe_arch(host)
     alive = bool(running) or total_vram > 0
 
-    workloads = tuple(
-        RunningWorkload(name) for name in (services or {}) if name in running
-    )
-
-    # Unified memory shares system RAM with the OS
+    # Unified memory: system RAM less the OS share
     usable = max(0, total_vram - _UNIFIED_RESERVE_BYTES) if unified and total_vram else None
     if card_sizes and len(set(card_sizes)) > 1:
         errors.append(
@@ -253,7 +238,7 @@ def _probe_node_once(
         )
 
     managed = frozenset(c for c in running if c.startswith(MANAGED_PREFIX))
-    foreign, _ours, by_card = _probe_vram_by_owner(host, managed)
+    foreign, by_card = _probe_foreign_vram(host, managed)
     foreign_by_card = tuple(by_card.get(i, 0) for i in range(max(1, gpu_count)))
 
     spec = NodeSpec(
@@ -261,7 +246,6 @@ def _probe_node_once(
         hostname=host,
         gpu_class=gpu_class,
         total_vram_bytes=total_vram,
-        reserved_bytes=reserved_bytes,
         usable_vram_bytes=usable,
         gpu_count=gpu_count,
         foreign_vram_bytes=foreign,
@@ -274,7 +258,7 @@ def _probe_node_once(
     return NodeProbe(
         spec=spec,
         alive=alive,
-        running_workloads=workloads,
+        running_services=frozenset(s for s in services if s in running),
         running_containers=frozenset(running),
         raw_errors=tuple(errors),
     )
@@ -291,8 +275,6 @@ def probe_cluster(
     if not items:
         return []
     workers = min(max(1, max_workers), len(items))
-    if workers == 1:
-        return [probe_node(nid, host, **kw) for nid, host in items]
     with ThreadPoolExecutor(max_workers=workers) as ex:
         return list(ex.map(lambda it: probe_node(it[0], it[1], **kw), items))
 

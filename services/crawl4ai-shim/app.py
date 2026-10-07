@@ -51,30 +51,26 @@ USER_AGENT = os.environ.get(
 # Bearer token the gateway injects. Empty disables the check.
 API_KEY = os.environ.get("SCRAPER_API_KEY", "")
 
-# Pages rendering at once, and the wait for a slot before a request is refused.
-# One Chromium on an 8-core host renders about eight pages concurrently; past
-# that every page slows towards its own timeout.
+# Pages rendering at once, and the wait for a slot before refusal
 MAX_CONCURRENT_PAGES = int(os.environ.get("MAX_CONCURRENT_PAGES", "8"))
 QUEUE_TIMEOUT_MS = int(os.environ.get("QUEUE_TIMEOUT_MS", "15000"))
-# A successful scrape is answered from memory for this long.
+# Lifetime of a cached successful scrape
 CACHE_TTL_S = int(os.environ.get("CACHE_TTL_S", "900"))
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "512"))
 # Redirect hops the route guard follows for one request
 MAX_REDIRECTS = 10
-# Hosts file of adult sites a scrape refuses; baked into the image.
+# Adult-site hosts file, baked into the image
 ADULT_HOSTS_FILE = os.environ.get("ADULT_HOSTS_FILE", "/app/adult-hosts.txt")
 
 crawler: AsyncWebCrawler | None = None
 browser_config: BrowserConfig | None = None
-#: Bumped on every browser restart, so concurrent failures restart it once.
+# Browser restart count; concurrent failures restart once
 generation = 0
 restart_lock = asyncio.Lock()
-#: Scrapes in a row that found the browser dead; past DEAD_LIMIT /health fails and the
-#: container is restarted.
+# Consecutive scrapes that found the browser dead; at DEAD_LIMIT /health fails
 dead_in_a_row = 0
 DEAD_LIMIT = 3
-#: Playwright's words for a browser that is gone. The process can die (OOM, a crash)
-#: while the service stays up; every later page then fails with these until restart.
+# Playwright errors for a dead browser process
 _DEAD_BROWSER = ("has been closed", "Target closed", "Browser closed", "Connection closed")
 adult = AdultList()
 gate = Gate(MAX_CONCURRENT_PAGES)
@@ -96,8 +92,7 @@ async def lifespan(_app: FastAPI):
         user_agent=USER_AGENT,
         java_script_enabled=True,
         light_mode=True,
-        # No image, font or media downloads: only the page's markdown is
-        # returned. Scripts still run.
+        # No image, font or media downloads; scripts still run
         text_mode=True,
     )
     browser_config = cfg
@@ -116,7 +111,6 @@ app = FastAPI(lifespan=lifespan)
 async def _started(cfg: BrowserConfig) -> AsyncWebCrawler:
     started = AsyncWebCrawler(config=cfg)
     await started.start()
-    # Every request a page makes is judged before it leaves the browser.
     started.crawler_strategy.set_hook("on_page_context_created", _guard_context)
     return started
 
@@ -126,8 +120,7 @@ def _browser_gone(error: str) -> bool:
 
 
 async def _restart_browser(seen: int) -> None:
-    """A fresh browser in place of a dead one; a restart another request already made
-    (the generation moved on) is not repeated."""
+    """Replace a dead browser, unless another request already did (generation moved)."""
     global crawler, generation
     async with restart_lock:
         if generation != seen:
@@ -142,7 +135,7 @@ async def _restart_browser(seen: int) -> None:
         generation += 1
         try:
             crawler = await _started(browser_config or BrowserConfig(headless=True))
-        except Exception as e:  # noqa: BLE001 — /health reports it and the container restarts
+        except Exception as e:  # noqa: BLE001 — /health reports it
             LOG.error("a new browser did not start: %r", e)
             return
         LOG.info("new browser ready")
@@ -150,7 +143,6 @@ async def _restart_browser(seen: int) -> None:
 
 @app.get("/health")
 async def health(response: Response) -> dict[str, Any]:
-    # A browser that stays dead after restarts fails the check, so the container restarts.
     down = dead_in_a_row >= DEAD_LIMIT
     if down:
         response.status_code = 503
@@ -274,7 +266,7 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": "busy: too many pages rendering"}
     global dead_in_a_row
     try:
-        # A dead browser is restarted and the page tried once more.
+        # Dead browser: restart and retry once
         for attempt in (1, 2):
             seen = generation
             if crawler is None:
@@ -314,7 +306,7 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
             err = netguard.INTERNAL
         LOG.warning("scrape failed on %s: %s", _site(url), err)
         return {"success": False, "error": err}
-    # The address the browser ended up at is judged once more.
+    # Final address after redirects
     final_url = getattr(result, "redirected_url", None) or url
     if final_url != url:
         refused = await asyncio.to_thread(_refusal, final_url)
@@ -327,7 +319,7 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
 
     markdown_obj = getattr(result, "markdown", None)
     if markdown_obj is not None:
-        # fit_markdown: after the main-content filter; raw_markdown: plain html to md.
+        # fit_markdown: main-content filtered; raw_markdown: unfiltered
         if hasattr(markdown_obj, "fit_markdown") and markdown_obj.fit_markdown:
             data["markdown"] = markdown_obj.fit_markdown
         elif hasattr(markdown_obj, "raw_markdown"):

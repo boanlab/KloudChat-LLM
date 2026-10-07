@@ -33,6 +33,7 @@ body:
         - GPU node (vLLM)
         - Transcription (vllm-whisper / whisper-shim)
         - Tools (search, fetch, exec, research)
+        - Retrieval index (index-shim)
         - Setup scripts
         - Docs
     validations:

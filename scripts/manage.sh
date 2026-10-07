@@ -8,24 +8,24 @@ usage() {
   cat <<'EOF'
 Usage: manage.sh <resource> <action> [opts]
 
-team   create  --alias <n> [--budget --duration --tpm --rpm --models a,b,c]
-       list / delete --id <team_id>
-       sync                                                ← re-sync every team's model allowlist after a catalog change
-       add-strict                                          ← add only strict aliases matching each team's allowed local models
+team   create  --alias <name> [--budget <$>] [--duration <1mo>] [--tpm <n>] [--rpm <n>] [--models a,b,c]
+       list
+       delete  --id <team_id>
+       sync                                 ← every team's allowlist → the current catalogue
+       add-strict                           ← strict-local/<m> for teams that allow local/<m>
 
-user   list / delete --id <email>                           ← LiteLLM-side users
-       usage  [--user <email>]                             ← per-user usage (spend) vs monthly budget
-       topup  --user <email> --amount <N>                  ← temporary monthly-limit raise ($N; spend preserved → accurate stats, auto-reverts next month)
+user   list
+       delete  --id <email>
+       usage   [--user <email>]             ← spend vs monthly budget
+       topup   --user <email> --amount <N>  ← monthly limit +$N until the next budget reset
 
-       Accounts themselves are created in kchat (signup → admin approval); kchat's API
-       provisions the matching LiteLLM user + per-user key. These commands are the
-       LiteLLM-side view/ops for them.
+       Accounts are created in kchat, which provisions the LiteLLM user and key.
 
-key    issue   --user <email> [--team] [--alias] [--budget]
-       issue   --service <name> [--budget]                  ← service-account
-       list   [--user <email>]                             ← from LiteLLM, first 20 chars of each key only
-       show   [--user <email>]                             ← full plaintext keys from the local ledger
-       revoke --key <sk-...>
+key    issue   --user <email> [--team <alias>] [--alias <name>] [--budget <$>]
+       issue   --service <name> [--budget <$>]   ← service account
+       list    [--user <email>]             ← LiteLLM view, token hash prefix only
+       show    [--user <email>]             ← plaintext keys from the local ledger
+       revoke  --key <sk-...>
 
 EOF
   exit 1
@@ -39,7 +39,7 @@ require_email() {
 need_val() { [[ -n "${2:-}" ]] || { err "$1 requires a value"; exit 1; }; }
 
 cmd_team_create() {
-  local alias="" budget=9999 duration=1mo tpm=100000 rpm=500
+  local alias="" budget=9999 duration=1mo tpm=1000000 rpm=500
   local models; models="$(litellm_chat_models_csv)"
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -296,7 +296,7 @@ cmd_key_issue() {
         # LiteLLM holds no plaintext to recover
         err "service key alias '$alias' already exists in LiteLLM."
         err "  → check with ./scripts/manage.sh key list, then rotate: key revoke --key <stale>"
-        err "    or use a different alias: key issue --service $service --alias <new>"
+        err "    or use a different service name: key issue --service <new-name>"
         return 1
       fi
       err "$result"; return 1

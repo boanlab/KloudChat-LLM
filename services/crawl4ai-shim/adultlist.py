@@ -1,12 +1,9 @@
-"""Adult sites a scrape may not go to, judged at the same points as netguard: before
-the browser opens a URL, and again on the address it ended up at after redirects.
+"""Adult-site refusal, checked on the requested URL and on the final address.
 
-The list is a hosts file (`0.0.0.0 host` lines; plain host names work too) baked into
-the image at build time from a pinned commit of StevenBlack/hosts' porn-only list. It
-keeps hosts-file semantics: a host is refused when it is listed, with `www.` folded on
-both sides, and nothing else is inferred from an entry. Listing an apex does not cover
-its subdomains: the list names shared platforms (fc2.com) and bare labels (www.sex)
-that would otherwise take a whole blog host or top-level domain with them.
+Source: a hosts file (`0.0.0.0 host` lines or bare host names), StevenBlack/hosts'
+porn-only list at a pinned commit, baked into the image. Hosts-file semantics: exact
+host match with `www.` folded; an apex does not cover its subdomains, since the list
+names shared platforms (fc2.com) and bare labels (www.sex).
 """
 from __future__ import annotations
 

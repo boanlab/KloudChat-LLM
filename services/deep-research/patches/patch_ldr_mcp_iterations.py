@@ -1,10 +1,9 @@
 """Widen local-deep-research's MCP `iterations` / `questions_per_iteration` params to accept strings.
 
-MCP clients validate tool arguments against the inputSchema before dispatch, and
-models send "2" as well as 2; upstream's ``Optional[int]`` rejects the string and
-research degrades to plain search. The types become ``Optional[Union[int, str]]``
-and numeric strings are coerced in the validators. Applied at image build time;
-idempotent.
+Models send "2" as well as 2, and MCP clients validate against the inputSchema;
+upstream's ``Optional[int]`` rejects the string. Types become
+``Optional[Union[int, str]]`` with numeric strings coerced in the validators.
+Applied at image build; idempotent.
 """
 import pathlib
 

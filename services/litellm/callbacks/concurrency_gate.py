@@ -34,11 +34,9 @@ log = logging.getLogger("litellm-concurrency-gate")
 
 POLL_TTL = float(os.environ.get("CONCURRENCY_GATE_TTL", "1.5"))
 SCRAPE_TIMEOUT = float(os.environ.get("CONCURRENCY_GATE_SCRAPE_TIMEOUT", "1.0"))
-# Age past which a strict alias's last good sample no longer counts.
+# Age past which a strict alias's last good sample no longer counts
 STRICT_STATE_TTL = max(POLL_TTL * 3, POLL_TTL + SCRAPE_TIMEOUT * 2)
-# In-flight caps by LiteLLM model_name; a key with no matching deployment is
-# logged by _load_gate_map. vLLM preempts running requests once its KV pool is
-# full (27B: ~30 GiB, under 4 full-length 256K requests).
+# In-flight caps by LiteLLM model_name; a cap with no deployment is logged and inactive
 DEFAULT_CAPS = {
     "local/qwen3.8-27b": 128,
     "local/qwen3.5-122b": 32,
@@ -140,7 +138,6 @@ def _load_gate_map() -> dict:
                     "or": twin[model],
                 }
             elif cap > 0:
-                # Cap with no matching deployment: say which half is missing.
                 missing = []
                 if model not in metrics:
                     missing.append("no local vLLM deployment")
@@ -176,7 +173,7 @@ def _scrape(url: str) -> tuple:
 class ConcurrencyGate(CustomLogger):
     def __init__(self):
         self.gate = _load_gate_map()
-        # Strict aliases start rejected until the first successful scrape.
+        # Strict aliases rejected until the first successful scrape
         self._saturated = {m: g["mode"] == "reject" for m, g in self.gate.items()}
         self._last_success = {m: 0.0 for m in self.gate}
         if self.gate:
@@ -195,8 +192,7 @@ class ConcurrencyGate(CustomLogger):
             time.sleep(POLL_TTL)
 
     def _poll_once(self, *, debug: bool = False) -> None:
-        # Each unique endpoint scraped once, in parallel, so a cycle stays
-        # within STRICT_STATE_TTL.
+        # Unique endpoints scraped once, in parallel, to stay within STRICT_STATE_TTL
         urls = sorted(
             {
                 url
@@ -230,8 +226,7 @@ class ConcurrencyGate(CustomLogger):
                     samples.append(sample)
                 running = sum(sample[0] for sample in samples)
                 waiting = sum(sample[1] for sample in samples)
-                # Any one saturated node saturates the alias: LiteLLM may route
-                # to any deployment behind it.
+                # Any saturated deployment saturates the alias
                 sat = any(
                     node_running >= g["cap"] or node_waiting > 0
                     for node_running, node_waiting in samples
@@ -351,7 +346,7 @@ class ConcurrencyGate(CustomLogger):
 
 gate_instance = ConcurrencyGate()
 
-# Self-registration for a config that only imports the module.
+# Self-registration for a config that only imports the module
 try:
     import litellm as _litellm
     if gate_instance not in _litellm.callbacks:

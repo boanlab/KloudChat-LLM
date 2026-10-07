@@ -115,12 +115,12 @@ different address per capability.
 ./scripts/setup.sh scheduler apply    # apply it
 ./scripts/manage-vllm.sh status       # GPU node status (every vLLM service)
 
-LITELLM_URL=http://localhost:8080/litellm ./scripts/manage.sh user usage   # LiteLLM usage and budgets
+./scripts/manage.sh user usage        # LiteLLM usage and budgets
 ```
 
-LiteLLM publishes no host port; `manage.sh` reaches it through `LITELLM_URL`
-(shell or `.env`), which should point at the gateway. Every script prints its
-usage when run without arguments.
+`manage.sh` reaches LiteLLM through the gateway
+(`http://localhost:<GATEWAY_PORT>/litellm`; override with `LITELLM_URL`). Every
+script prints its usage when run without arguments.
 
 ## Supported environments
 

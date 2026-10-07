@@ -18,7 +18,6 @@ DRY_RUN=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
-    # Read-only
     --check-prices) or_price_drift; exit $? ;;
     -h|--help) echo "Usage: $(basename "$0") [--dry-run] [--check-prices]"; exit 0 ;;
     *)         err "Unknown: $arg"; exit 2 ;;
@@ -251,19 +250,18 @@ emit_vllm_chat_entry() {
 }
 
 emit_vllm_chat() {
-  local m="$1" url_csv="$2" urls ctx_fallback regular_boundary
+  local m="$1" url_csv="$2" urls regular_boundary
   [[ -n "$url_csv" ]] || return 0
   regular_boundary=self_hosted
   has_openrouter && regular_boundary=hybrid
   # Context per deployment from /v1/models; the scheduler sets it per node
-  ctx_fallback="$CTX_FALLBACK"
   urls="$(__vllm_resolved_urls "local/${m}" "$url_csv")"
   while IFS= read -r url; do
     [[ -n "$url" ]] || continue
     local ctx
     if ! ctx="$(vllm_discover_max_len "$url")"; then
-      warn "${url} max_model_len discovery failed — fallback ${ctx_fallback}"
-      ctx="$ctx_fallback"
+      warn "${url} max_model_len discovery failed — fallback ${CTX_FALLBACK}"
+      ctx="$CTX_FALLBACK"
     fi
     emit_vllm_chat_entry "$m" "$url" "$ctx" "local/${m}" "$regular_boundary" false false
     # Privacy-only alias: no fallback twin; the gate rejects overload instead
@@ -322,15 +320,13 @@ SECTION=$(
   emit_vllm_embed "bge-m3" "$(env_get VLLM_BGEM3_URL)"
   emit_vllm_rerank "bge-reranker-v2-m3" "$(env_get VLLM_RERANK_URL)"
   # STT fallback whenever no local whisper answers
-  vllm_any_url_alive "$(env_get WHISPER_URLS)" || emit_or_stt "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" "$(or_price "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" in)" "$(or_price "${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}" out)"
-  # --- openai (commercial + embed fallback) ---
+  stt="${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}"
+  vllm_any_url_alive "$(env_get WHISPER_URLS)" || emit_or_stt "$stt" "$(or_price "$stt" in)" "$(or_price "$stt" out)"
+  # --- commercial (OpenRouter), plus the OpenAI embedding fallback ---
   for m in "${OPENAI_MODELS[@]}";        do emit_commercial_or openai "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
   for m in "${OPENAI_EMBED_CATALOG[@]}"; do emit_openai_embed "$m"; done
-  # --- anthropic ---
   for m in "${ANTHROPIC_MODELS[@]}"; do emit_commercial_or anthropic "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  # --- google ---
   for m in "${GOOGLE_MODELS[@]}";    do emit_commercial_or google    "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  # --- x-ai / perplexity ---
   for m in "${XAI_MODELS[@]}";        do emit_commercial_or x-ai       "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
   for m in "${PERPLEXITY_MODELS[@]}"; do emit_commercial_or perplexity "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
   # --- open-weight tier ---

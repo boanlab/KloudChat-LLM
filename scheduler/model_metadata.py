@@ -230,11 +230,9 @@ def _resolve_native_ctx(cfg: dict) -> int:
     return 0
 
 
-#: Size of the safetensors vLLM loads (excluding fp32 copies), not the whole
-#: directory; ``du`` fallback for checkpoints without safetensors.
+#: Safetensors size excluding fp32 copies; ``du`` for checkpoints without safetensors
 _WEIGHT_BYTES = r"""
-sum=$(find %(path)s -maxdepth 1 -name '*.safetensors' ! -name '*fp32*'         -printf '%%s
-' 2>/dev/null | awk '{t+=$1} END {print t+0}')
+sum=$(find %(path)s -maxdepth 1 -name '*.safetensors' ! -name '*fp32*' -printf '%%s\n' 2>/dev/null | awk '{t+=$1} END {print t+0}')
 if [ "${sum:-0}" -gt 0 ]; then echo "$sum"; else du -sb %(path)s 2>/dev/null | cut -f1; fi
 """
 

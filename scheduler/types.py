@@ -63,13 +63,14 @@ def default_reserve_bytes(total_vram_bytes: int) -> int:
 class NodeSpec:
     """Capacity of a probed GPU node."""
 
-    node_id: str                  # inventory.node_ids_for_hosts: last IPv4 octet, first
-                                  # hostname label, or the bare host on a collision
-    hostname: str                 # SSH target
-    gpu_class: str                # "gb10", "pro5000", ...
-    total_vram_bytes: int         # one GPU
-    #: Explicit headroom; None derives it from the card size
-    reserved_bytes: Optional[int] = None
+    #: Last IPv4 octet, first hostname label, or the bare host on a collision
+    node_id: str
+    #: SSH target
+    hostname: str
+    #: "gb10", "pro5000", ...
+    gpu_class: str
+    #: One card
+    total_vram_bytes: int
     #: Planner ceiling below physical capacity (unified-memory nodes)
     usable_vram_bytes: Optional[int] = None
     gpu_count: int = 1
@@ -79,15 +80,11 @@ class NodeSpec:
     foreign_vram_by_card: tuple[int, ...] = ()
     #: "amd64" | "arm64" | "" on probe failure
     arch: str = ""
-    #: Checkpoint directories under VLLM_MODELS_ROOT. None: not probed, no
-    #: filtering. A model placed without its weights restarts forever (Docker
-    #: creates a missing bind-mount path empty).
+    #: Checkpoint directories under VLLM_MODELS_ROOT; None: not probed, no filtering
     checkpoints: Optional[frozenset[str]] = None
 
     @property
     def effective_reserve_bytes(self) -> int:
-        if self.reserved_bytes is not None:
-            return self.reserved_bytes
         return default_reserve_bytes(self.total_vram_bytes)
 
     @property
@@ -99,28 +96,19 @@ class NodeSpec:
             base = self.gpu_count * self.total_vram_bytes - self.effective_reserve_bytes
         return max(0, base - self.foreign_vram_bytes)
 
-    @property
-    def per_gpu_planner_bytes(self) -> int:
-        """Packing capacity of one card — what a tensor-parallel rank must fit."""
-        return self.planner_vram_bytes // max(1, self.gpu_count)
-
-    def card_budget_bytes(self, reserved_bytes: int = 0) -> int:
-        """One card's share of the node budget before foreign memory.
-
-        Args:
-            reserved_bytes: node-wide bytes held by resident workloads.
-        """
+    def card_budget_bytes(self) -> int:
+        """One card's share of the node budget before foreign memory."""
         cards = max(1, self.gpu_count)
         if self.usable_vram_bytes is not None:
             base = self.usable_vram_bytes
         else:
             base = cards * self.total_vram_bytes - self.effective_reserve_bytes
-        return max(0, base - reserved_bytes) // cards
+        return max(0, base) // cards
 
-    def card_free_bytes(self, reserved_bytes: int = 0) -> list[int]:
+    def card_free_bytes(self) -> list[int]:
         """Free bytes by CUDA device ordinal: the card budget less that card's foreign memory."""
         cards = max(1, self.gpu_count)
-        budget = self.card_budget_bytes(reserved_bytes)
+        budget = self.card_budget_bytes()
         if self.foreign_vram_by_card:
             foreign = list(self.foreign_vram_by_card[:cards])
             foreign += [0] * (cards - len(foreign))

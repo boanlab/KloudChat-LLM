@@ -103,17 +103,13 @@ def _bind(specs, probes, models_root: str):
     return bound, failed
 
 
-def _services(specs) -> dict[str, int]:
-    return {s.service: s.port for s in specs}
-
-
 def _probe(hosts: dict[str, str], specs) -> list:
     if not hosts:
         print("NODES_VLLM is empty — there is nothing to probe", file=sys.stderr)
         return []
     return inventory.probe_cluster(
         hosts,
-        services=_services(specs),
+        services=[s.service for s in specs],
         models_root=_env("VLLM_MODELS_ROOT", "/var/lib/vllm/models"),
     )
 
@@ -129,7 +125,7 @@ def cmd_inventory(args) -> int:
     print(f"{'NODE':<10} {'STATE':<9} {'GPU':<10} {'ARCH':<7} {'TOTAL':>9} {'USABLE':>9}  RUNNING")
     for p in probes:
         s: NodeSpec = p.spec
-        running = ", ".join(sorted(w.container_name for w in p.running_workloads)) or "-"
+        running = ", ".join(sorted(p.running_services)) or "-"
         print(f"{s.node_id:<10} {'alive' if p.alive else 'no answer':<9} "
               f"{s.gpu_class:<10} {s.arch or '?':<7} "
               f"{s.total_vram_bytes / GB:>7.1f}G {s.planner_vram_bytes / GB:>7.1f}G  {running}")

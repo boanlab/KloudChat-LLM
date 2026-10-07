@@ -6,7 +6,6 @@
 #   manage-vllm.sh restart [svc]                restart
 #   manage-vllm.sh logs [svc]                   follow logs
 #   manage-vllm.sh status                       container + healthcheck status
-#   manage-vllm.sh pull                         update image
 #
 # Services:
 #   vllm-qwen27b     Qwen3.8-27B — chat, vision, coding (dense)
@@ -47,7 +46,7 @@ cmd_up() {
   # No service named: every service with weights (gpu_util can sum past 1.0)
   if (( ${#want[@]} == 0 )); then
     warn "no service named — starting every service with local weights."
-    warn "  the scheduler decides placement: python -m scheduler apply"
+    warn "  the scheduler decides placement: python3 -m scheduler apply"
     warn "  to drive this node by hand: manage-vllm.sh up vllm-qwen27b [vllm-codernext ...]"
   fi
 
@@ -77,7 +76,7 @@ cmd_up() {
       for w in "${want[@]}"; do [[ "$w" == "$svc" ]] && hit=1; done
       (( hit )) || continue
     fi
-    local d="${svc_dir[$svc]}"
+    d="${svc_dir[$svc]}"
     if [[ -f "$root/$d/config.json" ]]; then
       ok "weight: $d ($(du -sh "$root/$d" 2>/dev/null | cut -f1))"
       up_svcs+=("$svc")
@@ -102,7 +101,6 @@ cmd_up() {
 cmd_down()    { docker compose -f "$COMPOSE_FILE" down "$@"; }
 cmd_restart() { docker compose -f "$COMPOSE_FILE" restart "$@"; }
 cmd_logs()    { docker compose -f "$COMPOSE_FILE" logs -f "$@"; }
-cmd_pull()    { docker compose -f "$COMPOSE_FILE" pull "$@"; }
 
 cmd_status() {
   docker compose -f "$COMPOSE_FILE" ps
@@ -121,7 +119,6 @@ case "$sub" in
   restart)    cmd_restart "$@" ;;
   logs)       cmd_logs "$@" ;;
   status|ps)  cmd_status ;;
-  pull)       cmd_pull "$@" ;;
   -h|--help)  usage 0 ;;
   *)          err "unknown subcommand: $sub"; usage ;;
 esac

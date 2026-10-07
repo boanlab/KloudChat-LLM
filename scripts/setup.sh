@@ -18,10 +18,14 @@
 #                           the published ones
 #
 # Environment
-#   KLOUDCHAT_SKIP_SCHEDULER=1   skip placement in `all` (you manage VLLM_*_URL)
-#   KLOUDCHAT_REMOTE_DIR         repository path on remote nodes (default: KloudChat-LLM)
-#   YES=1                        skip the clean confirmation
-#   KLOUDCHAT_DISPATCHED=1       internal — marks a worker that arrived over SSH
+#   KLOUDCHAT_SKIP_SCHEDULER=1           skip placement in `all` (you manage VLLM_*_URL)
+#   KLOUDCHAT_REMOTE_DIR                 repository path on remote nodes (default: KloudChat-LLM)
+#   KLOUDCHAT_VLLM_WAIT_TIMEOUT          vLLM readiness deadline, s (default 1200)
+#   KLOUDCHAT_VLLM_WAIT_INTERVAL         vLLM probe interval, s (default 10)
+#   KLOUDCHAT_SERVICE_WAIT               capability readiness deadline, s (default 180)
+#   KLOUDCHAT_SCHEDULER_NO_AUTOINSTALL=1 no apt install of PyYAML
+#   YES=1                                skip the clean confirmation
+#   KLOUDCHAT_DISPATCHED=1               internal — marks a worker that arrived over SSH
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -347,7 +351,7 @@ role_stack_start() {
 
 role_clean() {
   hdr "clean — DESTRUCTIVE: removes containers and runtime data"
-  echo "  Target: docker compose down + ./data (litellm postgres, code-interpreter redis/minio)"
+  echo "  Target: docker compose down + ./data (LiteLLM and index Postgres, code-interpreter Redis/MinIO, key ledger)"
   echo "  This cannot be undone."
   if [[ "${YES:-0}" != "1" ]]; then
     local answer

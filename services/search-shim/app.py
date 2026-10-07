@@ -39,31 +39,28 @@ LOG = logging.getLogger("search-shim")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080").rstrip("/")
-# SearXNG's own outgoing.max_request_timeout is 15 s; this bounds the whole call.
+# Whole-call bound, above SearXNG's 15 s max_request_timeout
 UPSTREAM_TIMEOUT_S = float(os.environ.get("UPSTREAM_TIMEOUT_S", "20"))
-# Bounds how long a gate slot is held on a SearXNG that is down or restarting.
+# Bounds a gate slot held against a down SearXNG
 CONNECT_TIMEOUT_S = float(os.environ.get("CONNECT_TIMEOUT_S", "3"))
 
-# Searches SearXNG runs at once, and how long a request waits for a slot.
+# Searches in flight at once, and the wait for a slot
 MAX_CONCURRENT_SEARCHES = int(os.environ.get("MAX_CONCURRENT_SEARCHES", "12"))
 QUEUE_TIMEOUT_MS = int(os.environ.get("QUEUE_TIMEOUT_MS", "10000"))
-# A search with results is answered from memory for CACHE_TTL_S, and still
-# handed out up to STALE_TTL_S after it was fetched when SearXNG cannot answer.
+# Fresh cache lifetime, and stale lifetime used when SearXNG cannot answer
 CACHE_TTL_S = int(os.environ.get("CACHE_TTL_S", "900"))
 STALE_TTL_S = int(os.environ.get("STALE_TTL_S", "21600"))
-# Answers are kept as the bytes SearXNG sent, tens of KB each.
+# Raw SearXNG bodies, tens of KB each
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2048"))
-# SearXNG safe search on every search: 0 off, 1 moderate, 2 strict. Replaces
-# the caller's value (the UI sends 1 by default).
+# Safe search forced on every search: 0 off, 1 moderate, 2 strict
 SAFESEARCH = os.environ.get("SAFESEARCH", "2")
-# A bare language is given its region: engines that take a market or country
-# prefer Korean results only with the region present.
+# Bare language to region; market/country engines need the region for Korean results
 _LANGUAGE_REGION = {"ko": "ko-KR"}
 
 # Hop-by-hop and framing headers; httpx has already decoded the body.
 _DROP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "content-encoding",
                  "content-length", "server", "date"}
-# Every result article in SearXNG's HTML carries this class.
+# Result-article marker in SearXNG's HTML
 _HTML_RESULT = b'class="result result-'
 
 search_client: httpx.AsyncClient | None = None
@@ -76,8 +73,7 @@ coalescer = Coalescer()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global search_client, proxy_client
-    # Search pool sized to the gate, so a slot never waits on a connection; the
-    # passthrough has its own pool and cannot starve searches.
+    # Search pool sized to the gate; passthrough on its own pool
     search_client = httpx.AsyncClient(
         base_url=SEARXNG_URL,
         timeout=httpx.Timeout(UPSTREAM_TIMEOUT_S, connect=CONNECT_TIMEOUT_S,
@@ -114,13 +110,13 @@ async def health() -> dict[str, Any]:
 
 @dataclass
 class Answer:
-    """What SearXNG sent for a search, as sent."""
+    """A SearXNG search response, verbatim."""
     status: int
     media_type: str
     body: bytes
 
     def has_results(self) -> bool:
-        """A suspended engine answers empty; an empty answer is never cached."""
+        """False for an empty answer (e.g. a suspended engine); never cached."""
         if "json" in self.media_type:
             try:
                 return bool(json.loads(self.body).get("results"))
@@ -140,8 +136,7 @@ class UpstreamError(Exception):
 
 
 async def _search_params(req: Request) -> dict[str, str]:
-    """Search parameters from the query string and a form body (SearXNG reads
-    both), a repeated key keeping its first value as SearXNG does."""
+    """Query-string and form parameters, first value per key, as SearXNG reads them."""
     items = list(req.query_params.multi_items())
     if req.method == "POST":
         try:

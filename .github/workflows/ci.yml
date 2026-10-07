@@ -34,7 +34,7 @@ jobs:
           shellcheck -S warning -e SC1091 scripts/*.sh
 
   python:
-    name: Test scheduler
+    name: Lint and test Python
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -51,7 +51,7 @@ jobs:
       - name: Lint Python
         run: ruff check scheduler services
 
-      - name: Scheduler and LiteLLM routing tests
+      - name: Tests
         run: pytest scheduler/tests services/litellm/tests services/crawl4ai-shim/tests services/search-shim/tests -q
 
   compose:

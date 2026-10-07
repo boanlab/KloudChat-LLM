@@ -1,11 +1,10 @@
 """OpenAI-compatible transcription front end over the GPU nodes' vllm-whisper backends.
 
-One endpoint, `/v1/audio/transcriptions`, forwarded to the healthy backend with
-the fewest in-flight requests. The `model` field is rewritten to MODEL_NAME:
-vLLM 404s any other name, and clients default to `whisper-1`. With every
-backend unhealthy the first one is still tried, so the caller gets a 5xx. No
-OpenRouter fallback here: with WHISPER_URLS empty this shim is not deployed and
-LiteLLM registers OpenRouter STT instead.
+`/v1/audio/transcriptions` goes to the healthy backend with the fewest in-flight
+requests; with none healthy, to the first. `model` is rewritten to MODEL_NAME
+(vLLM 404s other names; clients default to `whisper-1`). No OpenRouter fallback:
+with WHISPER_URLS empty the shim is not deployed and LiteLLM registers
+OpenRouter STT instead.
 """
 from __future__ import annotations
 
@@ -40,18 +39,18 @@ HEALTH_PROBE_TIMEOUT_SEC = float(os.getenv("HEALTH_PROBE_TIMEOUT_SEC", "2.0"))
 HEALTH_CACHE_TTL_SEC    = float(os.getenv("HEALTH_CACHE_TTL_SEC", "10"))
 TRANSCRIBE_TIMEOUT_SEC  = float(os.getenv("TRANSCRIBE_TIMEOUT_SEC", "900"))
 
-# In-flight count per backend; in-process state, one shim replica per stack.
+# In-flight count per backend; one shim replica per stack
 _INFLIGHT: dict[str, int] = defaultdict(int)
 _INFLIGHT_LOCK = asyncio.Lock()
 
-# Cached backend health, refreshed every HEALTH_CACHE_TTL_SEC.
+# Backend health, refreshed every HEALTH_CACHE_TTL_SEC
 _HEALTH: dict[str, bool] = {}
 _HEALTH_AT: float = 0.0
 _HEALTH_LOCK = asyncio.Lock()
 
 LOG.info("Whisper backends: %s", ", ".join(BACKENDS))
 
-app = FastAPI(title="KloudChat Whisper Shim", version="0.1.0")
+app = FastAPI(title="KloudChat Whisper Shim")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -168,8 +167,7 @@ async def transcribe(request: Request) -> Response:
         finally:
             await _dec_inflight(backend)
 
-    # Status and headers mirrored (Content-Type varies with response_format);
-    # hop-by-hop headers dropped, Content-Length regenerated.
+    # Backend status and headers (Content-Type varies with response_format), minus hop-by-hop
     excluded = {"content-length", "transfer-encoding", "connection"}
     headers = {k: v for k, v in r.headers.items() if k.lower() not in excluded}
     return Response(content=r.content, status_code=r.status_code, headers=headers,

@@ -96,10 +96,10 @@ Each deployment carries a 3600 s request timeout and a concurrency-gate cap of
 
 `qwen3.5-122b` is the quality and judging tier: Qwen3.5-122B-A10B (MoE, 10B
 active) in NVFP4 (`txn545/Qwen3.5-122B-A10B-NVFP4`), served at 131072 context
-with `--gpu-memory-utilization 0.85` and at most 32 concurrent sequences. That
-is a whole GB10 node, so it never shares one with the 27B: it is pool-placed
-with priority 30, seats first, and the 27B goes to the head node. A
-single-node cluster cannot hold both; leave `qwen3.5-122b` out of
+with `--gpu-memory-utilization 0.85` and at most 32 concurrent sequences: a
+whole GB10 node. It is pool-placed with priority 30, so it seats before the 27B,
+which takes the remaining nodes. A single-node cluster cannot hold both; leave
+`qwen3.5-122b` out of
 `VLLM_MODELS` there (it stays reachable as `qwen/qwen3.5-122b-a10b`). It is
 registered under `local/` and `strict-local/qwen3.5-122b` with a 3600 s
 timeout and a concurrency-gate cap of 32. Titles, memory extraction, query
@@ -111,8 +111,7 @@ listing it gives a pool card to the coder instead of a second 27B. Unlisted,
 it is reachable as `qwen/qwen3-coder-next` through OpenRouter. Deployed, it
 gets the same treatment as the chat tiers: a hidden OpenRouter twin
 (`qwen/qwen3-coder-next`, 0.12 / 0.80 $ per 1M), a `fallbacks` line, and a
-concurrency-gate cap of 32 on `local/` and `strict-local/`. `manage.sh team
-sync` includes whichever of the three names applies.
+concurrency-gate cap of 32 on `local/` and `strict-local/`.
 
 **Quantisation.** Chat is NVFP4, the coder FP8, retrieval BF16, transcription
 FP16. The supported cards (GB10, RTX 5090, RTX PRO 5000, RTX PRO 6000) execute
@@ -163,8 +162,7 @@ OpenRouter default. Embeddings are unaffected.
   backend.
 - **No URL**: no `local/*` name. With an OpenRouter key the model is reachable
   under its slug (`qwen/qwen3.8-27b`, `qwen/qwen3.5-122b-a10b`,
-  `qwen/qwen3-coder-next`) at OpenRouter's
-  price.
+  `qwen/qwen3-coder-next`) at OpenRouter's price.
 - **Discovery**: `gen-litellm-config.sh` polls `/v1/models` at each URL and
   registers only the nodes that answer.
 - **Multi-node**: one deployment per node under the same name; the router
@@ -175,17 +173,14 @@ what runs where and starts it. By hand: `./scripts/manage-vllm.sh up <service>`
 on the node. What fits on which card: [GPU memory](gpu-memory.md#per-node-class).
 
 **Ranking.** `placement` decides which cards a model may compete for;
-`priority` decides who wins among models competing for the same ones:
-`qwen3.5-122b` (30), `qwen3.8-27b` (20), `qwen3-coder-next` (10), `bge-m3`
-(5), `whisper-large-v3` (4), `bge-reranker-v2-m3` (2): the 122B claims a pool
-node before the 27B is seated. Ties seat the largest model first.
-Once every model has an instance, `share` weights extra instances among models
-competing for the same nodes.
+`priority` (the table above) decides who wins among models competing for the
+same ones, highest first, ties to the largest model. Once every model has an
+instance, `share` weights extra instances among models competing for the same
+nodes.
 
 - **Artifacts**: no separate model. The UI produces artifacts on the chat
   deployment.
-- **Media**: no local backend. Images, audio and video pass through to
-  OpenRouter.
+- **Media**: no local backend; see [Media](#media).
 
 ### Local to OpenRouter fallback
 
@@ -253,8 +248,8 @@ prompt and response bodies are not.
 
 `qwen3.8-27b` serves 262144 wherever it is placed (its floor is the native
 context). `qwen3.5-122b` serves 131072 (`ctx_target` caps it below the native
-262144); its node's room goes to 16 sized sessions instead. The scheduler writes the per-node
-value as `VLLM_<PREFIX>_MAX_LEN`.
+262144) and sizes KV for 16 sessions. The scheduler writes the per-node value
+as `VLLM_<PREFIX>_MAX_LEN`.
 
 ### Embeddings
 
@@ -294,20 +289,6 @@ MINIMAX_MODELS=(minimax-m3)
 
 `sonar-pro` does not replace the stack's deep-research service, which drives
 a local model over SearXNG.
-
-## Setup flow
-
-```bash
-# 1. .env: OPENROUTER_API_KEY and NODES_VLLM (URLs are written by the scheduler)
-./scripts/gen-env.sh && $EDITOR .env
-
-# 2. Weights on the GPU node (skip without a local GPU)
-./scripts/download-vllm-models.sh           # what this card can serve
-./scripts/download-vllm-models.sh --help    # aliases and special targets
-
-# 3. Generate configuration and start
-./scripts/setup.sh all   # restart the stack only: setup.sh up
-```
 
 ## Media
 
