@@ -53,7 +53,8 @@ VRAM per model, as the planner sizes it:
 
 | Model | Requirement |
 |---|---|
-| Chat (`qwen3.8-27b`, 21.3 GiB, 262144 context floor) | RTX PRO 5000 (48 GB) or larger. An RTX 5090 cannot hold it at the floor and delegates it |
+| Chat, default (`qwen3.8-27b`, 21.3 GiB, 262144 context floor) | RTX PRO 5000 (48 GB) or larger. An RTX 5090 cannot hold it at the floor and delegates it |
+| Quality and judging (`qwen3.5-122b`, ~72 GiB, 131072 context floor) | GB10 or RTX PRO 6000, alone on the node; a second GPU node beside the 27B's |
 | Coding (`qwen3-coder-next`, 75 GiB) | GB10 or RTX PRO 6000, alone on the card |
 | Retrieval and transcription | Any supported card |
 
@@ -104,13 +105,17 @@ the derived one.
 - `./scripts/setup.sh vllm` rsyncs the repository to every node in
   `NODES_VLLM` (under `KLOUDCHAT_REMOTE_DIR`, default `KloudChat-LLM`) and
   runs `install-vllm.sh` there.
+- The scheduler names each node by the last octet of its IPv4 address, or the
+  first label of its hostname. Two targets that would share a name (for
+  example `10.1.0.11` and `10.2.0.11`) are named by their full host instead;
+  a target listed twice is an error.
 
 **Adding a node**
 
 1. Append the SSH target to `NODES_VLLM` in `.env`
 2. `./scripts/setup.sh vllm`
-3. `./scripts/setup.sh all` (or `./scripts/setup.sh scheduler apply` followed
-   by `docker compose restart whisper-shim`) refreshes placement and URLs
+3. `./scripts/setup.sh all`: placement, LiteLLM config and the transcription
+   profile are refreshed together
 
 **One-time setup on each remote node**
 

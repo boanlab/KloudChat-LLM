@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Usage: download-vllm-models.sh [alias|all|recommended] [...]
 #
-# Downloads weights after checking the card (compute capability, usable memory).
+# Downloads weights after checking the card (supported model, usable memory).
 # Weights this node cannot serve are skipped with the reason.
 #
 # No arguments: `recommended whisper-large-v3`.
 #
 # Aliases (lib.sh::VLLM_MODELS):
 #   qwen3.8-27b-nvfp4   unsloth/Qwen3.8-27B-NVFP4              22 GB  chat
+#   qwen3.5-122b-nvfp4  txn545/Qwen3.5-122B-A10B-NVFP4         72 GB  quality, judging
 #   qwen3-coder-next    Qwen/Qwen3-Coder-Next-FP8              75 GB  coding
 #   bge-m3 / bge-reranker-v2-m3                                 3 GB  retrieval
 #   whisper-large-v3    openai/whisper-large-v3                 4 GB  transcription

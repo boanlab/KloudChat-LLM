@@ -2,6 +2,7 @@
 # them through VLLM_*_URL in the orchestrator's .env.
 #
 #   vllm-qwen27b    default chat — Qwen3.8-27B (dense, vision, 262K)
+#   vllm-qwen122b   quality and judging — Qwen3.5-122B-A10B (MoE, NVFP4, a node to itself)
 #   vllm-codernext  coding — Qwen3-Coder-Next-80B (FP8, 262K)
 #   vllm-rerank     retrieval reranking — BAAI/bge-reranker-v2-m3
 #   vllm-bgem3      retrieval embeddings — BAAI/bge-m3
@@ -53,7 +54,7 @@ services:
       - '{"enable_thinking": false}'
       # Required: the hybrid model's conv-state cache bounds CUDA-graph capture
       - --max-num-seqs
-      - "${VLLM_QWEN27B_MAX_NUM_SEQS:-64}"
+      - "${VLLM_QWEN27B_MAX_NUM_SEQS:-128}"
       # MTP speculative decoding from the checkpoint's own draft head
       - --speculative-config
       - '{"method":"mtp","num_speculative_tokens":${VLLM_QWEN27B_SPEC_TOKENS:-5}}'
@@ -80,6 +81,65 @@ services:
       timeout: 5s
       retries: 5
       start_period: 600s
+
+  # Quality and judging. MoE 10B of 122B active, NVFP4; 0.85 of a GB10 node,
+  # so it never shares a node with the 27B.
+  vllm-qwen122b:
+    container_name: vllm-qwen122b
+    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
+    restart: unless-stopped
+    ipc: host
+    command:
+      - --model
+      - /model
+      - --served-model-name
+      - local/qwen3.5-122b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "${VLLM_QWEN122B_MAX_LEN:-131072}"
+      - --gpu-memory-utilization
+      - "${VLLM_QWEN122B_GPU_UTIL:-0.85}"
+      - --kv-cache-dtype
+      - fp8
+      - --max-num-batched-tokens
+      - "${VLLM_QWEN122B_MAX_BATCHED_TOKENS:-16384}"
+      - --max-num-seqs
+      - "${VLLM_QWEN122B_MAX_NUM_SEQS:-32}"
+      # Qwen3.5 tool-call and <think> formats
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_xml
+      - --reasoning-parser
+      - qwen3
+      # Thinking off by default; enabled per request via chat_template_kwargs
+      - --default-chat-template-kwargs
+      - '{"enable_thinking": false}'
+      - --tensor-parallel-size
+      - "${VLLM_QWEN122B_TP:-1}"
+      - --trust-remote-code
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_QWEN122B_DIR:-qwen3.5-122b-nvfp4}:/model:ro
+    ports:
+      - "8004:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_QWEN122B_DEVICES:-all}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 900s
 
   # Coding, larger. Hybrid attention: KV on 12 of 48 layers, so 262K fits.
   vllm-codernext:

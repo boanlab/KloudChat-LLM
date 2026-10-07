@@ -195,9 +195,13 @@ reconcile_topups() {
     exp_s=$(date -d "$exp" +%s 2>/dev/null || echo 0)
     if (( exp_s > 0 && now >= exp_s )); then
       if [[ "$orig" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then   # never write max_budget:null (unlimited)
-        litellm_post "/user/update" "$(jq -n --arg u "$uid" --argjson b "$orig" '{user_id:$u, max_budget:$b}')" >/dev/null 2>&1 \
-          && info "topup expired → restored: $uid monthly limit \$$orig"
-        changed=1
+        if litellm_post "/user/update" "$(jq -n --arg u "$uid" --argjson b "$orig" '{user_id:$u, max_budget:$b}')" >/dev/null 2>&1; then
+          info "topup expired → restored: $uid monthly limit \$$orig"
+          changed=1
+        else
+          warn "topup expired but restoring $uid to \$$orig failed — kept in the ledger for the next run"
+          keep=$(jq -c --argjson x "$e" '. + [$x]' <<<"$keep")
+        fi
       else
         warn "invalid original_budget in topup ledger ('$orig') — keeping $uid entry, manual check needed"
         keep=$(jq -c --argjson x "$e" '. + [$x]' <<<"$keep")

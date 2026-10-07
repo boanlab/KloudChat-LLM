@@ -51,6 +51,23 @@ sudo dmesg -T | grep -iE "nvrm|oom" | tail -10
 | `NVRM: Out of memory` (dmesg) | Unified memory (GB10): page cache plus co-resident vLLM | `sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'`. If it recurs, shrink that node's models and re-run [placement](../scheduler/README.md) |
 | OS killer during weight load | RAM smaller than the weights | Stop other containers |
 
+## Placement apply reports failures
+
+`./scripts/setup.sh scheduler apply` prints `failed: ...` per action and
+exits 1; the rest of the plan is applied. Inside `setup.sh all` the same
+failure is a warning (`placement failed`) and the run continues with the
+routes `apply` wrote to `.env`.
+
+- A failure on a node stops that node's remaining actions; other nodes
+  continue.
+- A service whose start or recreate failed is left out of the `VLLM_*_URL`
+  and `WHISPER_URLS` routes written to `.env`, so LiteLLM never registers it.
+- A node classified `unsupported` holds nothing; the plan says so in its
+  notes.
+
+Fix the node (`./scripts/manage-vllm.sh status` and `logs <svc>` there), then
+re-run `./scripts/setup.sh all`; an unchanged plan applies nothing.
+
 ## Swap thrash (mid-stream stall)
 
 When the vLLM KV cache is pushed into swap, per-token latency grows into
@@ -74,7 +91,8 @@ The vLLM discovery in `gen-litellm-config.sh` hit a TCP failure. If no local
 models appear in the UI, discovery returned nothing.
 
 ```bash
-# Ports: qwen27b 8001, bge-m3 8003, codernext 8008, rerank 8009, whisper 9000
+# Ports: qwen27b 8001, bge-m3 8003, qwen122b 8004, codernext 8008, rerank 8009,
+# whisper 9000
 curl -sf http://<vllm-host>:8001/v1/models | jq '.data[].id'
 ss -tlnp | grep -E '800[1-9]|9000'
 docker ps --filter name=vllm- --format '{{.Names}}\t{{.Status}}'
@@ -173,7 +191,7 @@ See [models.md](models.md#retrieval) for the two stages.
 |---|---|
 | `manage.sh user list` / `team list` / `key list` | LiteLLM users, teams and virtual keys |
 | `manage.sh user usage [--user <email>]` | Per-user spend against the monthly budget |
-| `manage.sh user topup --user <email> --amount <N>` | Temporarily raise the monthly limit by $N. The original limit is recorded in `data/ledger/topups.json` and restored at the monthly reset |
+| `manage.sh user topup --user <email> --amount <N>` | Temporarily raise the monthly limit by $N. The original limit is recorded in `data/ledger/topups.json` and restored by the next `manage.sh user usage` or `topup` run after the monthly reset; a failed restore stays in the ledger and is retried then |
 | `manage.sh key show [--user <email>]` | Plaintext keys from the local ledger |
 | `manage-vllm.sh status` | vLLM container and healthcheck status |
 | `manage-vllm.sh logs <svc>` | vLLM logs |

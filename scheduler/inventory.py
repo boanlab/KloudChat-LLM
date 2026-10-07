@@ -17,15 +17,15 @@ import shlex
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
 
 from scheduler.types import GB, NodeSpec
 
-#: OS share on a unified-memory node, excluded from GPU capacity
-#: (lib.sh has the same figure)
+#: OS share on a unified-memory node, excluded from GPU capacity; must equal
+#: lib.sh::UNIFIED_RESERVE_GB
 _UNIFIED_RESERVE_BYTES: int = 12 * GB
 
-#: Containers this stack owns (applier.MANAGED_SERVICE_PREFIX)
+#: Containers this stack owns; must equal applier.MANAGED_SERVICE_PREFIX
 MANAGED_PREFIX: str = "vllm-"
 
 
@@ -102,7 +102,7 @@ UNSUPPORTED_GPU_CLASS: str = "unsupported"
 
 
 def _classify_gpu_name(name: str) -> str:
-    """Marketing name to class token, in lib.sh::detect_gpu_class's vocabulary."""
+    """Class token in lib.sh::detect_gpu_class's vocabulary; "unknown" for an empty name."""
     name = (name or "").lower()
     if "gb10" in name:
         return "gb10"
@@ -115,36 +115,41 @@ def _classify_gpu_name(name: str) -> str:
     return UNSUPPORTED_GPU_CLASS if name.strip() else "unknown"
 
 
-#: GPU memory per compute process, labelled with its container or "-" for the host
+#: GPU memory per compute process: container name or "-" for the host, MiB, card ordinal
 _VRAM_BY_OWNER = r"""
 map=$(docker ps --no-trunc --format '{{.ID}} {{.Names}}' 2>/dev/null)
-nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null |
-while IFS=, read -r pid mem; do
-  pid=$(echo "$pid" | tr -d ' '); mem=$(echo "$mem" | tr -d ' ')
+cards=$(nvidia-smi --query-gpu=index,gpu_uuid --format=csv,noheader 2>/dev/null | tr -d ' ')
+nvidia-smi --query-compute-apps=pid,used_memory,gpu_uuid --format=csv,noheader,nounits 2>/dev/null |
+while IFS=, read -r pid mem uuid; do
+  pid=$(echo "$pid" | tr -d ' '); mem=$(echo "$mem" | tr -d ' '); uuid=$(echo "$uuid" | tr -d ' ')
   [ -n "$pid" ] || continue
   cid=$(sed -n 's|.*docker-\([0-9a-f]*\)\.scope.*|\1|p' "/proc/$pid/cgroup" 2>/dev/null | head -1)
   name=$(echo "$map" | awk -v c="$cid" 'c != "" && $1 == c {print $2; exit}')
-  echo "${name:--} ${mem}"
+  card=$(echo "$cards" | awk -F, -v u="$uuid" '$2 == u {print $1; exit}')
+  echo "${name:--} ${mem} ${card:-0}"
 done
 """
 
 
-def _probe_vram_by_owner(host: str, managed: frozenset) -> tuple[int, int]:
-    """(foreign bytes, our bytes) of GPU memory held; our containers are memory the plan may reassign."""
+def _probe_vram_by_owner(host: str, managed: frozenset) -> tuple[int, int, dict[int, int]]:
+    """GPU memory held: (bytes outside ``managed``, bytes inside it, outside bytes per card ordinal)."""
     code, out, _ = _ssh(host, _VRAM_BY_OWNER, timeout=10)
     if code != 0 or not out.strip():
-        return 0, 0
+        return 0, 0, {}
     foreign = ours = 0
+    by_card: dict[int, int] = {}
     for line in out.strip().splitlines():
         parts = line.split()
-        if len(parts) != 2 or not parts[1].isdigit():
+        if len(parts) < 2 or not parts[1].isdigit():
             continue
         name, mib = parts[0], int(parts[1])
+        card = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         if name in managed:
             ours += mib * 1024 * 1024
         else:
             foreign += mib * 1024 * 1024
-    return foreign, ours
+            by_card[card] = by_card.get(card, 0) + mib * 1024 * 1024
+    return foreign, ours, by_card
 
 
 def _probe_gpu_class(host: str) -> str:
@@ -248,7 +253,8 @@ def _probe_node_once(
         )
 
     managed = frozenset(c for c in running if c.startswith(MANAGED_PREFIX))
-    foreign, _ours = _probe_vram_by_owner(host, managed)
+    foreign, _ours, by_card = _probe_vram_by_owner(host, managed)
+    foreign_by_card = tuple(by_card.get(i, 0) for i in range(max(1, gpu_count)))
 
     spec = NodeSpec(
         node_id=node_id,
@@ -259,6 +265,7 @@ def _probe_node_once(
         usable_vram_bytes=usable,
         gpu_count=gpu_count,
         foreign_vram_bytes=foreign,
+        foreign_vram_by_card=foreign_by_card,
         arch=arch,
         checkpoints=(
             _probe_checkpoints(host, models_root) if models_root else None
@@ -297,3 +304,21 @@ def node_id_from_host(host: str) -> str:
     if len(parts) == 4 and all(p.isdigit() for p in parts):
         return parts[-1]
     return parts[0]
+
+
+def node_ids_for_hosts(hosts: Sequence[str]) -> dict[str, str]:
+    """Node id to SSH target, in input order.
+
+    A short id two targets share falls back to the bare host (no ``user@``).
+
+    Raises:
+        ValueError: a target listed twice.
+    """
+    short = [node_id_from_host(h) for h in hosts]
+    out: dict[str, str] = {}
+    for host, sid in zip(hosts, short, strict=True):
+        nid = sid if short.count(sid) == 1 else host.split("@")[-1]
+        if nid in out:
+            raise ValueError(f"NODES_VLLM lists {host} twice")
+        out[nid] = host
+    return out

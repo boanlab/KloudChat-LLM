@@ -8,8 +8,9 @@ Endpoints:
   GET    /health               readiness, embedding availability
 
 A collection is an opaque id minted by KloudChat per (owner, agent) and scopes
-every operation; nothing lists or searches across collections. Stored data is
-derived (chunks and vectors), rebuildable from KloudChat's source rows.
+every operation; nothing lists or searches across collections. A collection holds
+one embedding model's vectors: writes and searches use the model its rows hold.
+Stored data is derived (chunks and vectors), rebuildable from KloudChat's source rows.
 """
 from __future__ import annotations
 
@@ -43,8 +44,8 @@ RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.1"))
 #: relevance decision.
 RERANK_RECALL_DISTANCE = float(os.getenv("RERANK_RECALL_DISTANCE", "0.85"))
 
-#: Embedding models in preference order. The first that answers is used and its
-#: name is stored on every row, so vector spaces never mix.
+#: Embedding models in preference order. The first that answers embeds a new
+#: collection; its name is stored on every row, and the collection keeps it.
 EMBED_MODELS = [
     m.strip() for m in os.getenv("EMBED_MODELS", "local/bge-m3,text-embedding-3-small").split(",")
     if m.strip()
@@ -118,12 +119,22 @@ class _Embedder:
     def __init__(self) -> None:
         self.model: Optional[str] = None
 
-    async def embed(self, texts: list[str]) -> tuple[list[list[float]], str]:
+    async def embed(self, texts: list[str], *, model: Optional[str] = None,
+                    remember: bool = True) -> tuple[list[list[float]], str]:
+        """Vectors and the model that produced them.
+
+        Args:
+            model: one model, no fallback (a collection's own).
+            remember: cache the answering model as the preference for the next
+                unpinned call; off for health checks."""
         if not texts:
-            return [], self.model or ""
-        candidates = ([self.model] if self.model else []) + [
-            m for m in EMBED_MODELS if m != self.model
-        ]
+            return [], model or self.model or ""
+        if model:
+            candidates = [model]
+        else:
+            candidates = ([self.model] if self.model else []) + [
+                m for m in EMBED_MODELS if m != self.model
+            ]
         last: str = "no embedding model configured"
         headers = {"Authorization": f"Bearer {LITELLM_KEY}"} if LITELLM_KEY else {}
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
@@ -138,13 +149,14 @@ class _Embedder:
                     rows = (r.json() or {}).get("data") or []
                     if len(rows) != len(texts):
                         raise ValueError(f"{len(rows)} vectors for {len(texts)} inputs")
-                    self.model = model
+                    if remember:
+                        self.model = model
                     return [list(map(float, row["embedding"])) for row in rows], model
                 except (httpx.HTTPError, KeyError, ValueError, TypeError) as exc:
                     last = f"{model}: {exc}"
                     log.info("embedding via %s failed: %s", model, exc)
                     # A failed model loses its cached preference.
-                    if self.model == model:
+                    if remember and self.model == model:
                         self.model = None
         raise HTTPException(status_code=503, detail=f"embeddings unavailable ({last})")
 
@@ -156,6 +168,22 @@ def _to_pgvector(values: list[float]) -> str:
 
 
 embedder = _Embedder()
+
+
+#: The model a collection's rows were embedded with: the one holding most rows.
+_COLLECTION_MODEL = """
+SELECT embed_model
+  FROM chunks
+ WHERE collection = $1 AND embed_model <> ''
+ GROUP BY embed_model
+ ORDER BY count(*) DESC
+ LIMIT 1
+"""
+
+
+async def collection_model(conn, collection: str) -> str:
+    """Model the collection is indexed with, '' for an empty collection."""
+    return await conn.fetchval(_COLLECTION_MODEL, collection) or ""
 
 
 #: Declared width of the existing `embedding` column (pgvector stores it in
@@ -227,7 +255,7 @@ async def health() -> dict[str, Any]:
 
     embed_model = ""
     try:
-        _, embed_model = await embedder.embed(["health"])
+        _, embed_model = await embedder.embed(["health"], remember=False)
     except HTTPException:
         pass
     mismatch = getattr(app.state, "dim_error", "")
@@ -257,7 +285,10 @@ async def put_document(doc: Document) -> dict[str, Any]:
                 # Empty document: a successful delete.
                 return {"chunks": 0, "model": ""}
 
-            vectors, model = await embedder.embed(pieces)
+            # One vector space per collection: rows join the model the collection
+            # holds, or the write fails.
+            pinned = await collection_model(conn, doc.collection)
+            vectors, model = await embedder.embed(pieces, model=pinned or None)
             await conn.executemany(
                 """
                 INSERT INTO chunks
@@ -317,12 +348,15 @@ async def _rerank(query: str, passages: list[dict]) -> Optional[list[dict]]:
 
 @app.post("/search")
 async def search(q: Query) -> dict[str, Any]:
-    """Nearest passages inside one collection, from rows in the current model's vector space."""
+    """Nearest passages inside one collection, embedded with the collection's own model."""
     if app.state.dim_error:
         raise HTTPException(status_code=503, detail=app.state.dim_error)
-    vectors, model = await embedder.embed([q.query])
-    literal = _to_pgvector(vectors[0])
     async with app.state.pool.acquire() as conn:
+        model = await collection_model(conn, q.collection)
+        if not model:
+            return {"passages": [], "model": "", "reranked": False}
+        vectors, model = await embedder.embed([q.query], model=model)
+        literal = _to_pgvector(vectors[0])
         rows = await conn.fetch(
             """
             SELECT doc_name, source_url, ordinal, body,

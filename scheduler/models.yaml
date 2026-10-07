@@ -4,13 +4,13 @@
 # on disk — see "Derived values" at the bottom.
 #
 # placement: "head" is the first target in NODES_VLLM (retrieval, transcription);
-# "pool" is every other node (the coder); unset is anywhere (chat). A single-node
-# cluster has no pool and the field is ignored.
+# "pool" is every other node (the 122B, the coder); unset is anywhere (chat). A
+# single-node cluster has no pool and the field is ignored.
 
 models:
-  # Unified chat: default chat, titles, memory extraction, deep research,
-  # coding agents. Dense, hybrid attention (16 of 64 layers hold KV). NVFP4
-  # build. Any node; spare cards take replicas that LiteLLM balances across.
+  # Chat: conversation, vision, coding, deep research, titles, memory
+  # extraction. Dense, hybrid attention (16 of 64 layers hold KV). NVFP4 build.
+  # Any node; every node with room takes a replica, balanced by LiteLLM.
   - id: qwen3.8-27b
     hf_repo: Qwen/Qwen3.8-27B
     dir: qwen3.8-27b-nvfp4
@@ -21,8 +21,25 @@ models:
     ctx_floor: 262144
     priority: 20
 
-  # Coding. 80B-A3B, FP8, hybrid attention (12 of 48 layers hold KV). 75 GiB,
-  # so it takes a pool card to itself.
+  # Quality and judging: hard questions, review, grading. MoE, 10B of 122B
+  # active, hybrid attention. NVFP4 build. Takes a pool node to itself (above
+  # the 27B's priority, so it seats first and the 27B lands elsewhere). On a
+  # single-node cluster it would crowd out the 27B: leave it out of VLLM_MODELS.
+  - id: qwen3.5-122b
+    hf_repo: txn545/Qwen3.5-122B-A10B-NVFP4
+    dir: qwen3.5-122b-nvfp4
+    env_prefix: VLLM_QWEN122B
+    port: 8004
+    # Served at 131072, not the native 262144: the room goes to concurrency
+    ctx_floor: 131072
+    ctx_target: 131072
+    # Full-length sessions to size KV for; 16 comes to about 0.85 of a GB10
+    concurrent_sessions: 16
+    priority: 30
+    placement: pool
+
+  # Coding. 80B-A3B, FP8, hybrid attention (12 of 48 layers hold KV). 75 GiB:
+  # a pool card to itself. In the catalogue, not in the default VLLM_MODELS.
   - id: qwen3-coder-next
     hf_repo: Qwen/Qwen3-Coder-Next-FP8
     dir: qwen3-coder-next
@@ -56,6 +73,7 @@ models:
     runner: pooling
     # Query and passage share the window
     ctx_floor: 8192
+    priority: 2
     placement: head
 
   # Retrieval embeddings. OpenAI fallback wired in gen-litellm-config.sh.

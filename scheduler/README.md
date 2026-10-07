@@ -12,16 +12,17 @@ python3 -m scheduler apply -y      # apply without confirmation
 ```
 
 `setup.sh all` runs `apply -y` when `NODES_VLLM` is set, unless
-`KLOUDCHAT_SKIP_SCHEDULER=1`. Every subcommand accepts `--hosts` and `--models`
-(CSV) to override `.env`, and `--replicas N` to cap instances per model (`1`
-disables replication).
+`KLOUDCHAT_SKIP_SCHEDULER=1`; `setup.sh scheduler <subcommand>` forwards to the
+module. Every subcommand accepts `--hosts` and `--models` (CSV) to override
+`.env`, and `--replicas N` to cap instances per model (`1` disables
+replication).
 
 ## Input
 
 ```bash
 # .env
 NODES_VLLM=ops@gpu-1,ops@gpu-2       # SSH targets, head node first
-VLLM_MODELS=qwen3.8-27b,qwen3-coder-next,bge-m3
+VLLM_MODELS=qwen3.8-27b,qwen3.5-122b,bge-m3
 VLLM_MODELS_ROOT=/var/lib/vllm/models
 KLOUDCHAT_REMOTE_DIR=KloudChat-LLM   # compose workdir on each node (env or .env)
 ```
@@ -34,18 +35,33 @@ copies excluded) is measured on every run, with an analytic estimate when the
 measurement fails. A model whose `config.json` no node can read, or that declares
 no context length, is delegated.
 
+### Node ids
+
+Each SSH target gets a short id: the last octet of an IPv4 address, otherwise
+the first hostname label (`ops@gpu-1.lan` is `gpu-1`). Two targets that would
+share a short id (`10.1.0.11` and `10.2.0.11`) are identified by their bare
+host instead (`10.1.0.11`, `10.2.0.11`); a target listed twice is an error and
+the command exits. Ids name nodes in every printout and action.
+
 ## Probing
 
 Per node, over SSH, each step tolerant of the others failing: `docker ps`,
 `nvidia-smi` (card name, count, memory per card; `/proc/meminfo` on
-unified-memory nodes), `uname -m`, GPU memory held by processes outside this
-stack, and the checkpoint directories (those with a `config.json`) under
-`VLLM_MODELS_ROOT`. A node answering nothing is retried once, then reported as
-`no answer` and left out of placement.
+unified-memory nodes), `uname -m`, GPU memory held per card by processes outside
+this stack, and the checkpoint directories (those with a `config.json`) under
+`VLLM_MODELS_ROOT`. A node answering nothing (no containers, no memory) is
+retried once, then reported as `no answer` and left out of placement.
 
 The card name classifies the node as `gb10`, `rtx5090`, `pro5000`, `pro6000` or
-`unsupported` (the same vocabulary as `lib.sh::detect_gpu_class`). A mixed box
-is sized by its smallest card and says so in `inventory`.
+`unsupported` (the same vocabulary as `lib.sh::detect_gpu_class`; `unknown`
+when the name cannot be read). A mixed box is sized by its smallest card and
+says so in `inventory`.
+
+**Foreign memory.** Every compute process `nvidia-smi` lists is attributed to
+its Docker container by cgroup. Memory held by a `vllm-*` container is this
+stack's and stays available to the plan; everything else (other containers,
+host processes) is foreign and charged to the card that holds it. `inventory`'s
+`USABLE` column is node capacity after all foreign memory.
 
 ## Node roles
 
@@ -56,7 +72,7 @@ packing:
 | `placement` | Nodes | Models |
 |---|---|---|
 | `head` | the head node only | embeddings, reranking, transcription |
-| `pool` | every node but the head | the coder |
+| `pool` | every node but the head | the 122B, the coder |
 | unset | any | chat |
 
 A pool model with no pool seat is delegated to OpenRouter rather than placed on
@@ -65,18 +81,21 @@ the head node. A single-node cluster has no pool, and `placement` is ignored.
 ## Placement
 
 0. **Unsupported cards** — a node classified `unsupported` holds nothing; the
-   plan notes it and the node drops out of every step below.
+   plan notes it and the node drops out of every step below. With no node left,
+   every model is delegated.
 1. **Coverage** — one instance of each model at its context floor, ordered by
    `priority` (highest first, ties largest first), onto the eligible node with
-   the most free capacity. Capacity differences under 1 GiB do not decide; within
-   that band the node already running the model (per `docker ps`) wins, then the
-   lowest node id.
-2. **Restoration** — remaining capacity on each card doubles contexts toward
-   their targets, furthest-from-target first.
+   the most free memory summed over its cards. Differences under 1 GiB do not
+   decide; within that band the node already running the model (per
+   `docker ps`) wins, then the lowest node id. On the node, the model takes the
+   emptiest card(s) that hold its per-card need.
+2. **Restoration** — free memory on a placement's own card(s) doubles its
+   context toward the target, furthest-from-target first, until nothing grows.
 3. **Replication** — remaining capacity takes extra instances at the context
    floor, one per round to the model furthest below its `share:`
-   (`instances / share`), then restoration runs again for them. Shares are
-   weights among models competing for the same nodes.
+   (`instances / share`, ties by priority), on a node not already running it;
+   then restoration runs again. Shares are weights among models competing for
+   the same nodes.
 
 A node is eligible for a model when `placement` allows it, its architecture is
 in the model's `arches` (unrestricted by default), it holds the checkpoint, and
@@ -88,24 +107,25 @@ checkpoint, too few cards, or capacity.
 
 ```
 need(model, context) = weights + activation + KV(context)
-KV = bytes/token × context × concurrent sessions × 1.10
+KV = (bytes/token × context + sliding bytes/sequence) × concurrent sessions × 1.10
 ```
 
 - `activation` is 10 GiB for a generate runner and 2 GiB for a pooling one,
   capped at 12% of the card (never below 1 GiB). See
   [gpu-memory.md](../docs/gpu-memory.md).
-- Card capacity: on a discrete card, VRAM less a reserve of 8% clamped to
-  1–8 GiB; on a unified-memory node (GB10), system RAM less 12 GiB. GPU memory
-  held by processes outside this stack is subtracted too. A multi-card node's
-  capacity is split evenly across its cards.
+- Node capacity: on discrete cards, `cards × VRAM` (the smallest card) less one
+  reserve of 8% of a card clamped to 1–8 GiB; on a unified-memory node (GB10),
+  system RAM less 12 GiB. The node capacity is split evenly across its cards;
+  each card's free memory is its share less the foreign memory held on that
+  card.
 - KV bytes per token: `2 · L_kv · H · d · β` (MHA/GQA) or `L · latent · β`
   (MLA), over the full-attention layers only, at FP8. Sliding-window layers are
   charged a flat amount per sequence.
 - `concurrent_sessions` is a sizing assumption: on a card that cannot hold the
   declared width it is halved down to fit, and the plan says so. The context
   floor is never traded away.
-- `gpu_util` is an output: per-card need over the card's total VRAM, rounded up
-  to two decimals and clamped to 0.05–0.95.
+- `gpu_util` is an output: per-card need over the card's total memory, rounded
+  up to two decimals and clamped to 0.05–0.95.
 
 ### Tensor parallelism
 
@@ -132,8 +152,8 @@ confirmation unless `-y`. Per node it:
 
 - writes `{env_prefix}_MAX_LEN` and `{env_prefix}_GPU_UTIL` for each placed
   model into `KLOUDCHAT_REMOTE_DIR/.env`; `{env_prefix}_TP` only when above 1
-  or to reset a sharded node; `{env_prefix}_DEVICES` only on
-  multi-card nodes or to clear a stale value;
+  or to reset a sharded node; `{env_prefix}_DEVICES` only on multi-card nodes
+  or to overwrite a stale value;
 - starts (`compose up -d`) services the plan adds, stops `vllm-*` services it
   drops, and recreates (`--force-recreate`) a running service only where one of
   its options changed. Containers outside the `vllm-*` prefix are never touched.
@@ -141,8 +161,14 @@ confirmation unless `-y`. Per node it:
 In the orchestrator's `.env` it writes `{env_prefix}_URL` (a CSV of
 `http://host:port`) for every model in models.yaml, empty for models not
 placed, and `WHISPER_URLS` in place of the transcription model's `_URL`. Only
-changed keys are written. Re-applying an unchanged plan does nothing. A failing
-node does not stop the others; any failure exits 1.
+changed keys are written. Re-applying an unchanged plan does nothing.
+
+**On failure.** Actions run node by node in order. The first failing action on a
+node skips that node's remaining actions (an env write precedes the recreate
+that reads it); the other nodes continue. The orchestrator `.env` is still
+written, with the URL of every service whose start or recreate failed or was
+skipped left out of the values being written. Every failed and skipped action
+is printed and the command exits 1.
 
 ## Layout
 
@@ -150,13 +176,13 @@ node does not stop the others; any failure exits 1.
 |---|---|
 | `models.yaml` | Model definitions |
 | `registry.py` | YAML loader; declared and derived values into `ModelSpec` |
-| `inventory.py` | SSH probing: GPU class, VRAM, architecture, running services, foreign memory, checkpoints |
+| `inventory.py` | SSH probing: GPU class, VRAM, architecture, running services, foreign memory per card, checkpoints; node ids |
 | `model_metadata.py` | `config.json` to layer count, KV heads, dtype, native context; weight size on disk |
 | `kv_model.py` | KV bytes per token and per sequence |
-| `types.py` | `ModelMetadata`, `NodeSpec`, node reserve |
+| `types.py` | `ModelMetadata`, `NodeSpec` (reserve, per-card budget and free memory) |
 | `planner.py` | Placement decision |
-| `applier.py` | Node `.env` updates, compose start/stop/recreate, orchestrator URLs |
-| `__main__.py` | CLI; reads `.env`, binds metadata, prints and applies the plan |
+| `applier.py` | Node `.env` updates, compose start/stop/recreate, orchestrator URLs, failure handling |
+| `__main__.py` | CLI; reads `.env`, resolves node ids, binds metadata, prints and applies the plan |
 
 ## Tests
 

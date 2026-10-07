@@ -147,11 +147,6 @@ def _fit_sessions(spec: ModelSpec, node: NodeSpec, free: Sequence[int],
     return None
 
 
-def _per_card(node: NodeSpec, capacity: int) -> int:
-    """One card's share of ``capacity`` (node capacity after reservations)."""
-    return capacity // max(1, node.gpu_count)
-
-
 def _assign_cards(spec: ModelSpec, node: NodeSpec, free: Sequence[int], ctx: int,
                   card_capacity: int) -> Optional[list[int]]:
     """Cards on this node that can hold the model (emptiest first), or None."""
@@ -206,15 +201,10 @@ def plan(
             result.delegations.append(Delegation(spec.id, "no GPU node available"))
         return result
 
-    # Per-card capacity, fixed for this plan
-    card_capacity = {
-        n.node_id: _per_card(
-            n, max(0, n.planner_vram_bytes - reserved.get(n.node_id, 0))
-        )
-        for n in nodes
-    }
-    # Free bytes per card, by CUDA device ordinal
-    free = {n.node_id: [card_capacity[n.node_id]] * max(1, n.gpu_count) for n in nodes}
+    # Per-card budget, fixed for this plan; free bytes per card by CUDA device
+    # ordinal, each card charged its own foreign memory
+    card_capacity = {n.node_id: n.card_budget_bytes(reserved.get(n.node_id, 0)) for n in nodes}
+    free = {n.node_id: n.card_free_bytes(reserved.get(n.node_id, 0)) for n in nodes}
     by_id = {n.node_id: n for n in nodes}
 
     # 1. Coverage: one each at the context floor, by priority then size

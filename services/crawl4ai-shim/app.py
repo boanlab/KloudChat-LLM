@@ -12,6 +12,7 @@ or {"success": false, "error"}.
 One persistent headless Chromium crawler, shared by every request. At most
 MAX_CONCURRENT_PAGES render at once (the rest wait up to QUEUE_TIMEOUT_MS and
 are then told "busy"), and a successful scrape is reused for CACHE_TTL_S.
+Every request a page makes passes the network guard before it leaves the browser.
 
 Page addresses are logged at DEBUG only; a warning names the host.
 """
@@ -22,7 +23,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import netguard
 from adultlist import AdultList
@@ -32,7 +33,7 @@ from crawl4ai import (
     CacheMode,
     CrawlerRunConfig,
 )
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from gate import Gate, PageCache
 
@@ -58,10 +59,23 @@ QUEUE_TIMEOUT_MS = int(os.environ.get("QUEUE_TIMEOUT_MS", "15000"))
 # A successful scrape is answered from memory for this long.
 CACHE_TTL_S = int(os.environ.get("CACHE_TTL_S", "900"))
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "512"))
+# Redirect hops the route guard follows for one request
+MAX_REDIRECTS = 10
 # Hosts file of adult sites a scrape refuses; baked into the image.
 ADULT_HOSTS_FILE = os.environ.get("ADULT_HOSTS_FILE", "/app/adult-hosts.txt")
 
 crawler: AsyncWebCrawler | None = None
+browser_config: BrowserConfig | None = None
+#: Bumped on every browser restart, so concurrent failures restart it once.
+generation = 0
+restart_lock = asyncio.Lock()
+#: Scrapes in a row that found the browser dead; past DEAD_LIMIT /health fails and the
+#: container is restarted.
+dead_in_a_row = 0
+DEAD_LIMIT = 3
+#: Playwright's words for a browser that is gone. The process can die (OOM, a crash)
+#: while the service stays up; every later page then fails with these until restart.
+_DEAD_BROWSER = ("has been closed", "Target closed", "Browser closed", "Connection closed")
 adult = AdultList()
 gate = Gate(MAX_CONCURRENT_PAGES)
 cache = PageCache(CACHE_TTL_S, CACHE_MAX_ENTRIES)
@@ -69,7 +83,7 @@ cache = PageCache(CACHE_TTL_S, CACHE_MAX_ENTRIES)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global crawler, adult
+    global crawler, adult, browser_config
     try:
         adult = AdultList.from_file(ADULT_HOSTS_FILE)
         LOG.info("adult site list: %d domains from %s", len(adult), ADULT_HOSTS_FILE)
@@ -86,8 +100,8 @@ async def lifespan(_app: FastAPI):
         # returned. Scripts still run.
         text_mode=True,
     )
-    crawler = AsyncWebCrawler(config=cfg)
-    await crawler.start()
+    browser_config = cfg
+    crawler = await _started(cfg)
     LOG.info("Crawl4AI ready")
     try:
         yield
@@ -99,10 +113,50 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+async def _started(cfg: BrowserConfig) -> AsyncWebCrawler:
+    started = AsyncWebCrawler(config=cfg)
+    await started.start()
+    # Every request a page makes is judged before it leaves the browser.
+    started.crawler_strategy.set_hook("on_page_context_created", _guard_context)
+    return started
+
+
+def _browser_gone(error: str) -> bool:
+    return any(words in error for words in _DEAD_BROWSER)
+
+
+async def _restart_browser(seen: int) -> None:
+    """A fresh browser in place of a dead one; a restart another request already made
+    (the generation moved on) is not repeated."""
+    global crawler, generation
+    async with restart_lock:
+        if generation != seen:
+            return
+        LOG.warning("browser is gone, starting a new one")
+        old, crawler = crawler, None
+        try:
+            if old is not None:
+                await old.close()
+        except Exception as e:  # noqa: BLE001 — the old one is dead already
+            LOG.debug("closing the dead browser: %r", e)
+        generation += 1
+        try:
+            crawler = await _started(browser_config or BrowserConfig(headless=True))
+        except Exception as e:  # noqa: BLE001 — /health reports it and the container restarts
+            LOG.error("a new browser did not start: %r", e)
+            return
+        LOG.info("new browser ready")
+
+
 @app.get("/health")
-async def health() -> dict[str, Any]:
+async def health(response: Response) -> dict[str, Any]:
+    # A browser that stays dead after restarts fails the check, so the container restarts.
+    down = dead_in_a_row >= DEAD_LIMIT
+    if down:
+        response.status_code = 503
     return {
-        "status": "ok" if crawler is not None else "starting",
+        "status": "browser_down" if down else "ok" if crawler is not None else "starting",
+        "deadInARow": dead_in_a_row,
         "backend": "crawl4ai",
         "pages": {"active": gate.active, "waiting": gate.waiting, "limit": gate.limit},
         "cache": {"entries": len(cache), "ttl_s": CACHE_TTL_S},
@@ -113,6 +167,50 @@ async def health() -> dict[str, Any]:
 def _refusal(url: str) -> str | None:
     """Why `url` may not be scraped: off the network, or an adult site."""
     return netguard.refusal(url) or adult.refusal(url)
+
+
+async def _guard_context(page, context=None, **_: Any):
+    """Crawl4AI hook: every request of the new context passes the network guard.
+
+    Playwright does not route redirected requests, so the guard follows redirects
+    itself, judges each hop, and fulfils the route with the final response."""
+    verdicts = netguard.HostVerdicts()
+    target = context or page.context
+
+    async def guard(route, request):
+        url = request.url
+        refused = await asyncio.to_thread(netguard.subrequest_refusal, url, verdicts)
+        if refused:
+            LOG.warning("request refused for %s: %s", _site(url), refused)
+            await route.abort("blockedbyclient")
+            return
+        if not url.lower().startswith(("http://", "https://")):
+            await route.continue_()
+            return
+        try:
+            resp = await route.fetch(max_redirects=0)
+            hops = 0
+            while 300 <= resp.status < 400 and resp.headers.get("location") and hops < MAX_REDIRECTS:
+                hop = urljoin(resp.url, resp.headers["location"])
+                refused = await asyncio.to_thread(netguard.subrequest_refusal, hop, verdicts)
+                if refused:
+                    LOG.warning("redirect refused %s -> %s: %s", _site(url), _site(hop), refused)
+                    await route.abort("blockedbyclient")
+                    return
+                method = "GET" if resp.status in (301, 302, 303) else None
+                resp = await route.fetch(url=hop, method=method, max_redirects=0)
+                hops += 1
+            if 300 <= resp.status < 400 and resp.headers.get("location"):
+                # Past MAX_REDIRECTS: never hand the browser a redirect to follow unrouted
+                LOG.warning("redirect chain too long for %s", _site(url))
+                await route.abort("failed")
+                return
+            await route.fulfill(response=resp)
+        except Exception as e:  # noqa: BLE001
+            LOG.debug("request failed for %s: %r", _site(url), e)
+            await route.abort("failed")
+
+    await target.route("**/*", guard)
 
 
 def _site(url: str) -> str:
@@ -138,8 +236,6 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
     url = payload.get("url")
     if not url:
         return {"success": False, "error": "url is required"}
-    # Resolved address and host checked before the browser opens the URL: the
-    # shim is unauthenticated and sits on the internal network.
     refused = await asyncio.to_thread(_refusal, url)
     if refused:
         LOG.warning("scrape refused for %s: %s", _site(url), refused)
@@ -176,25 +272,49 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
         LOG.warning("scrape refused, browser busy (%d rendering, %d waiting): %s",
                     gate.active, gate.waiting, _site(url))
         return {"success": False, "error": "busy: too many pages rendering"}
+    global dead_in_a_row
     try:
-        result = await asyncio.wait_for(
-            crawler.arun(url=url, config=run_cfg),
-            timeout=(timeout_ms / 1000.0) + 10,
-        )
-    except asyncio.TimeoutError:
-        LOG.warning("scrape timeout on %s", _site(url))
-        return {"success": False, "error": "scrape timeout"}
-    except Exception as e:
-        LOG.warning("scrape error on %s: %r", _site(url), e)
-        return {"success": False, "error": f"crawl4ai error: {e}"}
+        # A dead browser is restarted and the page tried once more.
+        for attempt in (1, 2):
+            seen = generation
+            if crawler is None:
+                dead_in_a_row += 1
+                return {"success": False, "error": "browser is restarting"}
+            try:
+                result = await asyncio.wait_for(
+                    crawler.arun(url=url, config=run_cfg),
+                    timeout=(timeout_ms / 1000.0) + 10,
+                )
+            except asyncio.TimeoutError:
+                LOG.warning("scrape timeout on %s", _site(url))
+                return {"success": False, "error": "scrape timeout"}
+            except Exception as e:
+                if attempt == 1 and _browser_gone(str(e)):
+                    dead_in_a_row += 1
+                    await _restart_browser(seen)
+                    continue
+                LOG.warning("scrape error on %s: %r", _site(url), e)
+                return {"success": False, "error": f"crawl4ai error: {e}"}
+            error = str(getattr(result, "error_message", "") or "")
+            if not getattr(result, "success", False) and _browser_gone(error):
+                dead_in_a_row += 1
+                if attempt == 1:
+                    await _restart_browser(seen)
+                    continue
+            else:
+                dead_in_a_row = 0
+            break
     finally:
         gate.release()
 
     if not getattr(result, "success", False):
         err = getattr(result, "error_message", None) or "crawl failed"
+        # ERR_BLOCKED_BY_CLIENT: the route guard aborted the navigation
+        if "ERR_BLOCKED_BY_CLIENT" in err:
+            err = netguard.INTERNAL
         LOG.warning("scrape failed on %s: %s", _site(url), err)
         return {"success": False, "error": err}
-    # The address reached after the browser's own redirects is checked too.
+    # The address the browser ended up at is judged once more.
     final_url = getattr(result, "redirected_url", None) or url
     if final_url != url:
         refused = await asyncio.to_thread(_refusal, final_url)

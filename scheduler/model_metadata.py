@@ -157,8 +157,8 @@ def _resolve_head_dim(cfg: dict) -> int:
 def _estimate_weight_bytes(cfg: dict, dtype: Dtype) -> int:
     """Analytic weight size when the on-disk size is unknown.
 
-    Dominant tensors only (embed + L × per-layer). MoE: all experts counted,
-    since vLLM keeps them resident.
+    Dominant tensors only (embed + L × per-layer). MoE: every expert counted
+    (vLLM keeps them all resident).
     """
     L = int(cfg.get("num_hidden_layers") or 0)
     H = int(cfg.get("hidden_size") or 0)

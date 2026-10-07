@@ -137,19 +137,19 @@ gpu_usable_vram_gb() {
 
 # OpenRouter commercial catalogue, one array per provider; array order is
 # picker order. Ids: https://openrouter.ai/api/v1/models
-OPENAI_MODELS=(gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5-nano gpt-5.3-codex)
-ANTHROPIC_MODELS=(claude-fable-5 claude-opus-5 claude-sonnet-5 claude-haiku-4.5)
-GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.7-flash gemini-3.1-flash-lite)
-XAI_MODELS=(grok-4.6)
+OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6-luna gpt-5.4-nano gpt-5.3-codex)
+ANTHROPIC_MODELS=(claude-fable-5.1 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-4.5)
+GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.8-flash gemini-3.5-flash-lite)
+XAI_MODELS=(grok-4.7)
 PERPLEXITY_MODELS=(sonar sonar-pro)
 # Open-weight tier
-TENCENT_MODELS=(hy3)
-DEEPSEEK_MODELS=(deepseek-v4-pro deepseek-v4-flash)
-ZAI_MODELS=(glm-5.3)
-XIAOMI_MODELS=(mimo-v2.5)
+TENCENT_MODELS=(hy4-preview)
+DEEPSEEK_MODELS=(deepseek-v4-pro-0813 deepseek-v4.1-flash)
+ZAI_MODELS=(glm-5.3 glm-5.3-flash)
+XIAOMI_MODELS=(mimo-v2.6-flash)
 MOONSHOTAI_MODELS=(kimi-k3)
 # Qwen's hosted tier (not the local checkpoints)
-QWEN_MODELS=(qwen3.8-max qwen3.7-flash qwen3-coder-plus)
+QWEN_MODELS=(qwen3.8-max-0902 qwen3.8-flash qwen3-coder-plus)
 MINIMAX_MODELS=(minimax-m3)
 
 # Image generation, cheapest first (picker default)
@@ -203,6 +203,8 @@ OPENAI_EMBED_CATALOG=(text-embedding-3-small)
 declare -A VLLM_MODELS=(
   # Chat, NVFP4
   [qwen3.8-27b-nvfp4]="unsloth/Qwen3.8-27B-NVFP4"
+  # Quality and judging, MoE 10B active, NVFP4; a GB10 node to itself
+  [qwen3.5-122b-nvfp4]="txn545/Qwen3.5-122B-A10B-NVFP4"
   # Coding, FP8
   [qwen3-coder-next]="Qwen/Qwen3-Coder-Next-FP8"
   # Retrieval embeddings and reranking, BF16
@@ -216,6 +218,7 @@ declare -A VLLM_MODELS=(
 # Checkpoint size on disk (GiB)
 declare -A VLLM_MODEL_WEIGHT_GB=(
   [qwen3.8-27b-nvfp4]=22
+  [qwen3.5-122b-nvfp4]=72
   [qwen3-coder-next]=75
   [bge-m3]=3
   [bge-reranker-v2-m3]=3
@@ -274,39 +277,41 @@ image_base_digest() {
 # Declared prices, USD per 1M tokens; or_refresh_prices overlays the live
 # catalogue. Local models are 0.
 declare -A MODEL_PRICE_IN_PM=(
-  [gpt-5.6-sol]=2.50     [gpt-5.6-terra]=2      [gpt-5.6-luna]=0.20    [gpt-5-nano]=0.05
+  [gpt-6-astra]=10       [gpt-6.1-sol]=2        [gpt-6-luna]=0.10      [gpt-5.4-nano]=0.20
   [gpt-5.3-codex]=1.75
-  [claude-fable-5]=10    [claude-opus-5]=5      [claude-sonnet-5]=2    [claude-haiku-4.5]=1
-  [gemini-3.1-pro-preview]=2   [gemini-3.7-flash]=0.375  [gemini-3.1-flash-lite]=0.25
-  [grok-4.6]=2           [sonar]=1.00              [sonar-pro]=3.00
-  [hy3]=0.132            [deepseek-v4-pro]=1.44    [deepseek-v4-flash]=0.0886
-  [glm-5.3]=1.40         [mimo-v2.5]=0.14          [kimi-k3]=3.00
-  [qwen3.8-max]=2.00     [qwen3.7-flash]=0.03      [qwen3-coder-plus]=0.65
+  [claude-fable-5.1]=10  [claude-opus-5.5]=4    [claude-sonnet-5.5]=2  [claude-haiku-4.5]=1
+  [gemini-3.1-pro-preview]=2   [gemini-3.8-flash]=0.75   [gemini-3.5-flash-lite]=0.30
+  [grok-4.7]=2           [sonar]=1.00              [sonar-pro]=3.00
+  [hy4-preview]=0.751    [deepseek-v4-pro-0813]=0.22  [deepseek-v4.1-flash]=0.30
+  [glm-5.3]=1.40         [glm-5.3-flash]=0.15      [mimo-v2.6-flash]=0.14    [kimi-k3]=0.99
+  [qwen3.8-max-0902]=2.00  [qwen3.8-flash]=0.15    [qwen3-coder-plus]=0.65
   [minimax-m3]=0.30
-  [qwen3.8-27b]=0
+  [qwen3.8-27b]=0  [qwen3.5-122b]=0  [qwen3-coder-next]=0
   [text-embedding-3-small]=0.02
 )
 declare -A MODEL_PRICE_OUT_PM=(
-  [gpt-5.6-sol]=15       [gpt-5.6-terra]=12     [gpt-5.6-luna]=1.20    [gpt-5-nano]=0.40
+  [gpt-6-astra]=50       [gpt-6.1-sol]=10       [gpt-6-luna]=0.50      [gpt-5.4-nano]=1.25
   [gpt-5.3-codex]=14.00
-  [claude-fable-5]=50    [claude-opus-5]=25     [claude-sonnet-5]=10   [claude-haiku-4.5]=5
-  [gemini-3.1-pro-preview]=12  [gemini-3.7-flash]=1.875  [gemini-3.1-flash-lite]=1.50
-  [grok-4.6]=6           [sonar]=1.00              [sonar-pro]=15.00
-  [hy3]=0.528            [deepseek-v4-pro]=2.88    [deepseek-v4-flash]=0.1772
-  [glm-5.3]=4.40         [mimo-v2.5]=0.28          [kimi-k3]=15.00
-  [qwen3.8-max]=6.00     [qwen3.7-flash]=0.13      [qwen3-coder-plus]=3.25
+  [claude-fable-5.1]=50  [claude-opus-5.5]=20   [claude-sonnet-5.5]=10 [claude-haiku-4.5]=5
+  [gemini-3.1-pro-preview]=12  [gemini-3.8-flash]=3.75   [gemini-3.5-flash-lite]=2.50
+  [grok-4.7]=6           [sonar]=1.00              [sonar-pro]=15.00
+  [hy4-preview]=2.25     [deepseek-v4-pro-0813]=4.20  [deepseek-v4.1-flash]=1.20
+  [glm-5.3]=4.40         [glm-5.3-flash]=0.50      [mimo-v2.6-flash]=0.28    [kimi-k3]=13.00
+  [qwen3.8-max-0902]=6.00  [qwen3.8-flash]=0.47    [qwen3-coder-plus]=3.25
   [minimax-m3]=1.20
-  [qwen3.8-27b]=0
+  [qwen3.8-27b]=0  [qwen3.5-122b]=0  [qwen3-coder-next]=0
 )
 
 # OpenRouter twins of local models and the STT fallback, USD per 1M tokens,
 # keyed by slug; or_price prefers the live figure
 declare -A OR_TWIN_PRICE_IN_PM=(
-  [qwen/qwen3.8-27b]=0.42
+  [qwen/qwen3.8-27b]=0.42  [qwen/qwen3.5-122b-a10b]=0.26
+  [qwen/qwen3-coder-next]=0.12
   [mistralai/voxtral-small-24b-2507]=0.10
 )
 declare -A OR_TWIN_PRICE_OUT_PM=(
-  [qwen/qwen3.8-27b]=3.00
+  [qwen/qwen3.8-27b]=3.00  [qwen/qwen3.5-122b-a10b]=2.08
+  [qwen/qwen3-coder-next]=0.80
   [mistralai/voxtral-small-24b-2507]=0.30
 )
 
@@ -348,7 +353,8 @@ or_price() {
   [[ -n "$live" && "$live" != "null" ]] && echo "$live" || echo "$fallback"
 }
 
-# Live prices over the declared tables, in place; prints "<total> <moved>"
+# Live prices over the declared tables, in place; sets OR_PRICE_TOTAL and
+# OR_PRICE_MOVED. Run in the current shell, never in a command substitution.
 or_refresh_prices() {
   has_openrouter || return 0
   local live; live="$(or_catalogue 2>/dev/null)" || return 0
@@ -378,7 +384,7 @@ or_refresh_prices() {
       MODEL_PRICE_OUT_PM[$m]="$lout"
     done
   done
-  echo "${total} ${moved}"
+  OR_PRICE_TOTAL=$total; OR_PRICE_MOVED=$moved
 }
 
 # OpenRouter's free chat models, one slug per line: zero price both ways, text
@@ -673,6 +679,8 @@ vllm_wait_until_ready() {
 # LiteLLM team allowlist: every chat model gen-litellm-config.sh registers
 litellm_chat_models_csv() {
   local vllm_chat_url; vllm_chat_url="$(env_get VLLM_QWEN27B_URL 2>/dev/null || true)"
+  local vllm_judge_url; vllm_judge_url="$(env_get VLLM_QWEN122B_URL 2>/dev/null || true)"
+  local vllm_coder_url; vllm_coder_url="$(env_get VLLM_CODERNEXT_URL 2>/dev/null || true)"
   local out=() m
   if has_openrouter; then
     for m in "${OPENAI_MODELS[@]}";     do out+=("openai/$m");     done
@@ -693,6 +701,16 @@ litellm_chat_models_csv() {
     out+=("local/qwen3.8-27b" "strict-local/qwen3.8-27b")
   elif has_openrouter; then
     out+=("qwen/qwen3.8-27b")
+  fi
+  if [[ -n "$vllm_judge_url" ]]; then
+    out+=("local/qwen3.5-122b" "strict-local/qwen3.5-122b")
+  elif has_openrouter; then
+    out+=("qwen/qwen3.5-122b-a10b")
+  fi
+  if [[ -n "$vllm_coder_url" ]]; then
+    out+=("local/qwen3-coder-next" "strict-local/qwen3-coder-next")
+  elif has_openrouter; then
+    out+=("qwen/qwen3-coder-next")
   fi
   if has_openrouter; then
     for m in "${OPENAI_EMBED_CATALOG[@]}"; do out+=("$m"); done
@@ -717,7 +735,7 @@ __litellm_call() {
   [[ -n "$payload" ]] && args+=(-H "Content-Type: application/json" -d "$payload")
   local resp; resp=$(curl "${args[@]}")
   local code; code=$(echo "$resp" | tail -1)
-  # `sed '$d'` rather than the GNU-only `head -n -1`
+  # Body: every line but the status code (portable)
   local body; body=$(echo "$resp" | sed '$d')
   if (( code < 200 || code >= 300 )); then
     echo "ERROR [HTTP $code]: $body" >&2; return 1

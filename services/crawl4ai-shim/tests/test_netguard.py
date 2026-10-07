@@ -52,3 +52,24 @@ def test_public_addresses_pass(url):
 ])
 def test_everything_else_is_refused(url, reason):
     assert netguard.refusal(url, _resolve) == reason
+
+
+def test_subrequests_are_judged_per_host_with_a_cache():
+    calls = []
+
+    def resolve(host):
+        calls.append(host)
+        return ["10.0.0.5"] if host == "evil.example" else ["93.184.216.34"]
+
+    verdicts = netguard.HostVerdicts()
+    assert netguard.subrequest_refusal("https://ok.example/a.js", verdicts, resolve) is None
+    assert netguard.subrequest_refusal("https://ok.example/b.css", verdicts, resolve) is None
+    assert netguard.subrequest_refusal("http://evil.example/x", verdicts, resolve) == netguard.INTERNAL
+    assert netguard.subrequest_refusal("http://127.0.0.1:8000/v1", verdicts, resolve) == netguard.INTERNAL
+    assert netguard.subrequest_refusal("http://litellm:8000/v1", verdicts, resolve) == netguard.INTERNAL
+    assert calls == ["ok.example", "evil.example"]
+
+
+def test_in_browser_schemes_pass_the_subrequest_guard():
+    for url in ("data:text/plain;base64,aGk=", "blob:https://ok.example/uuid", "about:blank"):
+        assert netguard.subrequest_refusal(url, netguard.HostVerdicts(), lambda h: []) is None

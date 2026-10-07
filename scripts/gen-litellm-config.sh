@@ -41,7 +41,7 @@ grep -qF "$FB_START" "$CONFIG_FILE" && grep -qF "$FB_END" "$CONFIG_FILE" \
 CTX_FALLBACK=32768
 
 # Per-model request timeout (s); deep research runs for minutes
-declare -A MODEL_TIMEOUT=( [qwen3.8-27b]=1800 )
+declare -A MODEL_TIMEOUT=( [qwen3.8-27b]=3600 [qwen3.5-122b]=3600 )
 
 # OpenRouter provider-routing suffix on chat routes: ":floor" (cheapest),
 # ":nitro" (throughput), "" (OpenRouter default)
@@ -297,14 +297,16 @@ emit_brain() {  # $1=local-model  $2=url_csv  $3=or-slug  $4=or_in_pm  $5=or_out
   fi
 }
 
-# Live prices over the declared tables
-PRICE_REFRESH="$(or_refresh_prices || true)"
-if [[ -n "$PRICE_REFRESH" ]]; then
-  read -r PRICED MOVED <<<"$PRICE_REFRESH"
-  if (( MOVED > 0 )); then
-    info "prices: ${PRICED} read from the catalogue, ${MOVED} differ from the declared fallback"
+# Live prices over the declared tables; one catalogue download, cached for the
+# or_price command substitutions
+or_catalogue >/dev/null 2>&1 || true
+OR_PRICE_TOTAL=0; OR_PRICE_MOVED=0
+or_refresh_prices || true
+if (( OR_PRICE_TOTAL > 0 )); then
+  if (( OR_PRICE_MOVED > 0 )); then
+    info "prices: ${OR_PRICE_TOTAL} read from the catalogue, ${OR_PRICE_MOVED} differ from the declared fallback"
   else
-    info "prices: ${PRICED} read from the catalogue, all matching the declared fallback"
+    info "prices: ${OR_PRICE_TOTAL} read from the catalogue, all matching the declared fallback"
   fi
 else
   warn "prices: could not reach the catalogue — using the declared fallbacks"
@@ -314,6 +316,7 @@ SECTION=$(
   echo "  ${MARKER_START}"
   # --- local (vLLM), or the OpenRouter slug where nothing is deployed ---
   emit_brain "qwen3.8-27b"   "$(env_get VLLM_QWEN27B_URL)"    "qwen/qwen3.8-27b" "$(or_price qwen/qwen3.8-27b in)" "$(or_price qwen/qwen3.8-27b out)"
+  emit_brain "qwen3.5-122b"  "$(env_get VLLM_QWEN122B_URL)"   "qwen/qwen3.5-122b-a10b" "$(or_price qwen/qwen3.5-122b-a10b in)" "$(or_price qwen/qwen3.5-122b-a10b out)"
   emit_brain "qwen3-coder-next" "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next" "$(or_price qwen/qwen3-coder-next in)" "$(or_price qwen/qwen3-coder-next out)"
   # Retrieval: local when placed; the OpenAI catalogue below is the fallback
   emit_vllm_embed "bge-m3" "$(env_get VLLM_BGEM3_URL)"
@@ -356,6 +359,8 @@ SECTION=$(
   done
   # --- OpenRouter twins of the deployed local models (fallback targets, hidden) ---
   emit_or_fallback "$(env_get VLLM_QWEN27B_URL)"  "qwen/qwen3.8-27b" "$(or_price qwen/qwen3.8-27b in)" "$(or_price qwen/qwen3.8-27b out)"
+  emit_or_fallback "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b" "$(or_price qwen/qwen3.5-122b-a10b in)" "$(or_price qwen/qwen3.5-122b-a10b out)"
+  emit_or_fallback "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next" "$(or_price qwen/qwen3-coder-next in)" "$(or_price qwen/qwen3-coder-next out)"
   echo "  ${MARKER_END}"
 )
 
@@ -370,12 +375,14 @@ FALLBACKS=$(
   echo "  ${FB_START}"
   echo "  fallbacks:"
   fb_line "qwen3.8-27b"   "$(env_get VLLM_QWEN27B_URL)"  "qwen/qwen3.8-27b"
+  fb_line "qwen3.5-122b"  "$(env_get VLLM_QWEN122B_URL)" "qwen/qwen3.5-122b-a10b"
+  fb_line "qwen3-coder-next" "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next"
   echo "  ${FB_END}"
 )
 
 if (( DRY_RUN )); then echo "$SECTION"; echo "$FALLBACKS"; exit 0; fi
 
-tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
+tmp="$(mktemp)"; trap 'rm -f "$tmp" "${__OR_CATALOGUE_CACHE:-}"' EXIT
 KC_SECTION="$SECTION" KC_FALLBACKS="$FALLBACKS" python3 - "$CONFIG_FILE" "$tmp" <<'PY'
 import os, sys, pathlib
 
