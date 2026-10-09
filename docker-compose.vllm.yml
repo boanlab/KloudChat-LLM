@@ -335,6 +335,9 @@ services:
     restart: unless-stopped
     ports:
       - "9835:9835"
+    volumes:
+      # The node's name for the 성능 모니터링 card (the container's own hostname is its id)
+      - /etc/hostname:/host/etc/hostname:ro
     environment:
       # nvidia-smi only; no CUDA libraries
       NVIDIA_DRIVER_CAPABILITIES: utility

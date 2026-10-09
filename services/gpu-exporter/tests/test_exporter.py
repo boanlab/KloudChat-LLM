@@ -33,3 +33,16 @@ def test_meminfo_and_stat():
     cpu = exporter.parse_stat("cpu  100 0 100 700 100 0 0 0 0 0\ncpu0 1 1 1 1 1\n")
     assert cpu == ['kloudchat_node_cpu_seconds_total{mode="all"} 10',
                    'kloudchat_node_cpu_seconds_total{mode="idle"} 8']
+
+
+def test_the_node_name_comes_from_the_host_not_the_container(tmp_path, monkeypatch):
+    host = tmp_path / "hostname"
+    host.write_text("gx10-ffe1\n")
+    monkeypatch.delenv("NODE_NAME", raising=False)
+    monkeypatch.setattr(exporter, "HOSTNAME_FILE", str(host))
+    assert exporter.node_name() == "gx10-ffe1"
+    monkeypatch.setenv("NODE_NAME", "gpu-a")
+    assert exporter.node_name() == "gpu-a"
+    monkeypatch.delenv("NODE_NAME")
+    monkeypatch.setattr(exporter, "HOSTNAME_FILE", str(tmp_path / "missing"))
+    assert exporter.node_name() == exporter.socket.gethostname()

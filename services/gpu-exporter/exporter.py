@@ -17,6 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT = int(os.environ.get("PORT", "9835"))
 PROC = os.environ.get("PROC_ROOT", "/proc")
 SMI_TIMEOUT = float(os.environ.get("SMI_TIMEOUT_SEC", "5"))
+# The node's own /etc/hostname, mounted read-only; a container's hostname is its id
+HOSTNAME_FILE = os.environ.get("HOSTNAME_FILE", "/host/etc/hostname")
 
 #: nvidia-smi field → (metric, scale to base unit)
 FIELDS: list[tuple[str, str | None, float]] = [
@@ -98,8 +100,14 @@ def _read(path: str) -> str:
         return ""
 
 
+def node_name() -> str:
+    """NODE_NAME, else the mounted host /etc/hostname, else the container's own."""
+    name = os.environ.get("NODE_NAME", "").strip() or _read(HOSTNAME_FILE).strip()
+    return name or socket.gethostname()
+
+
 def render() -> str:
-    lines = [f'kloudchat_node_info{{hostname="{_label(socket.gethostname())}"}} 1']
+    lines = [f'kloudchat_node_info{{hostname="{_label(node_name())}"}} 1']
     query = ",".join(field for field, _, _ in FIELDS)
     try:
         smi = subprocess.run(
