@@ -21,6 +21,7 @@ and appends the service-specific path.
 | Deep research | `/tools/research` | `/tools/research/mcp` | deep-research | `tools` |
 | Transcription | `/tools/stt` | `/tools/stt/v1/audio/transcriptions` | whisper-shim | `whisper` |
 | Retrieval index | `/tools/index` | `/tools/index/{documents,search}` | index-shim | `index` |
+| GPU-node metrics | `/metrics` | `/metrics/{vllm-27b,vllm-122b,vllm-bgem3,vllm-rerank,vllm-whisper,gpu-1,gpu-2}` | vLLM `/metrics`, gpu-exporter | `tools` |
 
 The contract is identical without the gateway, so a raw service address works
 too, except that the gateway also requires the tools key
@@ -277,6 +278,25 @@ saturated fails over to its OpenRouter twin
 from the `VLLM_*_URL` values and the OpenRouter key in `.env`. The container
 receives `OPENROUTER_API_KEY` and `OPENAI_API_KEY` from `.env`. LiteLLM
 publishes no host port; it is reached through the gateway at `/litellm/*`.
+
+### Metrics: vLLM and gpu-exporter
+
+KloudChat's admin 「성능 모니터링」 page reads Prometheus text from the GPU
+nodes through `/metrics/<name>`, with the same `X-Tools-Key` and the same 401
+as `/tools/*`; the key is stripped before the upstream. Each name is a fixed
+upstream from `.env`, one `host:port` each (no path, no list):
+
+| Name | `.env` | Upstream |
+|---|---|---|
+| `vllm-27b`, `vllm-122b`, `vllm-bgem3`, `vllm-rerank`, `vllm-whisper` | `METRICS_VLLM_<NAME>_URL` | that model's vLLM server, e.g. `10.40.0.254:8001` |
+| `gpu-1`, `gpu-2` | `METRICS_GPU_1_URL`, `METRICS_GPU_2_URL` | gpu-exporter on each node (`:9835`), the head node first |
+
+An unset name answers 502 and the others keep working. gpu-exporter
+(`services/gpu-exporter`) reports nvidia-smi utilisation, memory, temperature
+and power plus the node's memory and CPU (on GB10 the node memory is the model
+memory). It runs beside the vLLM services, outside the scheduler's `vllm-*`
+names: `docker compose -f docker-compose.vllm.yml up -d gpu-exporter` on each
+node. Changing a `METRICS_*` value needs `docker compose up -d gateway`.
 
 ## Checking status
 

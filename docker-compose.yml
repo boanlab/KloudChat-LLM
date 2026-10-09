@@ -25,6 +25,15 @@ services:
       CODE_INTERPRETER_API_KEY: ${CODE_INTERPRETER_API_KEY:?the code execution API key is required}
       # Required from clients on /tools/* as X-Tools-Key; unset or empty refuses to start
       TOOLS_GATEWAY_KEY: ${TOOLS_GATEWAY_KEY:?the tools gateway key is required (openssl rand -hex 32)}
+      # /metrics/* upstreams: one host:port each (no path, no list). Unset points
+      # at a closed port, so that name answers 502 and the rest keep working.
+      METRICS_VLLM_27B_URL: ${METRICS_VLLM_27B_URL:-127.0.0.1:9}
+      METRICS_VLLM_122B_URL: ${METRICS_VLLM_122B_URL:-127.0.0.1:9}
+      METRICS_VLLM_BGEM3_URL: ${METRICS_VLLM_BGEM3_URL:-127.0.0.1:9}
+      METRICS_VLLM_RERANK_URL: ${METRICS_VLLM_RERANK_URL:-127.0.0.1:9}
+      METRICS_VLLM_WHISPER_URL: ${METRICS_VLLM_WHISPER_URL:-127.0.0.1:9}
+      METRICS_GPU_1_URL: ${METRICS_GPU_1_URL:-127.0.0.1:9}
+      METRICS_GPU_2_URL: ${METRICS_GPU_2_URL:-127.0.0.1:9}
     healthcheck:
       test: [CMD, wget, -qO-, 'http://localhost:8080/health']
       interval: 30s

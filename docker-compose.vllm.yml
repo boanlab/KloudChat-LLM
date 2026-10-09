@@ -322,3 +322,32 @@ services:
       timeout: 5s
       retries: 5
       start_period: 120s
+
+  # GPU utilisation, memory, temperature and power plus node memory and CPU for
+  # KloudChat's performance page (gateway /metrics/gpu-*). One per node, outside
+  # the scheduler's vllm-* services; holds no GPU memory.
+  #   docker compose -f docker-compose.vllm.yml up -d gpu-exporter
+  gpu-exporter:
+    container_name: gpu-exporter
+    image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-gpu-exporter:${KLOUDCHAT_IMAGE_TAG:-latest}
+    build:
+      context: ./services/gpu-exporter
+    restart: unless-stopped
+    ports:
+      - "9835:9835"
+    environment:
+      # nvidia-smi only; no CUDA libraries
+      NVIDIA_DRIVER_CAPABILITIES: utility
+      NVIDIA_VISIBLE_DEVICES: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://localhost:9835/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

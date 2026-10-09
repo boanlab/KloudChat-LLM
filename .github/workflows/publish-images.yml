@@ -18,7 +18,7 @@ on:
         description: "Image to publish"
         type: choice
         default: all
-        options: [all, crawl4ai-shim, search-shim, whisper-shim, code-interpreter, deep-research, index-shim]
+        options: [all, crawl4ai-shim, search-shim, whisper-shim, code-interpreter, deep-research, index-shim, gpu-exporter]
       tag:
         description: "Tag to publish under"
         required: false
@@ -62,7 +62,8 @@ jobs:
             {"image":"whisper-shim",    "context":"services/whisper-shim",    "platforms":"linux/amd64,linux/arm64"},
             {"image":"code-interpreter","context":"services/code-interpreter","platforms":"linux/amd64,linux/arm64"},
             {"image":"deep-research",   "context":"services/deep-research",   "platforms":"linux/amd64,linux/arm64"},
-            {"image":"index-shim",      "context":"services/index-shim",      "platforms":"linux/amd64,linux/arm64"}
+            {"image":"index-shim",      "context":"services/index-shim",      "platforms":"linux/amd64,linux/arm64"},
+            {"image":"gpu-exporter",    "context":"services/gpu-exporter",    "platforms":"linux/amd64,linux/arm64"}
           ]'
 
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
