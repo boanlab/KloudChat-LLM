@@ -23,7 +23,9 @@ and appends the service-specific path.
 | Retrieval index | `/tools/index` | `/tools/index/{documents,search}` | index-shim | `index` |
 
 The contract is identical without the gateway, so a raw service address works
-too. `GET /health` on the gateway answers `{"status":"ok"}`.
+too, except that the gateway also requires the tools key
+([Authentication](#authentication)). `GET /health` on the gateway answers
+`{"status":"ok"}` without a key.
 
 LiteLLM is exposed at its service root because its admin API (`/key/*`,
 `/user/*`, `/model/info`, `/health/*`) and admin UI (`/ui/`) do not live under
@@ -35,11 +37,46 @@ Only `/litellm/*` and `/v1/*` pass the caller's `Authorization` header through.
 The UI calls with a per-user LiteLLM virtual key, so spend is attributed to a
 person.
 
-`/tools/*` is not authenticated. The internal keys for code execution
-(`CODE_INTERPRETER_API_KEY`) and document fetching (`SCRAPER_API_KEY`) are
-injected by the gateway; caller-supplied credentials are ignored. **The
-gateway port must only be open inside a private network**: a sandbox that runs
-arbitrary code sits behind it.
+`/tools/*` requires the shared key `TOOLS_GATEWAY_KEY` in an `X-Tools-Key`
+header. A request without it, or with a different value, gets
+`401 {"error":"unauthorized"}` before any upstream is contacted; the header is
+removed before the request is proxied, so no service behind the gateway sees
+it. `Authorization: Bearer` is not accepted in its place: every client sets
+custom headers, and `/tools/fetch` already uses `Authorization` upstream.
+
+Fail closed: compose refuses to start the gateway when `TOOLS_GATEWAY_KEY` is
+unset or empty, and the Caddyfile denies every `/tools` request when the key
+it was started with is shorter than 32 characters. Use hex
+(`openssl rand -hex 32`, which `gen-env.sh` does): the value is substituted
+into a CEL expression in the Caddyfile, and `setup.sh` rejects anything else.
+
+The internal keys for code execution (`CODE_INTERPRETER_API_KEY`) and document
+fetching (`SCRAPER_API_KEY`) are injected by the gateway; caller-supplied
+credentials are ignored. **The gateway port must still only be open inside a
+private network**: the key is a single shared secret, not a per-user
+credential, and a sandbox that runs arbitrary code sits behind it.
+
+Where the key lives:
+
+| Repository | `.env` variable | Consumer |
+|---|---|---|
+| KloudChat-LLM | `TOOLS_GATEWAY_KEY` | the gateway (`services/gateway/Caddyfile`), `setup.sh` probes |
+| KloudChat | `KCHAT_TOOLS_GATEWAY_KEY` | the API, as `TOOLS_GATEWAY_KEY`; sent only to the tool addresses |
+
+Services inside this stack call each other by container name, not through the
+gateway, so none of them needs the key.
+
+Rotating it (tool calls fail with 401 between steps 3 and 4; pick a quiet
+moment):
+
+1. `openssl rand -hex 32`.
+2. Write the value to `TOOLS_GATEWAY_KEY` here and `KCHAT_TOOLS_GATEWAY_KEY`
+   in KloudChat's `.env`.
+3. In KloudChat: `docker compose up -d api` (it now sends the new key).
+4. Here, recreate only the gateway:
+   `docker compose up -d --no-deps --force-recreate gateway`.
+5. `./scripts/setup.sh urls` shows `connected` for every tool, not
+   `key rejected`.
 
 Each backing store sits on an internal network shared only with the service
 that owns it (`litellm-db` with LiteLLM, `index-db` with index-shim, MinIO and
@@ -147,9 +184,34 @@ a row `/health` answers `503` with `"status": "browser_down"`.
 
 Sandboxed Python (`librecodeinterpreter`, pinned by digest in
 `services/code-interpreter/Dockerfile`). The only service with `SYS_ADMIN` and
-relaxed apparmor/seccomp. Execution is capped at `MAX_EXECUTION_TIME` (30 s)
-and `MAX_MEMORY_MB` (512). Output files are stored in MinIO; the UI reads
-stdout and stderr.
+relaxed apparmor/seccomp. Execution is capped at `MAX_EXECUTION_TIME` (30 s).
+Output files are stored in MinIO; the UI reads stdout and stderr.
+
+Memory: each sandbox gets its own cgroup with `memory.max` = `MAX_MEMORY_MB`
+(1024) and no swap. The upstream service only passes `--rlimit_as hard` to
+nsjail, which is unlimited in a container, so the image adds two scripts:
+`cgroup-init` (the compose `command`) remounts the container's cgroup v2
+read-write with the `SYS_ADMIN` it already has, moves the service into a
+`service` leaf and enables the memory controller; `nsjail-memcg`
+(`NSJAIL_BINARY`) calls nsjail with `--use_cgroupv2 --cgroup_mem_max`. The limit
+covers the whole sandbox, and a warm Python REPL is about 260 MB before user
+code, so roughly 750 MB is left for data. Going over it kills the sandbox and
+the call returns an error (`Invalid response from REPL`), not a `MemoryError`.
+The container as a whole is capped at 4 GB (`mem_limit`, no swap).
+
+There is no network at runtime, so no `pip install`; file skills can use only
+what the image has. Besides pandas, numpy, openpyxl, xlsxwriter, python-docx,
+python-pptx, reportlab and matplotlib, the Dockerfile adds pinned `pdfplumber`,
+`pdfminer.six` (the base image's broken old `pdfminer` is removed), `pypdf`
+and `pypdfium2`. `pdftotext` works from Python; `soffice` only from
+`lang: "bash"` (the Python sandbox hides `/proc`). Tesseract has no Korean.
+
+Output files: the working directory is `/mnt/data`, and new or changed files
+under it are returned after each run, but only the first 10 by path; the rest
+are dropped without an error. Files whose name starts with `code`, hidden
+files, and anything under directories such as `build/`, `dist/`, `node_modules/`
+or `__pycache__/` are never returned. Give outputs distinct names under a
+directory such as `outputs/`.
 
 The image bundles NanumGothic as the matplotlib default so that Korean chart
 labels render.
@@ -222,6 +284,8 @@ publishes no host port; it is reached through the gateway at `/litellm/*`.
 ./scripts/setup.sh urls
 ```
 
-It prints whether each capability is reachable through the gateway.
+It prints whether each capability is reachable through the gateway, sending
+`TOOLS_GATEWAY_KEY` from `.env` on `/tools/*`. `key rejected` means the gateway
+answered 401: the running gateway holds a different key than `.env`.
 `not started` means that service's container is not running; check
 `COMPOSE_PROFILES` first.

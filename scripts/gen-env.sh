@@ -36,6 +36,8 @@ while IFS= read -r line; do
     case "$key" in
       # LiteLLM key convention: sk- prefix
       LITELLM_MASTER_KEY) secret="sk-$(gen_secret 32)" ;;
+      # Shared with KloudChat (KCHAT_TOOLS_GATEWAY_KEY); the gateway wants >= 32 chars
+      TOOLS_GATEWAY_KEY)  secret="$(gen_secret 32)" ;;
       *)                  secret="$(gen_secret 16)" ;;
     esac
     GENERATED["$key"]="$secret"

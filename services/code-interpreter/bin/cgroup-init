@@ -1,0 +1,22 @@
+#!/bin/sh
+# Prepare cgroup v2 so nsjail can give each sandbox its own memory limit, then exec the service.
+#
+# Docker mounts the container's cgroup read-only and puts every process in its root, where the
+# "no internal processes" rule forbids enabling controllers for children. With the CAP_SYS_ADMIN
+# the service already has, remount it read-write, move the container's processes into a leaf
+# ("service") and enable memory+pids for children. nsjail (through nsjail-memcg) then creates
+# one NSJAIL.<pid> cgroup per sandbox next to it. Fails loudly: a service that starts without
+# this would run sandboxes without a memory limit.
+set -eu
+CG=/sys/fs/cgroup
+grep -q ' /sys/fs/cgroup cgroup2 ' /proc/mounts || { echo "cgroup-init: cgroup v2 not mounted at $CG" >&2; exit 1; }
+if grep -q ' /sys/fs/cgroup cgroup2 ro[,]' /proc/mounts; then
+  mount -o remount,rw "$CG"
+fi
+mkdir -p "$CG/service"
+for pid in $(cat "$CG/cgroup.procs"); do
+  echo "$pid" > "$CG/service/cgroup.procs" 2>/dev/null || true
+done
+echo '+memory +pids' > "$CG/cgroup.subtree_control"
+echo "cgroup-init: per-sandbox memory limit ${MAX_MEMORY_MB:?MAX_MEMORY_MB is required} MB" >&2
+exec "$@"

@@ -41,6 +41,7 @@ Filled in by `gen-env.sh`. If you create them yourself, keep the formats below.
 | `LITELLM_DB_PASSWORD` | 32 hex | LiteLLM's postgres |
 | `LITELLM_DB_USER` | string | `kloudchat-litellm` by default |
 | `SEARXNG_SECRET_KEY` | 32 hex | SearXNG session signing |
+| `TOOLS_GATEWAY_KEY` | 64 hex | Required by the gateway on every `/tools/*` request as `X-Tools-Key`; 401 otherwise. Set the same value in KloudChat's `.env` as `KCHAT_TOOLS_GATEWAY_KEY`. Compose refuses to start the gateway without it, and a value under 32 characters denies all of `/tools`. Hex only. Rotation: [tools.md](tools.md#authentication) |
 | `CODE_INTERPRETER_API_KEY` | 32 hex | Injected by the gateway into code execution requests |
 | `CODE_INTERPRETER_MINIO_USER` | `code-interpreter` | MinIO user for code execution artifacts |
 | `CODE_INTERPRETER_MINIO_PASSWORD` | 32 hex | MinIO password |
@@ -49,6 +50,8 @@ Filled in by `gen-env.sh`. If you create them yourself, keep the formats below.
 | `INDEX_DB_USER` / `INDEX_DB_PASSWORD` | `index` / 32 hex | The retrieval index's pgvector database. The password is required whenever the `index` profile is on |
 
 The two injected keys never reach the UI: they exist only inside the gateway.
+`TOOLS_GATEWAY_KEY` is the one the UI does hold; the gateway strips it before
+proxying.
 
 ## 4. Placement results, written by the scheduler
 
@@ -158,7 +161,8 @@ Changing the others means editing `docker-compose.yml`.
 | search-shim | `CACHE_TTL_S` / `STALE_TTL_S` / `CACHE_MAX_ENTRIES` | `900` / `21600` / `2048` | How long an answer with results is reused, how much longer it is served while SearXNG cannot answer, and how many are kept |
 | search-shim | `UPSTREAM_TIMEOUT_S` / `CONNECT_TIMEOUT_S` | `20` / `3` | Whole-call and connect timeouts towards SearXNG |
 | search-shim | `SAFESEARCH` | `2` | Forced on every search: 0 off, 1 moderate, 2 strict |
-| code-interpreter | `MAX_EXECUTION_TIME` / `MAX_MEMORY_MB` | `30` / `512` | Sandbox limits, set in compose |
+| code-interpreter | `MAX_EXECUTION_TIME` / `MAX_MEMORY_MB` | `30` / `1024` | Sandbox limits, set in compose; memory is a per-sandbox cgroup `memory.max` |
+| code-interpreter | `NSJAIL_BINARY` | `/usr/local/bin/nsjail-memcg` | nsjail wrapper that applies `MAX_MEMORY_MB` |
 | all shims | `LOG_LEVEL` | `INFO` | |
 
 ## Shell-only variables

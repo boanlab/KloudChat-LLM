@@ -24,8 +24,10 @@ one address in its admin screen. No backend address is compiled into the UI.
                                    └─────────────────────────────────────────┘
 ```
 
-`/tools/*` requires no authentication. **The gateway port must only be open
-inside a private network**: the code execution endpoint sits behind it. Each
+`/tools/*` requires the shared key `TOOLS_GATEWAY_KEY` in an `X-Tools-Key`
+header (KloudChat's API sends it); without it the gateway answers 401. **The
+gateway port must still only be open inside a private network**: the code
+execution endpoint sits behind it. Each
 backing store (the two databases, MinIO, redis, valkey) is on an internal
 network shared only with the service that owns it. Internal service keys (code
 execution, document fetching) are injected by the gateway; the UI never learns
