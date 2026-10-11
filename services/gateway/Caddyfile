@@ -9,9 +9,19 @@
 #   /tools/exec/*      → code-interpreter   (x-api-key injected)
 #   /tools/research/*  → deep-research      (MCP streamable-http)
 #   /tools/stt/*       → whisper-shim
+#   /metrics/<target>  → one GPU-node /metrics (vLLM or gpu-exporter), read-only
 #
-# /tools/* is unauthenticated and assumes a private network. Service keys are
-# injected here and never reach clients.
+# /tools/* requires the shared key TOOLS_GATEWAY_KEY in the X-Tools-Key header;
+# anything else gets 401 {"error":"unauthorized"} before any upstream is
+# contacted. The header is stripped before proxying. Fail closed: compose
+# refuses to start the gateway with TOOLS_GATEWAY_KEY unset or empty, and a key
+# shorter than 32 characters denies every /tools request here as well. Use hex
+# (`openssl rand -hex 32`): the value is substituted into a CEL string literal.
+# /metrics/* takes the same key and the same 401: each name is a fixed upstream
+# from METRICS_*_URL (one host:port each, no path, no list); an unset one points
+# at a closed local port and answers 502.
+# /litellm* and /v1/* are authenticated by LiteLLM itself; /health is open.
+# Service keys are injected here and never reach clients.
 {
 	admin off
 	auto_https off
@@ -42,34 +52,128 @@
 		}
 	}
 
-	handle_path /tools/search* {
-		reverse_proxy search-shim:8080
-	}
+	handle /tools* {
+		# Constant-time comparison is not available in Caddy; the key is 32+
+		# random bytes and the comparison runs on the gateway host only.
+		@authorized expression `{http.request.header.X-Tools-Key} == "{$TOOLS_GATEWAY_KEY}" && size("{$TOOLS_GATEWAY_KEY}") >= 32`
 
-	handle_path /tools/fetch* {
-		reverse_proxy crawl4ai-shim:8080 {
-			header_up Authorization "Bearer {$SCRAPER_API_KEY}"
+		handle @authorized {
+			handle_path /tools/search* {
+				reverse_proxy search-shim:8080 {
+					header_up -X-Tools-Key
+				}
+			}
+
+			handle_path /tools/fetch* {
+				reverse_proxy crawl4ai-shim:8080 {
+					header_up -X-Tools-Key
+					header_up Authorization "Bearer {$SCRAPER_API_KEY}"
+				}
+			}
+
+			handle_path /tools/exec* {
+				reverse_proxy code-interpreter:8000 {
+					header_up -X-Tools-Key
+					header_up x-api-key "{$CODE_INTERPRETER_API_KEY}"
+				}
+			}
+
+			handle_path /tools/research* {
+				reverse_proxy deep-research:8081 {
+					header_up -X-Tools-Key
+					flush_interval -1
+				}
+			}
+
+			handle_path /tools/stt* {
+				reverse_proxy whisper-shim:9000 {
+					header_up -X-Tools-Key
+				}
+			}
+
+			handle_path /tools/index* {
+				reverse_proxy index-shim:8080 {
+					header_up -X-Tools-Key
+				}
+			}
+
+			handle {
+				header Content-Type application/json
+				respond `{"error":"unknown path"}` 404
+			}
+		}
+
+		handle {
+			header Content-Type application/json
+			respond `{"error":"unauthorized"}` 401
 		}
 	}
 
-	handle_path /tools/exec* {
-		reverse_proxy code-interpreter:8000 {
-			header_up x-api-key "{$CODE_INTERPRETER_API_KEY}"
+	# Prometheus text of the GPU nodes for KloudChat's performance page. Fixed
+	# names only: the request never chooses the upstream.
+	handle /metrics/* {
+		@metrics_authorized expression `{http.request.header.X-Tools-Key} == "{$TOOLS_GATEWAY_KEY}" && size("{$TOOLS_GATEWAY_KEY}") >= 32`
+
+		handle @metrics_authorized {
+			handle /metrics/vllm-27b {
+				rewrite * /metrics
+				reverse_proxy {$METRICS_VLLM_27B_URL} {
+					header_up -X-Tools-Key
+				}
+			}
+
+			handle /metrics/vllm-flashnext {
+				rewrite * /metrics
+				reverse_proxy {$METRICS_VLLM_FLASHNEXT_URL} {
+					header_up -X-Tools-Key
+				}
+			}
+
+			handle /metrics/vllm-bgem3 {
+				rewrite * /metrics
+				reverse_proxy {$METRICS_VLLM_BGEM3_URL} {
+					header_up -X-Tools-Key
+				}
+			}
+
+			handle /metrics/vllm-rerank {
+				rewrite * /metrics
+				reverse_proxy {$METRICS_VLLM_RERANK_URL} {
+					header_up -X-Tools-Key
+				}
+			}
+
+			handle /metrics/vllm-whisper {
+				rewrite * /metrics
+				reverse_proxy {$METRICS_VLLM_WHISPER_URL} {
+					header_up -X-Tools-Key
+				}
+			}
+
+			handle /metrics/gpu-1 {
+				rewrite * /metrics
+				reverse_proxy {$METRICS_GPU_1_URL} {
+					header_up -X-Tools-Key
+				}
+			}
+
+			handle /metrics/gpu-2 {
+				rewrite * /metrics
+				reverse_proxy {$METRICS_GPU_2_URL} {
+					header_up -X-Tools-Key
+				}
+			}
+
+			handle {
+				header Content-Type application/json
+				respond `{"error":"unknown path"}` 404
+			}
 		}
-	}
 
-	handle_path /tools/research* {
-		reverse_proxy deep-research:8081 {
-			flush_interval -1
+		handle {
+			header Content-Type application/json
+			respond `{"error":"unauthorized"}` 401
 		}
-	}
-
-	handle_path /tools/stt* {
-		reverse_proxy whisper-shim:9000
-	}
-
-	handle_path /tools/index* {
-		reverse_proxy index-shim:8080
 	}
 
 	handle {

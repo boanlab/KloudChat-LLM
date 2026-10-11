@@ -22,7 +22,7 @@ replication).
 ```bash
 # .env
 NODES_VLLM=ops@gpu-1,ops@gpu-2       # SSH targets, head node first
-VLLM_MODELS=qwen3.8-27b,qwen3.5-122b,bge-m3
+VLLM_MODELS=qwen3.8-27b,qwen3.8-flash-next,bge-m3
 VLLM_MODELS_ROOT=/var/lib/vllm/models
 KLOUDCHAT_REMOTE_DIR=KloudChat-LLM   # compose workdir on each node (env or .env)
 ```
@@ -72,7 +72,7 @@ packing:
 | `placement` | Nodes | Models |
 |---|---|---|
 | `head` | the head node only | embeddings, reranking, transcription |
-| `pool` | every node but the head | the 122B, the coder |
+| `pool` | every node but the head | Flash-Next, the coder |
 | unset | any | chat |
 
 A pool model with no pool seat is delegated to OpenRouter rather than placed on

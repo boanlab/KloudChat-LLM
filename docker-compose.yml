@@ -23,6 +23,17 @@ services:
       # Injected into upstream requests; never reach clients
       SCRAPER_API_KEY: ${SCRAPER_API_KEY:?the document fetch shim key is required}
       CODE_INTERPRETER_API_KEY: ${CODE_INTERPRETER_API_KEY:?the code execution API key is required}
+      # Required from clients on /tools/* as X-Tools-Key; unset or empty refuses to start
+      TOOLS_GATEWAY_KEY: ${TOOLS_GATEWAY_KEY:?the tools gateway key is required (openssl rand -hex 32)}
+      # /metrics/* upstreams: one host:port each (no path, no list). Unset points
+      # at a closed port, so that name answers 502 and the rest keep working.
+      METRICS_VLLM_27B_URL: ${METRICS_VLLM_27B_URL:-127.0.0.1:9}
+      METRICS_VLLM_FLASHNEXT_URL: ${METRICS_VLLM_FLASHNEXT_URL:-127.0.0.1:9}
+      METRICS_VLLM_BGEM3_URL: ${METRICS_VLLM_BGEM3_URL:-127.0.0.1:9}
+      METRICS_VLLM_RERANK_URL: ${METRICS_VLLM_RERANK_URL:-127.0.0.1:9}
+      METRICS_VLLM_WHISPER_URL: ${METRICS_VLLM_WHISPER_URL:-127.0.0.1:9}
+      METRICS_GPU_1_URL: ${METRICS_GPU_1_URL:-127.0.0.1:9}
+      METRICS_GPU_2_URL: ${METRICS_GPU_2_URL:-127.0.0.1:9}
     healthcheck:
       test: [CMD, wget, -qO-, 'http://localhost:8080/health']
       interval: 30s
@@ -237,11 +248,16 @@ services:
         condition: service_healthy
       code-interpreter-minio-init:
         condition: service_completed_successfully
-    command: [sh, -c, 'mkdir -p /app/ssl && python3 -m src.main']
+    # cgroup-init (services/code-interpreter/bin) enables per-sandbox cgroups before the service starts
+    command: [cgroup-init, sh, -c, 'mkdir -p /app/ssl && python3 -m src.main']
     environment:
       API_KEY: ${CODE_INTERPRETER_API_KEY:?the code execution API key is required}
       MAX_EXECUTION_TIME: '30'
-      MAX_MEMORY_MB: '512'
+      # Per-sandbox cgroup memory.max (no swap), enforced by nsjail-memcg. It counts the whole
+      # sandbox: a warm Python REPL with pandas/numpy/matplotlib loaded is ~260 MB, so 1024
+      # leaves ~750 MB for user data. Over it the kernel kills the sandbox (the call returns an error).
+      MAX_MEMORY_MB: '1024'
+      NSJAIL_BINARY: /usr/local/bin/nsjail-memcg
       OMP_NUM_THREADS: '1'
       OPENBLAS_NUM_THREADS: '1'
       SANDBOX_POOL_PARALLEL_BATCH: '1'
@@ -259,6 +275,10 @@ services:
     security_opt:
       - apparmor:unconfined
       - seccomp:unconfined
+    # Whole container: API (~100-300 MB) + 2 warm REPLs (SANDBOX_POOL_PY default, ~260 MB each)
+    # + a few sandboxes at MAX_MEMORY_MB at once. No swap on top.
+    mem_limit: 4g
+    memswap_limit: 4g
     healthcheck:
       test: [CMD-SHELL, 'curl -fs http://localhost:8000/health || exit 1']
       interval: 30s

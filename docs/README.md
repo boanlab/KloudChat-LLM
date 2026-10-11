@@ -16,8 +16,9 @@ nodes live outside this stack: LiteLLM and whisper-shim reach them at the URLs
 the [scheduler](../scheduler/README.md) writes into `.env`. A model with no
 room on any node, transcription included, is served through OpenRouter.
 
-`/tools/*` is unauthenticated. The gateway port must only be open inside a
-private network.
+`/tools/*` requires the shared key `TOOLS_GATEWAY_KEY` (header
+`X-Tools-Key`). The gateway port must still only be open inside a private
+network.
 
 ## Documents
 

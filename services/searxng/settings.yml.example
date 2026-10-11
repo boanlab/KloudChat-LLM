@@ -4,7 +4,7 @@
 # an engine:
 #
 #   curl -s -G 'http://<host>/tools/search/search' --data-urlencode 'q=<query>' \
-#     -d format=json -d engines=<name> | python3 -c 'import sys,json; \
+#     -H "X-Tools-Key: $TOOLS_GATEWAY_KEY" -d format=json -d engines=<name> | python3 -c 'import sys,json; \
 #     d=json.load(sys.stdin); print(len(d["results"]), d["unresponsive_engines"])'
 use_default_settings:
   engines:

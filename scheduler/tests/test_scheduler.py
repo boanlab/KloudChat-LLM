@@ -27,7 +27,7 @@ def _spec(model_id: str, *, weight: int, ctx_floor: int = 0,
     spec = registry.ModelSpec(
         id=model_id, hf_repo=f"org/{model_id}", dir=model_id,
         service=f"vllm-{model_id}", port=8001,
-        env_prefix=f"VLLM_{model_id.upper()}", served_name=f"local/{model_id}",
+        env_prefix=f"VLLM_{model_id.upper()}",
         ctx_floor=ctx_floor, concurrent_sessions=1, arches=arches,
         priority=priority, placement=placement, share=share,
     )
@@ -526,6 +526,24 @@ def test_the_reserve_scales_with_the_card():
     assert small.effective_reserve_bytes < large.effective_reserve_bytes
 
 
+def test_the_reserve_is_taken_from_every_card():
+    one = _node("one", 96)
+    two = NodeSpec(node_id="two", hostname="user@two", gpu_class="pro6000",
+                   total_vram_bytes=96 * GB, arch="amd64", gpu_count=2)
+    assert two.card_budget_bytes() == one.card_budget_bytes()
+    assert two.planner_vram_bytes == 2 * one.planner_vram_bytes
+
+
+def test_co_resident_allocations_stay_within_the_card():
+    """Rounded-up --gpu-memory-utilization of every model on a card sums within its budget."""
+    specs = [_spec(f"m{i}", weight=int((3.3 + i * 0.7) * GB), ctx_floor=8192) for i in range(6)]
+    node = _node("n1", 96)
+    result = planner.plan(specs, [node], replicas=1)
+    used = sum(p.gpu_util * node.total_vram_bytes for p in result.placements)
+    assert result.placements
+    assert used <= node.card_budget_bytes()
+
+
 def test_activation_is_capped_by_the_card_not_the_constant():
     spec = _spec("a", weight=1 * GB, ctx_floor=16384)
     assert planner.activation_bytes(spec, 96 * GB) == planner.ACTIVATION_BYTES
@@ -625,7 +643,6 @@ def test_derived_defaults():
     spec = registry.load(path)[0]
     assert spec.dir == "foo"
     assert spec.service == "vllm-foo"
-    assert spec.served_name == "local/foo"
     assert spec.port == registry.BASE_PORT
 
 
@@ -968,6 +985,43 @@ def test_a_failed_env_write_stops_that_node_and_drops_its_route():
     assert any(h.endswith("n2") and "up -d" in c for h, c in attempted)
     text = Path(env_path).read_text()
     assert "VLLM_A_URL=http://n2:8001" in text and "n1:8001" not in text
+
+
+def test_a_failed_recreate_drops_an_unchanged_route():
+    """A recreate that fails removes its URL even when the URL value itself did not change."""
+    spec = _spec("a", weight=20 * GB, ctx_floor=16384)
+    nodes = [_node("n1", 96), _node("n2", 96)]
+    result = planner.plan([spec], nodes, replicas=2)
+    with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+        f.write("VLLM_A_URL=http://n1:8001,http://n2:8001\n")
+        env_path = f.name
+    running = {"n1": {"vllm-a"}, "n2": {"vllm-a"}}
+    change = applier.compute_diff(target=result, current=running, specs=[spec], nodes=nodes,
+                                  node_env={"n1": {}, "n2": {}}, local_env_path=env_path)
+    assert "VLLM_A_URL" not in change.local_env
+    assert any(a.kind == "recreate" for a in change.actions)
+
+    def runner(host: str, command: str) -> tuple[int, str]:
+        return (1, "oom") if host.endswith("n1") and "force-recreate" in command else (0, "")
+
+    applier.apply(change, local_env_path=env_path, runner=runner)
+    assert "VLLM_A_URL=http://n2:8001\n" in Path(env_path).read_text()
+
+
+def test_flash_next_seats_on_one_gb10_or_one_pro6000():
+    """The catalogue entry fits a GB10 and a single RTX PRO 6000 card."""
+    yaml_path = Path(__file__).resolve().parents[1] / "models.yaml"
+    spec = registry.load(yaml_path, only=["qwen3.8-flash-next"])[0]
+    spec = spec.bind(ModelMetadata(
+        model_id="fn", n_layers=12, n_kv_heads=2, head_dim=256,
+        weight_dtype=Dtype.NVFP4, weight_bytes=spec.weight_override, native_ctx=262144,
+    ), 262144)
+    for gpu_class, gib, arch in (("gb10", 121.7, "arm64"), ("pro6000", 95.6, "amd64")):
+        nodes = [NodeSpec(node_id=n, hostname=n, gpu_class=gpu_class,
+                          total_vram_bytes=int(gib * GB), arch=arch) for n in ("h", "p")]
+        result = planner.plan([spec], nodes, head="h")
+        assert [p.node_id for p in result.placements] == ["p"], gpu_class
+        assert result.placements[0].ctx == 131072
 
 
 if __name__ == "__main__":

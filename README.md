@@ -24,8 +24,10 @@ one address in its admin screen. No backend address is compiled into the UI.
                                    └─────────────────────────────────────────┘
 ```
 
-`/tools/*` requires no authentication. **The gateway port must only be open
-inside a private network**: the code execution endpoint sits behind it. Each
+`/tools/*` requires the shared key `TOOLS_GATEWAY_KEY` in an `X-Tools-Key`
+header (KloudChat's API sends it); without it the gateway answers 401. **The
+gateway port must still only be open inside a private network**: the code
+execution endpoint sits behind it. Each
 backing store (the two databases, MinIO, redis, valkey) is on an internal
 network shared only with the service that owns it. Internal service keys (code
 execution, document fetching) are injected by the gateway; the UI never learns
@@ -55,7 +57,7 @@ Print them again at any time:
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | optional | Hugging Face gated repositories, for weight downloads |
-| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. The first is the head node (retrieval, transcription); the rest are the pool (the 122B, the coder) |
+| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. The first is the head node (retrieval, transcription); the rest are the pool (Flash-Next, the coder) |
 | `VLLM_MODELS` | model id CSV | What to deploy. Defined in `scheduler/models.yaml` |
 
 `VLLM_*_URL` is written by the placement step inside `setup.sh all`. To manage
@@ -67,7 +69,9 @@ At least one of an OpenRouter key or a vLLM node is required.
 
 ```bash
 ./scripts/install-vllm.sh          # vLLM image and GPU runtime check
-./scripts/download-vllm-models.sh  # only weights this card can serve
+./scripts/download-vllm-models.sh  # 27B and whisper, if this card can serve them
+./scripts/download-vllm-models.sh bge-m3 bge-reranker-v2-m3  # head node
+./scripts/download-vllm-models.sh qwen3.8-flash-next-nvfp4   # pool node
 ```
 
 Every model a GPU node serves, transcription (`whisper-large-v3`) included, is
@@ -132,7 +136,8 @@ script prints its usage when run without arguments.
 | Any other card, AMD / ROCm, Apple, macOS, Windows | Not supported. OpenRouter only |
 
 The local lineup is `qwen3.8-27b` (chat, vision, coding, deep research),
-`qwen3.5-122b` (quality and judging, a GPU node to itself), `bge-m3` and
+`qwen3.8-flash-next` (quality and judging, a GB10 or RTX PRO 6000 node to
+itself), `bge-m3` and
 `bge-reranker-v2-m3` (retrieval) and `whisper-large-v3` (transcription);
 `qwen3-coder-next` (coding) is in the catalogue but not deployed by default.
 See [docs/models.md](docs/models.md). Local serving is NVIDIA-only. Supported

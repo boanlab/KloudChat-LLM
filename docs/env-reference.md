@@ -15,8 +15,8 @@ external keys and node addresses.
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | token | Hugging Face gated repositories. Weight downloads only |
-| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (retrieval, transcription); the rest are the pool (the 122B, the coder); chat replicas land on any node with room. See [models.md](models.md#where-models-are-defined) |
-| `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml`. Default `qwen3.8-27b,qwen3.5-122b,bge-m3,bge-reranker-v2-m3,whisper-large-v3`; `qwen3.5-122b` needs a pool node to itself (drop it on a single node); `qwen3-coder-next` is in the catalogue but not in the default |
+| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (retrieval, transcription); the rest are the pool (Flash-Next, the coder); chat replicas land on any node with room. See [models.md](models.md#where-models-are-defined) |
+| `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml`. Default `qwen3.8-27b,qwen3.8-flash-next,bge-m3,bge-reranker-v2-m3,whisper-large-v3`; `qwen3.8-flash-next` needs a GB10 or RTX PRO 6000 pool node to itself (drop it on a single node); `qwen3-coder-next` is in the catalogue but not in the default |
 | `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | optional | NAVER API HUB credentials; both set enables the `naver web` and `naver news` engines |
 | `OPENAI_API_KEY` | optional | Registers `text-embedding-3-small` as the embedding fallback; passed to the LiteLLM container. Not in `.env.example`; add it by hand |
 
@@ -41,6 +41,7 @@ Filled in by `gen-env.sh`. If you create them yourself, keep the formats below.
 | `LITELLM_DB_PASSWORD` | 32 hex | LiteLLM's postgres |
 | `LITELLM_DB_USER` | string | `kloudchat-litellm` by default |
 | `SEARXNG_SECRET_KEY` | 32 hex | SearXNG session signing |
+| `TOOLS_GATEWAY_KEY` | 64 hex | Required by the gateway on every `/tools/*` request as `X-Tools-Key`; 401 otherwise. Set the same value in KloudChat's `.env` as `KCHAT_TOOLS_GATEWAY_KEY`. Compose refuses to start the gateway without it, and a value under 32 characters denies all of `/tools`. Hex only. Rotation: [tools.md](tools.md#authentication) |
 | `CODE_INTERPRETER_API_KEY` | 32 hex | Injected by the gateway into code execution requests |
 | `CODE_INTERPRETER_MINIO_USER` | `code-interpreter` | MinIO user for code execution artifacts |
 | `CODE_INTERPRETER_MINIO_PASSWORD` | 32 hex | MinIO password |
@@ -49,6 +50,8 @@ Filled in by `gen-env.sh`. If you create them yourself, keep the formats below.
 | `INDEX_DB_USER` / `INDEX_DB_PASSWORD` | `index` / 32 hex | The retrieval index's pgvector database. The password is required whenever the `index` profile is on |
 
 The two injected keys never reach the UI: they exist only inside the gateway.
+`TOOLS_GATEWAY_KEY` is the one the UI does hold; the gateway strips it before
+proxying.
 
 ## 4. Placement results, written by the scheduler
 
@@ -85,10 +88,11 @@ placement is skipped.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `VLLM_IMAGE` | `kloudchat-vllm:local` | The image compose runs: this repo's layer over the upstream vLLM image, built and recorded by `install-vllm.sh` |
-| `VLLM_BASE_IMAGE` / `VLLM_BASE_DIGEST` | (empty) | Upstream image and the digest it resolved to, recorded by `install-vllm.sh`. A rebuild pins to the digest |
+| `VLLM_IMAGE` | `kloudchat-vllm:local` | The image compose runs: this repo's layer over the upstream vLLM image, built and recorded by `install-vllm.sh`. Another value on a node is an override that `install-vllm.sh` keeps |
+| `VLLM_BASE_IMAGE` / `VLLM_BASE_DIGEST` | (empty) | Upstream image and the digest it resolved to, recorded by `install-vllm.sh`. A rebuild pins to the digest; later runs reuse the recorded image, and `install-vllm.sh --reinstall --image <tag>` moves to another (`vllm/vllm-openai:latest` to upgrade) |
+| `VLLM_QWENFLASH_ENGRAM` | (empty) | Flash-Next's `--engram-config`. Empty: `{"checkpoint_mapped": true}`, the PLE table mapped from the checkpoint (GB10). `install-vllm.sh` writes `{}` on discrete cards: the table in pinned host RAM |
 | `VLLM_MODELS_ROOT` | `/var/lib/vllm/models` | Checkpoint root on the node |
-| `VLLM_<PREFIX>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root (`VLLM_QWEN27B_DIR`, `VLLM_QWEN122B_DIR`, `VLLM_CODERNEXT_DIR`, `VLLM_BGEM3_DIR`, `VLLM_RERANK_DIR`, `VLLM_WHISPER_DIR`) |
+| `VLLM_<PREFIX>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root (`VLLM_QWEN27B_DIR`, `VLLM_QWENFLASH_DIR`, `VLLM_CODERNEXT_DIR`, `VLLM_BGEM3_DIR`, `VLLM_RERANK_DIR`, `VLLM_WHISPER_DIR`) |
 | `VLLM_CODERNEXT_DEEP_GEMM` | `0` | `VLLM_USE_DEEP_GEMM` for `vllm-codernext`. DeepGEMM rejects this checkpoint's FP8 scale-factor layout on GB10; `1` where the kernel takes it |
 | `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling for `vllm-whisper` (`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`) |
 
@@ -118,7 +122,7 @@ Per-model `GPU_UTIL`, `MAX_LEN`, `MAX_BATCHED_TOKENS`, `MAX_NUM_SEQS` and `SPEC_
 |---|---|---|
 | `LITELLM_LOG` | `INFO` | |
 | `LITELLM_URL` | `http://localhost:<GATEWAY_PORT>/litellm` | Where `manage.sh` reaches LiteLLM. Read from the shell first, then `.env` |
-| `CONCURRENCY_GATE_CAPS` | built-in caps: 128 for `qwen3.8-27b`, 32 for `qwen3.5-122b` and `qwen3-coder-next`, on both the `local/` and `strict-local/` alias | JSON map of model aliases to positive concurrency caps, overriding the built-in ones |
+| `CONCURRENCY_GATE_CAPS` | built-in caps: 128 for `qwen3.8-27b`, 16 for `qwen3.8-flash-next`, 32 for `qwen3-coder-next`, on both the `local/` and `strict-local/` alias | JSON map of model aliases to positive concurrency caps, overriding the built-in ones |
 | `CONCURRENCY_GATE_TTL` | `1.5` | Seconds between vLLM capacity polls |
 | `CONCURRENCY_GATE_SCRAPE_TIMEOUT` | `1.0` | Timeout in seconds for one vLLM metrics request |
 | `CONCURRENCY_GATE_DEBUG` | (empty) | `1` logs the overload gate's decisions |
@@ -158,7 +162,8 @@ Changing the others means editing `docker-compose.yml`.
 | search-shim | `CACHE_TTL_S` / `STALE_TTL_S` / `CACHE_MAX_ENTRIES` | `900` / `21600` / `2048` | How long an answer with results is reused, how much longer it is served while SearXNG cannot answer, and how many are kept |
 | search-shim | `UPSTREAM_TIMEOUT_S` / `CONNECT_TIMEOUT_S` | `20` / `3` | Whole-call and connect timeouts towards SearXNG |
 | search-shim | `SAFESEARCH` | `2` | Forced on every search: 0 off, 1 moderate, 2 strict |
-| code-interpreter | `MAX_EXECUTION_TIME` / `MAX_MEMORY_MB` | `30` / `512` | Sandbox limits, set in compose |
+| code-interpreter | `MAX_EXECUTION_TIME` / `MAX_MEMORY_MB` | `30` / `1024` | Sandbox limits, set in compose; memory is a per-sandbox cgroup `memory.max` |
+| code-interpreter | `NSJAIL_BINARY` | `/usr/local/bin/nsjail-memcg` | nsjail wrapper that applies `MAX_MEMORY_MB` |
 | all shims | `LOG_LEVEL` | `INFO` | |
 
 ## Shell-only variables

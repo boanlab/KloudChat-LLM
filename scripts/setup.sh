@@ -35,6 +35,18 @@ source "${SCRIPT_DIR}/lib.sh"
 
 GATEWAY_PORT="$(env_get GATEWAY_PORT)"; GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 
+# HTTP status of a GET through the gateway; /tools/* carries X-Tools-Key, fed
+# to curl on a pipe so the key never appears in argv
+gateway_code() {
+  local url="$1"
+  if [[ "$url" == */tools/* ]]; then
+    printf 'X-Tools-Key: %s\n' "$(env_get TOOLS_GATEWAY_KEY)" \
+      | curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H @- "$url" 2>/dev/null || echo 000
+  else
+    curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$url" 2>/dev/null || echo 000
+  fi
+}
+
 BUILD_LOCAL=0
 
 usage() { sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'; }
@@ -59,13 +71,13 @@ step_env_validate() {
   local vllm_urls; vllm_urls="$(vllm_urls_csv)"
   if has_openrouter; then
     ok "OPENROUTER_API_KEY is set"
-  elif [[ -n "$vllm_urls" ]]; then
+  elif [[ -n "$vllm_urls" || -n "$(env_get NODES_VLLM)" ]]; then
     ok "vLLM nodes present (local only, no OpenRouter)"
   else
     err "neither OPENROUTER_API_KEY nor a vLLM node — one of them is required"; exit 1
   fi
 
-  local required=(LITELLM_MASTER_KEY LITELLM_DB_PASSWORD CODE_INTERPRETER_API_KEY CODE_INTERPRETER_MINIO_PASSWORD SCRAPER_API_KEY)
+  local required=(LITELLM_MASTER_KEY LITELLM_DB_PASSWORD CODE_INTERPRETER_API_KEY CODE_INTERPRETER_MINIO_PASSWORD SCRAPER_API_KEY TOOLS_GATEWAY_KEY)
   # index-db refuses to start without its password
   [[ ",$(env_get COMPOSE_PROFILES)," == *",index,"* ]] && required+=(INDEX_DB_PASSWORD)
 
@@ -75,6 +87,10 @@ step_env_validate() {
     [[ -z "$(env_get "$key")" || "$(env_get "$key")" == change-me-* ]] && missing+=("$key")
   done
   (( ${#missing[@]} )) && { err "unfilled secrets: ${missing[*]} — ./scripts/gen-env.sh --force"; exit 1; }
+  # The gateway denies every /tools request with a shorter key
+  local tools_key; tools_key="$(env_get TOOLS_GATEWAY_KEY)"
+  [[ ${#tools_key} -ge 32 && "$tools_key" =~ ^[A-Za-z0-9]+$ ]] \
+    || { err "TOOLS_GATEWAY_KEY must be 32+ alphanumeric characters — openssl rand -hex 32"; exit 1; }
   ok "secrets are set"
 }
 
@@ -195,7 +211,7 @@ step_wait_services() {
     for spec in "${CAPABILITIES[@]}"; do
       IFS='|' read -r _ _ probe blocking <<<"$spec"
       [[ "$blocking" == 1 ]] || continue
-      local code; code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:${GATEWAY_PORT}${probe}" 2>/dev/null || echo 000)
+      local code; code=$(gateway_code "http://localhost:${GATEWAY_PORT}${probe}")
       [[ "$code" == "502" || "$code" == "503" || "$code" == "000" ]] && pending=$((pending+1))
     done
     printf "\r    [%3ds] capabilities not ready: %d " "$elapsed" "$pending"
@@ -224,11 +240,13 @@ role_urls() {
   local name path probe
   for spec in "${CAPABILITIES[@]}"; do
     IFS='|' read -r name path probe _ <<<"$spec"
-    local code; code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "${base}${probe}" 2>/dev/null || echo 000)
+    local code; code=$(gateway_code "${base}${probe}")
     local status
     case "$code" in
+      # The gateway's own refusal of /tools/* without the right X-Tools-Key
+      401) [[ "$path" == /tools/* ]] && status="key rejected (TOOLS_GATEWAY_KEY)" || status="connected" ;;
       # 4xx = reached (MCP endpoints answer GET with 405)
-      200|202|400|401|405|406) status="connected" ;;
+      200|202|400|405|406) status="connected" ;;
       502|503)                 status="not started" ;;
       000)                     status="no gateway response" ;;
       *)                       status="http ${code}" ;;
@@ -238,6 +256,7 @@ role_urls() {
   echo
   echo "  'not started' means that service's container is not running — check COMPOSE_PROFILES"
   echo "  The LiteLLM master key is LITELLM_MASTER_KEY in .env (enter it in the UI as well)"
+  echo "  /tools/* needs TOOLS_GATEWAY_KEY from .env: set the same value as KCHAT_TOOLS_GATEWAY_KEY in KloudChat's .env"
   echo "  LiteLLM's own admin UI: ${base}/litellm/ui/ — user 'admin', password the master key."
   echo "  It is left reachable on purpose: the gateway is reachable from the internal network only"
 }

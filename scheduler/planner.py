@@ -89,7 +89,12 @@ def kv_bytes(spec: ModelSpec, ctx: int) -> int:
 
 
 def activation_bytes(spec: ModelSpec, card_bytes: Optional[int] = None) -> int:
-    """Runtime headroom by runner, capped by card size; the full figure without ``card_bytes``."""
+    """Runtime headroom by runner, capped by card size; the full figure without ``card_bytes``.
+
+    A declared ``activation`` is taken as is.
+    """
+    if spec.activation_override is not None:
+        return spec.activation_override
     base = POOLING_ACTIVATION_BYTES if spec.is_pooling else ACTIVATION_BYTES
     if card_bytes and card_bytes > 0:
         return min(base, max(1 * GB, int(card_bytes * ACTIVATION_MAX_FRACTION)))
@@ -131,6 +136,15 @@ def gpu_util_for(charge: int, node: NodeSpec) -> float:
     return min(MAX_GPU_UTIL, max(MIN_GPU_UTIL, stepped))
 
 
+def allocation(need: int, node: NodeSpec) -> tuple[float, int]:
+    """(gpu_util, bytes vLLM takes) for a per-card ``need``: the rounded-up fraction of the card."""
+    util = gpu_util_for(need, node)
+    denom = node.total_vram_bytes or node.planner_vram_bytes
+    if denom <= 0:
+        return util, need
+    return util, max(need, math.ceil(util * denom))
+
+
 def _fit_sessions(spec: ModelSpec, node: NodeSpec, free: Sequence[int],
                   card_capacity: int) -> Optional[tuple[ModelSpec, list[int]]]:
     """The spec as seatable on this node, or None.
@@ -155,7 +169,7 @@ def _assign_cards(spec: ModelSpec, node: NodeSpec, free: Sequence[int], ctx: int
     tp = max(1, spec.tensor_parallel)
     if tp > node.gpu_count:
         return None
-    need = per_gpu_need_bytes(spec, ctx, card_capacity)
+    _, need = allocation(per_gpu_need_bytes(spec, ctx, card_capacity), node)
     if need > card_capacity:
         return None
     order = sorted(range(len(free)), key=lambda i: (-free[i], i))
@@ -229,12 +243,12 @@ def plan(
                 f"{spec.concurrent_sessions} — the card has no room for more KV"
             )
         cap = card_capacity[target.node_id]
-        per_card = per_gpu_need_bytes(seated, seated.ctx_floor, cap)
+        util, per_card = allocation(per_gpu_need_bytes(seated, seated.ctx_floor, cap), target)
         for i in cards:
             free[target.node_id][i] -= per_card
         result.placements.append(
             Placement(spec.id, target.node_id, seated.ctx_floor,
-                      gpu_util_for(per_card, target), per_card * len(cards),
+                      util, per_card * len(cards),
                       max(1, spec.tensor_parallel), seated.concurrent_sessions,
                       tuple(cards))
         )
@@ -366,11 +380,11 @@ def _restore_context(
                     continue
                 bumped = min(spec.ctx_target, placement.ctx * 2)
                 cap = card_capacity[node_id]
-                grown = per_gpu_need_bytes(spec, bumped, cap)
+                util, grown = allocation(per_gpu_need_bytes(spec, bumped, cap), node)
                 if grown > cap:
                     continue
-                extra = grown - per_gpu_need_bytes(spec, placement.ctx, cap)
                 devices = placement.devices or (0,)
+                extra = grown - placement.charge // len(devices)
                 if extra <= 0 or any(free[node_id][i] < extra for i in devices):
                     continue
                 for i in devices:
@@ -378,7 +392,7 @@ def _restore_context(
                 idx = plan_.placements.index(placement)
                 plan_.placements[idx] = Placement(
                     placement.model_id, node_id, bumped,
-                    gpu_util_for(grown, node), grown * len(devices),
+                    util, grown * len(devices),
                     placement.tp, placement.sessions, placement.devices,
                 )
                 grew = True
@@ -415,12 +429,12 @@ def _replicate(
             target = _worst_fit(candidates, free)
             seated, cards = seatable[target.node_id]
             cap = card_capacity[target.node_id]
-            per_card = per_gpu_need_bytes(seated, seated.ctx_floor, cap)
+            util, per_card = allocation(per_gpu_need_bytes(seated, seated.ctx_floor, cap), target)
             for i in cards:
                 free[target.node_id][i] -= per_card
             plan_.placements.append(
                 Placement(spec.id, target.node_id, seated.ctx_floor,
-                          gpu_util_for(per_card, target), per_card * len(cards),
+                          util, per_card * len(cards),
                           max(1, spec.tensor_parallel), seated.concurrent_sessions,
                           tuple(cards))
             )

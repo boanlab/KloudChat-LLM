@@ -18,9 +18,12 @@ not patched.
 
 This backend runs inside a private network. Three properties follow from that:
 
-- **`/tools/*` is unauthenticated.** The gateway injects internal service
-  credentials and ignores whatever the caller sent. Anything that can reach
-  the gateway port can reach those tools.
+- **`/tools/*` requires one shared key.** The gateway answers `401` unless the
+  request carries `X-Tools-Key: <TOOLS_GATEWAY_KEY>`, then injects internal
+  service credentials and ignores whatever else the caller sent. The key is a
+  single shared secret held by KloudChat's API, not a per-user credential:
+  whoever holds it can reach every tool. See
+  [docs/tools.md](docs/tools.md#authentication).
 - **`/tools/exec` runs arbitrary code.** The code interpreter is a sandbox
   with `SYS_ADMIN` and relaxed seccomp/apparmor so that user code can run. It
   is isolation, not a security boundary against a determined attacker.
@@ -29,13 +32,14 @@ This backend runs inside a private network. Three properties follow from that:
 
 Exposing the gateway port to the internet, or to an untrusted segment of your
 network, is a configuration mistake rather than a vulnerability in this
-project. Reports of the form "the tools endpoint requires no authentication"
-are expected behaviour and documented in [docs/tools.md](docs/tools.md).
+project; the tools key is a second line of defence, not a reason to publish
+the port.
 
 Do report:
 
-- A path through the gateway that reaches a service it should not, or that
-  leaks an injected credential back to the caller.
+- A path through the gateway that reaches a service it should not, reaches
+  `/tools/*` without the tools key, or leaks an injected credential (or the
+  tools key) back to the caller or to an upstream.
 - Sandbox escape from the code interpreter to the host or to another
   container.
 - Credential exposure through generated config, logs, or the local ledger

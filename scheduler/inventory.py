@@ -83,7 +83,7 @@ def _probe_checkpoints(host: str, models_root: str) -> Optional[frozenset[str]]:
     rc, out, _ = _ssh(
         host,
         f"for d in {shlex.quote(models_root)}/*/; do "
-        '[ -f "$d/config.json" ] && basename "$d"; done',
+        '[ -f "$d/config.json" ] && basename "$d"; done; true',
     )
     if rc != 0:
         return None

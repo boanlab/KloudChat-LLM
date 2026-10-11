@@ -58,7 +58,6 @@ class ModelSpec:
     service: str
     port: int
     env_prefix: str
-    served_name: str
     ctx_floor: int
     concurrent_sessions: int
     #: Architectures that can serve it. Empty means all.
@@ -81,6 +80,8 @@ class ModelSpec:
     #: Declared overrides of probed values
     ctx_target_override: Optional[int] = None
     weight_override: Optional[int] = None
+    #: Runtime headroom per card; None takes the planner default
+    activation_override: Optional[int] = None
 
     @property
     def is_pooling(self) -> bool:
@@ -142,7 +143,6 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
         service=str(entry.get("service") or env_prefix.lower().replace("_", "-")),
         port=int(entry.get("port") or BASE_PORT + index),
         env_prefix=env_prefix,
-        served_name=str(entry.get("served_name") or f"local/{model_id}"),
         ctx_floor=int(entry["ctx_floor"]) if entry.get("ctx_floor") else 0,
         concurrent_sessions=int(
             entry.get("concurrent_sessions") or DEFAULT_CONCURRENT_SESSIONS
@@ -155,6 +155,9 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
         runner=runner,
         ctx_target_override=int(entry["ctx_target"]) if entry.get("ctx_target") else None,
         weight_override=parse_size(entry["weight"]) if entry.get("weight") else None,
+        activation_override=(
+            parse_size(entry["activation"]) if entry.get("activation") else None
+        ),
     )
 
 

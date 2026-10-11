@@ -19,19 +19,24 @@ models:
     ctx_floor: 262144
     priority: 20
 
-  # Quality and judging: hard questions, review, grading. MoE (10B of 122B
-  # active), hybrid attention, NVFP4. A pool node to itself; seated before the
-  # 27B. Not for a single-node cluster (crowds out the 27B).
-  - id: qwen3.5-122b
-    hf_repo: txn545/Qwen3.5-122B-A10B-NVFP4
-    dir: qwen3.5-122b-nvfp4
-    env_prefix: VLLM_QWEN122B
+  # Quality and judging: hard questions, review, grading. MoE (512 experts, 10
+  # active), hybrid attention (12 of 48 layers hold KV), NVFP4 body, FP8 PLE
+  # table (48 GiB; page cache on GB10, pinned system RAM on a discrete card). A
+  # pool node to itself; seated before the 27B.
+  - id: qwen3.8-flash-next
+    hf_repo: nvidia/Qwen3.8-Flash-Next-NVFP4
+    dir: qwen3.8-flash-next-nvfp4
+    env_prefix: VLLM_QWENFLASH
     port: 8004
+    # Resident size; PLE table off the GPU budget
+    weight: 78.3GiB
+    # Measured on GB10; below the 10 GiB default, so one RTX PRO 6000 seats it
+    activation: 6GiB
     # Half the native 262144; room spent on concurrency
     ctx_floor: 131072
     ctx_target: 131072
-    # Full-length sessions sized for
-    concurrent_sessions: 16
+    # util 0.81 on a GB10 (773K-token KV); 2 sessions on one RTX PRO 6000 (0.92)
+    concurrent_sessions: 8
     priority: 30
     placement: pool
 
@@ -96,11 +101,12 @@ models:
 #   service         env_prefix lowercased    service in docker-compose.vllm.yml
 #   port            sequential from 8001     declared on every entry so an
 #                                            insertion does not shift the rest
-#   served_name     local/<id>               the name LiteLLM exposes
 #   arches          all                      declare only to exclude one
 #   runner          generate                 "pooling" for embedding and reranking,
 #                                            "transcription" for the STT backend
 #   tensor_parallel 1                        cards to shard across on one node
+#   activation      10 GiB (2 GiB pooling),  runtime headroom per card
+#                   at most 12% of the card
 #   priority        0                        placement order, highest first;
 #                                            ties seat the largest first
 #   placement       any                      "head", "pool", or any node
