@@ -71,7 +71,7 @@ step_env_validate() {
   local vllm_urls; vllm_urls="$(vllm_urls_csv)"
   if has_openrouter; then
     ok "OPENROUTER_API_KEY is set"
-  elif [[ -n "$vllm_urls" ]]; then
+  elif [[ -n "$vllm_urls" || -n "$(env_get NODES_VLLM)" ]]; then
     ok "vLLM nodes present (local only, no OpenRouter)"
   else
     err "neither OPENROUTER_API_KEY nor a vLLM node — one of them is required"; exit 1

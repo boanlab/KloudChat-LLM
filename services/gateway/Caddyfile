@@ -122,9 +122,9 @@
 				}
 			}
 
-			handle /metrics/vllm-122b {
+			handle /metrics/vllm-flashnext {
 				rewrite * /metrics
-				reverse_proxy {$METRICS_VLLM_122B_URL} {
+				reverse_proxy {$METRICS_VLLM_FLASHNEXT_URL} {
 					header_up -X-Tools-Key
 				}
 			}

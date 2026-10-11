@@ -4,13 +4,13 @@
 # Prepares a GPU node: GPU runtime check, vLLM image (pull + this repo's layer),
 # model directory. Weights: download-vllm-models.sh; services: manage-vllm.sh.
 #
-# Environment:
-#   VLLM_BASE_IMAGE   upstream image (default: by architecture, lib.sh)
+# Environment (shell, then .env):
+#   VLLM_BASE_IMAGE   upstream image; the recorded one, else lib.sh's default
 #   VLLM_MODELS_ROOT  model storage (default /var/lib/vllm/models)
 #
 # Flags:
 #   --reinstall       re-pull the base image
-#   --image <tag>     one-off base image override
+#   --image <tag>     switch the base image (recorded for later runs)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,7 +56,8 @@ fi
 
 hdr "2. vLLM image"
 # Base (pulled) and derived (built here) are separate tags
-VLLM_BASE_IMAGE="${IMAGE_OVERRIDE:-${VLLM_BASE_IMAGE:-$(vllm_default_image)}}"
+VLLM_BASE_IMAGE="${IMAGE_OVERRIDE:-${VLLM_BASE_IMAGE:-$(env_get VLLM_BASE_IMAGE)}}"
+VLLM_BASE_IMAGE="${VLLM_BASE_IMAGE:-$(vllm_default_image)}"
 [[ -n "$VLLM_BASE_IMAGE" ]] || { err "could not determine the vLLM base image — pass --image or set VLLM_BASE_IMAGE"; exit 1; }
 VLLM_IMAGE="kloudchat-vllm:local"
 echo "  base:    $VLLM_BASE_IMAGE"
@@ -75,16 +76,28 @@ BASE_DIGEST="$(image_base_digest "$VLLM_BASE_IMAGE")"
 # audio decoders
 echo "  → building services/vllm/Dockerfile onto the base"
 docker build --quiet \
-  --build-arg "BASE_IMAGE=$VLLM_BASE_IMAGE" \
+  --build-arg "BASE_IMAGE=${BASE_DIGEST:-$VLLM_BASE_IMAGE}" \
   -t "$VLLM_IMAGE" \
   "${PROJECT_DIR}/services/vllm" >/dev/null
 
 ok "image ready: $(docker image inspect "$VLLM_IMAGE" --format '{{.Size}}' | awk '{printf "%.1fGB",$1/1024/1024/1024}')"
 
-# .env for docker-compose.vllm.yml
-env_set VLLM_IMAGE "$VLLM_IMAGE"
+# .env for docker-compose.vllm.yml; another VLLM_IMAGE is a node override, kept
+current_image="$(env_get VLLM_IMAGE)"
+if [[ -n "$current_image" && "$current_image" != "$VLLM_IMAGE" ]]; then
+  warn "VLLM_IMAGE=${current_image} kept (node override); built ${VLLM_IMAGE} alongside"
+else
+  env_set VLLM_IMAGE "$VLLM_IMAGE"
+fi
 env_set VLLM_BASE_IMAGE "$VLLM_BASE_IMAGE"
 [[ -n "$BASE_DIGEST" ]] && env_set VLLM_BASE_DIGEST "$BASE_DIGEST"
+# Flash-Next PLE table: mapped from the checkpoint on unified memory (compose
+# default), pinned host RAM on a discrete card
+if [[ "$(detect_gpu_class)" == gb10 ]]; then
+  env_set VLLM_QWENFLASH_ENGRAM ""
+else
+  env_set VLLM_QWENFLASH_ENGRAM "{}"
+fi
 
 hdr "3. Model directory"
 echo "  VLLM_MODELS_ROOT: $VLLM_MODELS_ROOT"

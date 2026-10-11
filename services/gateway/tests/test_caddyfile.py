@@ -67,7 +67,7 @@ def test_compose_refuses_to_start_the_gateway_without_a_key():
 
 METRICS_TARGETS = {
     "vllm-27b": "METRICS_VLLM_27B_URL",
-    "vllm-122b": "METRICS_VLLM_122B_URL",
+    "vllm-flashnext": "METRICS_VLLM_FLASHNEXT_URL",
     "vllm-bgem3": "METRICS_VLLM_BGEM3_URL",
     "vllm-rerank": "METRICS_VLLM_RERANK_URL",
     "vllm-whisper": "METRICS_VLLM_WHISPER_URL",

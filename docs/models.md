@@ -60,8 +60,8 @@ model registers under its OpenRouter slug as `external`.
 
 ## The model set
 
-vLLM is the only local backend. Base images: amd64
-`vllm/vllm-openai:cu129-nightly`, arm64 (GB10) `vllm/vllm-openai:nightly-aarch64`.
+vLLM is the only local backend. Base image: `vllm/vllm-openai:latest` (amd64
+and arm64), pinned per node by digest.
 Compose runs `kloudchat-vllm:local`, this repo's layer over the base
 (`services/vllm/Dockerfile`); `install-vllm.sh` builds it and records
 `VLLM_IMAGE`, `VLLM_BASE_IMAGE` and `VLLM_BASE_DIGEST` in the node's `.env`.
@@ -77,7 +77,7 @@ OpenRouter.
 | Model (alias) | Container | Port | Quant | Node | Priority | Role |
 |---|---|---|---|---|---|---|
 | `local/qwen3.8-27b` | `vllm-qwen27b` | 8001 | NVFP4 | any | 20 | Chat: conversation, vision, coding, deep research, titles, memory extraction. One replica per node with room |
-| `local/qwen3.5-122b` | `vllm-qwen122b` | 8004 | NVFP4 | pool | 30 | Quality and judging: hard questions, review, grading. Qwen3.5-122B-A10B, MoE 10B active, context floor 131072. A node to itself |
+| `local/qwen3.8-flash-next` | `vllm-qwenflash` | 8004 | NVFP4 | pool | 30 | Quality and judging: hard questions, review, grading. Qwen3.8-Flash-Next, MoE, context floor 131072. A GB10 or RTX PRO 6000 node to itself |
 | `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | pool | 10 | Coding. Qwen3-Coder-Next-80B-A3B, hybrid attention, 12 of 48 layers hold KV |
 | `local/bge-m3` | `vllm-bgem3` | 8003 | BF16 | head | 5 | Retrieval embeddings. Pooling runner |
 | `local/bge-reranker-v2-m3` | `vllm-rerank` | 8009 | BF16 | head | 2 | Retrieval reranking. Pooling runner |
@@ -94,16 +94,23 @@ under `local/qwen3.8-27b`; LiteLLM spreads requests across them (`least-busy`).
 Each deployment carries a 3600 s request timeout and a concurrency-gate cap of
 128 in-flight requests.
 
-`qwen3.5-122b` is the quality and judging tier: Qwen3.5-122B-A10B (MoE, 10B
-active) in NVFP4 (`txn545/Qwen3.5-122B-A10B-NVFP4`), served at 131072 context
-with `--gpu-memory-utilization 0.85` and at most 32 concurrent sequences: a
-whole GB10 node. It is pool-placed with priority 30, so it seats before the 27B,
-which takes the remaining nodes. A single-node cluster cannot hold both; leave
-`qwen3.5-122b` out of
-`VLLM_MODELS` there (it stays reachable as `qwen/qwen3.5-122b-a10b`). It is
-registered under `local/` and `strict-local/qwen3.5-122b` with a 3600 s
-timeout and a concurrency-gate cap of 32. Titles, memory extraction, query
-rewriting, default chat and deep research all run on the 27B.
+`qwen3.8-flash-next` is the quality and judging tier: Qwen3.8-Flash-Next (MoE,
+512 experts, 10 active; hybrid attention, 12 of 48 layers hold KV) from
+`nvidia/Qwen3.8-Flash-Next-NVFP4`, an NVFP4 body with an FP8 PLE n-gram table.
+On GB10 the table (48 GiB) is read in place from the checkpoint files
+(`--engram-config '{"checkpoint_mapped": true}'`), which needs unified memory;
+the option is vllm#58439, and a vLLM without it rejects the flag at startup. On
+a discrete card `install-vllm.sh` sets `VLLM_QWENFLASH_ENGRAM={}` and the table
+sits in pinned host RAM. It declares a 6 GiB `activation` (the planner default
+is 10) so that one RTX PRO 6000 seats it. It serves 131072 context with MTP (2
+draft tokens) and at most 16 concurrent sequences: a whole node. It is
+pool-placed with priority 30, so it seats before the 27B, which takes the
+remaining nodes. A single-node cluster cannot hold both; leave
+`qwen3.8-flash-next` out of `VLLM_MODELS` there (it stays reachable as
+`qwen/qwen3.8-flash`). It is registered under `local/` and
+`strict-local/qwen3.8-flash-next` with a 3600 s timeout and a concurrency-gate
+cap of 16. Titles, memory extraction, query rewriting, default chat and deep
+research all run on the 27B.
 
 **Coder.** `qwen3-coder-next` is in the catalogue but not in the default
 `VLLM_MODELS`. Coverage seats every listed model once before any replica, so
@@ -113,8 +120,8 @@ gets the same treatment as the chat tiers: a hidden OpenRouter twin
 (`qwen/qwen3-coder-next`, 0.12 / 0.80 $ per 1M), a `fallbacks` line, and a
 concurrency-gate cap of 32 on `local/` and `strict-local/`.
 
-**Quantisation.** Chat is NVFP4, the coder FP8, retrieval BF16, transcription
-FP16. The supported cards (GB10, RTX 5090, RTX PRO 5000, RTX PRO 6000) execute
+**Quantisation.** Chat is NVFP4 (Flash-Next's PLE table FP8), the coder FP8,
+retrieval BF16, transcription FP16. The supported cards (GB10, RTX 5090, RTX PRO 5000, RTX PRO 6000) execute
 all of them. 32 GiB usable is the floor; `manage-vllm.sh up` without a service
 name refuses below it.
 
@@ -123,7 +130,7 @@ name refuses below it.
 | Model | Tool parser | Reasoning parser | Notes |
 |---|---|---|---|
 | `qwen3.8-27b` | `qwen3_xml` | `qwen3` | Thinking off by default (`--default-chat-template-kwargs '{"enable_thinking": false}'`). `--max-num-seqs` bounds CUDA-graph capture for the hybrid conv-state cache |
-| `qwen3.5-122b` | `qwen3_xml` | `qwen3` | Thinking off by default, as for the 27B |
+| `qwen3.8-flash-next` | `qwen3_xml` | `qwen3` | Thinking off by default, as for the 27B |
 | `qwen3-coder-next` | `qwen3_coder` | none | Qwen3-Coder's XML dialect |
 
 ## Free models
@@ -152,7 +159,7 @@ OpenRouter default. Embeddings are unaffected.
 | `model_name` | URL variable |
 |---|---|
 | `local/qwen3.8-27b` | `VLLM_QWEN27B_URL` |
-| `local/qwen3.5-122b` | `VLLM_QWEN122B_URL` |
+| `local/qwen3.8-flash-next` | `VLLM_QWENFLASH_URL` |
 | `local/qwen3-coder-next` | `VLLM_CODERNEXT_URL` |
 | `local/bge-m3` | `VLLM_BGEM3_URL` |
 | `local/bge-reranker-v2-m3` | `VLLM_RERANK_URL` |
@@ -161,10 +168,11 @@ OpenRouter default. Embeddings are unaffected.
   name; each chat model also gets a `strict-local/<model>` alias over the same
   backend.
 - **No URL**: no `local/*` name. With an OpenRouter key the model is reachable
-  under its slug (`qwen/qwen3.8-27b`, `qwen/qwen3.5-122b-a10b`,
+  under its slug (`qwen/qwen3.8-27b`, `qwen/qwen3.8-flash`,
   `qwen/qwen3-coder-next`) at OpenRouter's price.
 - **Discovery**: `gen-litellm-config.sh` polls `/v1/models` at each URL and
-  registers only the nodes that answer.
+  registers the nodes that serve the model; when none answers, it registers
+  every configured URL.
 - **Multi-node**: one deployment per node under the same name; the router
   picks `least-busy`.
 
@@ -192,14 +200,14 @@ independent paths:
 - **Overload**: the `concurrency_gate` callback
   (`services/litellm/callbacks/concurrency_gate.py`) polls each gated model's
   vLLM `/metrics` every `CONCURRENCY_GATE_TTL` seconds. When running requests
-  reach the cap (128 for `local/qwen3.8-27b`, 32 for `local/qwen3.5-122b`),
+  reach the cap (128 for `local/qwen3.8-27b`, 16 for `local/qwen3.8-flash-next`),
   traffic spills to the OpenRouter
   twin. Plain queueing never triggers `fallbacks`.
 
 | Local (primary) | OpenRouter fallback (declared $/1M in / out) |
 |---|---|
 | `local/qwen3.8-27b` | `qwen/qwen3.8-27b` (0.42 / 3.00) |
-| `local/qwen3.5-122b` | `qwen/qwen3.5-122b-a10b` (0.26 / 2.08) |
+| `local/qwen3.8-flash-next` | `qwen/qwen3.8-flash` (0.15 / 0.47) |
 | `local/qwen3-coder-next` | `qwen/qwen3-coder-next` (0.12 / 0.80) |
 
 - `emit_or_fallback` emits the twin only when the local primary is deployed.
@@ -247,8 +255,9 @@ prompt and response bodies are not.
 - **Fallback**: a node that does not answer gets `CTX_FALLBACK` (32768).
 
 `qwen3.8-27b` serves 262144 wherever it is placed (its floor is the native
-context). `qwen3.5-122b` serves 131072 (`ctx_target` caps it below the native
-262144) and sizes KV for 16 sessions. The scheduler writes the per-node value
+context). `qwen3.8-flash-next` serves 131072 (`ctx_target` caps it below the
+native 262144) and sizes KV for 8 sessions (2 on an RTX PRO 6000), leaving the
+rest of a GB10 to the page cache that holds its PLE table. The scheduler writes the per-node value
 as `VLLM_<PREFIX>_MAX_LEN`.
 
 ### Embeddings
@@ -276,7 +285,7 @@ ZAI_MODELS=(glm-5.3 glm-5.3-flash)
 XIAOMI_MODELS=(mimo-v2.6-flash)
 MOONSHOTAI_MODELS=(kimi-k3)
 # Qwen's hosted tier (not the local checkpoints)
-QWEN_MODELS=(qwen3.8-max-0902 qwen3.8-flash qwen3-coder-plus)
+QWEN_MODELS=(qwen3.8-max-0902 qwen3-coder-plus)
 MINIMAX_MODELS=(minimax-m3)
 ```
 

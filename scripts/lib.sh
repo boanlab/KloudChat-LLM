@@ -149,7 +149,7 @@ ZAI_MODELS=(glm-5.3 glm-5.3-flash)
 XIAOMI_MODELS=(mimo-v2.6-flash)
 MOONSHOTAI_MODELS=(kimi-k3)
 # Qwen's hosted tier (not the local checkpoints)
-QWEN_MODELS=(qwen3.8-max-0902 qwen3.8-flash qwen3-coder-plus)
+QWEN_MODELS=(qwen3.8-max-0902 qwen3-coder-plus)
 MINIMAX_MODELS=(minimax-m3)
 # "<OpenRouter provider>:<array prefix>" for each *_MODELS array above
 OR_PROVIDERS=(openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI
@@ -207,8 +207,8 @@ OPENAI_EMBED_CATALOG=(text-embedding-3-small)
 declare -A VLLM_MODELS=(
   # Chat, NVFP4
   [qwen3.8-27b-nvfp4]="unsloth/Qwen3.8-27B-NVFP4"
-  # Quality and judging, MoE 10B active, NVFP4; a GB10 node to itself
-  [qwen3.5-122b-nvfp4]="txn545/Qwen3.5-122B-A10B-NVFP4"
+  # Quality and judging, MoE, NVFP4 body and FP8 PLE table
+  [qwen3.8-flash-next-nvfp4]="nvidia/Qwen3.8-Flash-Next-NVFP4"
   # Coding, FP8
   [qwen3-coder-next]="Qwen/Qwen3-Coder-Next-FP8"
   # Retrieval embeddings and reranking, BF16
@@ -217,12 +217,14 @@ declare -A VLLM_MODELS=(
   # Transcription, FP16
   [whisper-large-v3]="openai/whisper-large-v3"
 )
+: "${VLLM_MODELS_ROOT:=$(env_get VLLM_MODELS_ROOT)}"
 : "${VLLM_MODELS_ROOT:=/var/lib/vllm/models}"
 
-# Checkpoint size on disk (GiB)
+# Resident weight size (GiB) for the fit check; the checkpoint size except
+# flash-next (PLE table off the GPU)
 declare -A VLLM_MODEL_WEIGHT_GB=(
   [qwen3.8-27b-nvfp4]=22
-  [qwen3.5-122b-nvfp4]=72
+  [qwen3.8-flash-next-nvfp4]=79
   [qwen3-coder-next]=75
   [bge-m3]=3
   [bge-reranker-v2-m3]=3
@@ -236,6 +238,8 @@ VLLM_PREFERRED_MODELS=(qwen3.8-27b-nvfp4)
 
 # Usable-VRAM floor (GiB): the RTX 5090
 VLLM_MIN_USABLE_VRAM_GB=32
+# System memory for Flash-Next on a discrete card (GiB): 48 GiB PLE table plus headroom
+VLLM_FLASHNEXT_MIN_RAM_GB=64
 
 # Prints why this node cannot serve alias $1 and returns 1; 0 silently otherwise
 vllm_model_unservable_reason() {
@@ -251,6 +255,19 @@ vllm_model_unservable_reason() {
     echo "the card has ${vram}GiB usable; this catalogue needs ${VLLM_MIN_USABLE_VRAM_GB}GiB before anything places with room to run"
     return 1
   fi
+  # 79 GiB resident: GB10 or RTX PRO 6000 only; on the latter the 48 GiB PLE
+  # table is pinned in system RAM
+  if [[ "$alias" == qwen3.8-flash-next-nvfp4 ]]; then
+    local class; class="$(detect_gpu_class)"
+    if ! [[ "$class" =~ ^(gb10|pro6000)$ ]]; then
+      echo "needs a GB10 or an RTX PRO 6000"; return 1
+    fi
+    local ram_gb; ram_gb=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1024 / 1024 ))
+    if [[ "$class" == pro6000 ]] && (( ram_gb < VLLM_FLASHNEXT_MIN_RAM_GB )); then
+      echo "needs ${VLLM_FLASHNEXT_MIN_RAM_GB}GiB of system memory for its PLE table; this node has ${ram_gb}GiB"
+      return 1
+    fi
+  fi
   local need=$(( weight + VLLM_RUNTIME_HEADROOM_GB ))
   if (( weight > 0 && vram > 0 && vram < need )); then
     echo "needs ~${need}GiB (weights ${weight} + runtime ${VLLM_RUNTIME_HEADROOM_GB}) but the card has ${vram}GiB"
@@ -259,17 +276,14 @@ vllm_model_unservable_reason() {
   return 0
 }
 
-# vLLM base image per architecture; nightly, as the stable tags lack the
-# hybrid-attention architectures. install-vllm.sh pins the resolved digest
-# per node as VLLM_BASE_DIGEST.
-VLLM_IMAGE_ARM64="vllm/vllm-openai:nightly-aarch64"
-VLLM_IMAGE_AMD64="vllm/vllm-openai:cu129-nightly"
+# vLLM base image: the latest release, multi-arch (amd64, arm64).
+# install-vllm.sh pins the resolved digest per node as VLLM_BASE_DIGEST.
+VLLM_IMAGE_LATEST="vllm/vllm-openai:latest"
 
 vllm_default_image() {
   case "$(detect_arch)" in
-    arm64) echo "$VLLM_IMAGE_ARM64" ;;
-    amd64) echo "$VLLM_IMAGE_AMD64" ;;
-    *)     echo "" ;;
+    arm64|amd64) echo "$VLLM_IMAGE_LATEST" ;;
+    *)           echo "" ;;
   esac
 }
 
@@ -288,9 +302,9 @@ declare -A MODEL_PRICE_IN_PM=(
   [grok-4.7]=2           [sonar]=1.00              [sonar-pro]=3.00
   [hy4-preview]=0.751    [deepseek-v4-pro-0813]=0.22  [deepseek-v4.1-flash]=0.30
   [glm-5.3]=1.40         [glm-5.3-flash]=0.15      [mimo-v2.6-flash]=0.14    [kimi-k3]=0.99
-  [qwen3.8-max-0902]=2.00  [qwen3.8-flash]=0.15    [qwen3-coder-plus]=0.65
+  [qwen3.8-max-0902]=2.00  [qwen3-coder-plus]=0.65
   [minimax-m3]=0.30
-  [qwen3.8-27b]=0  [qwen3.5-122b]=0  [qwen3-coder-next]=0
+  [qwen3.8-27b]=0  [qwen3.8-flash-next]=0  [qwen3-coder-next]=0
   [text-embedding-3-small]=0.02
 )
 declare -A MODEL_PRICE_OUT_PM=(
@@ -301,20 +315,20 @@ declare -A MODEL_PRICE_OUT_PM=(
   [grok-4.7]=6           [sonar]=1.00              [sonar-pro]=15.00
   [hy4-preview]=2.25     [deepseek-v4-pro-0813]=4.20  [deepseek-v4.1-flash]=1.20
   [glm-5.3]=4.40         [glm-5.3-flash]=0.50      [mimo-v2.6-flash]=0.28    [kimi-k3]=13.00
-  [qwen3.8-max-0902]=6.00  [qwen3.8-flash]=0.47    [qwen3-coder-plus]=3.25
+  [qwen3.8-max-0902]=6.00  [qwen3-coder-plus]=3.25
   [minimax-m3]=1.20
-  [qwen3.8-27b]=0  [qwen3.5-122b]=0  [qwen3-coder-next]=0
+  [qwen3.8-27b]=0  [qwen3.8-flash-next]=0  [qwen3-coder-next]=0
 )
 
 # OpenRouter twins of local models and the STT fallback, USD per 1M tokens,
 # keyed by slug; or_price prefers the live figure
 declare -A OR_TWIN_PRICE_IN_PM=(
-  [qwen/qwen3.8-27b]=0.42  [qwen/qwen3.5-122b-a10b]=0.26
+  [qwen/qwen3.8-27b]=0.42  [qwen/qwen3.8-flash]=0.15
   [qwen/qwen3-coder-next]=0.12
   [mistralai/voxtral-small-24b-2507]=0.10
 )
 declare -A OR_TWIN_PRICE_OUT_PM=(
-  [qwen/qwen3.8-27b]=3.00  [qwen/qwen3.5-122b-a10b]=2.08
+  [qwen/qwen3.8-27b]=3.00  [qwen/qwen3.8-flash]=0.47
   [qwen/qwen3-coder-next]=0.80
   [mistralai/voxtral-small-24b-2507]=0.30
 )
@@ -678,7 +692,7 @@ vllm_wait_until_ready() {
 # LiteLLM team allowlist: every chat model gen-litellm-config.sh registers
 litellm_chat_models_csv() {
   local vllm_chat_url; vllm_chat_url="$(env_get VLLM_QWEN27B_URL 2>/dev/null || true)"
-  local vllm_judge_url; vllm_judge_url="$(env_get VLLM_QWEN122B_URL 2>/dev/null || true)"
+  local vllm_judge_url; vllm_judge_url="$(env_get VLLM_QWENFLASH_URL 2>/dev/null || true)"
   local vllm_coder_url; vllm_coder_url="$(env_get VLLM_CODERNEXT_URL 2>/dev/null || true)"
   local out=() m
   if has_openrouter; then
@@ -702,9 +716,9 @@ litellm_chat_models_csv() {
     out+=("qwen/qwen3.8-27b")
   fi
   if [[ -n "$vllm_judge_url" ]]; then
-    out+=("local/qwen3.5-122b" "strict-local/qwen3.5-122b")
+    out+=("local/qwen3.8-flash-next" "strict-local/qwen3.8-flash-next")
   elif has_openrouter; then
-    out+=("qwen/qwen3.5-122b-a10b")
+    out+=("qwen/qwen3.8-flash")
   fi
   if [[ -n "$vllm_coder_url" ]]; then
     out+=("local/qwen3-coder-next" "strict-local/qwen3-coder-next")

@@ -21,7 +21,7 @@ and appends the service-specific path.
 | Deep research | `/tools/research` | `/tools/research/mcp` | deep-research | `tools` |
 | Transcription | `/tools/stt` | `/tools/stt/v1/audio/transcriptions` | whisper-shim | `whisper` |
 | Retrieval index | `/tools/index` | `/tools/index/{documents,search}` | index-shim | `index` |
-| GPU-node metrics | `/metrics` | `/metrics/{vllm-27b,vllm-122b,vllm-bgem3,vllm-rerank,vllm-whisper,gpu-1,gpu-2}` | vLLM `/metrics`, gpu-exporter | `tools` |
+| GPU-node metrics | `/metrics` | `/metrics/{vllm-27b,vllm-flashnext,vllm-bgem3,vllm-rerank,vllm-whisper,gpu-1,gpu-2}` | vLLM `/metrics`, gpu-exporter | `tools` |
 
 The contract is identical without the gateway, so a raw service address works
 too, except that the gateway also requires the tools key
@@ -288,7 +288,7 @@ upstream from `.env`, one `host:port` each (no path, no list):
 
 | Name | `.env` | Upstream |
 |---|---|---|
-| `vllm-27b`, `vllm-122b`, `vllm-bgem3`, `vllm-rerank`, `vllm-whisper` | `METRICS_VLLM_<NAME>_URL` | that model's vLLM server, e.g. `10.40.0.254:8001` |
+| `vllm-27b`, `vllm-flashnext`, `vllm-bgem3`, `vllm-rerank`, `vllm-whisper` | `METRICS_VLLM_<NAME>_URL` | that model's vLLM server, e.g. `10.40.0.254:8001` |
 | `gpu-1`, `gpu-2` | `METRICS_GPU_1_URL`, `METRICS_GPU_2_URL` | gpu-exporter on each node (`:9835`), the head node first |
 
 An unset name answers 502 and the others keep working. gpu-exporter

@@ -38,7 +38,7 @@ URL.
 |---|---|
 | NVIDIA GPU | GB10, RTX 5090, RTX PRO 5000 Blackwell or RTX PRO 6000 Blackwell. 32 GiB usable |
 | NVIDIA Container Toolkit | every model, transcription included, is a vLLM container |
-| Model disk | 100 GB |
+| Model disk | 150 GB on a Flash-Next node (124 GB checkpoint), 50 GB otherwise; plus about 35 GB for the vLLM image |
 
 **Four cards.** `detect_gpu_class` (`lib.sh`) and `scheduler/inventory.py`
 recognise those four; any other card is `unsupported`,
@@ -54,7 +54,7 @@ VRAM per model, as the planner sizes it:
 | Model | Requirement |
 |---|---|
 | Chat, default (`qwen3.8-27b`, 21.3 GiB, 262144 context floor) | RTX PRO 5000 (48 GB) or larger. An RTX 5090 cannot hold it at the floor and delegates it |
-| Quality and judging (`qwen3.5-122b`, ~72 GiB, 131072 context floor) | GB10 or RTX PRO 6000, alone on the node; a second GPU node beside the 27B's |
+| Quality and judging (`qwen3.8-flash-next`, 78.3 GiB resident, 131072 context floor) | GB10 or RTX PRO 6000, alone on the node (on an RTX PRO 6000, 64 GiB of system memory: its 48 GiB PLE table is pinned there; the downloader refuses the checkpoint below that); a second GPU node beside the 27B's |
 | Coding (`qwen3-coder-next`, 75 GiB) | GB10 or RTX PRO 6000, alone on the card |
 | Retrieval and transcription | Any supported card |
 
@@ -119,12 +119,13 @@ ssh <your-user>@<gpu-node> "echo '<your-user> ALL=(ALL) NOPASSWD:ALL' | sudo tee
 
 **Single node (the compose host is the GPU node)**
 
-- The SSH step can be skipped. `install-vllm.sh` and `tune-host.sh` still call
-  `sudo`; type the password or add the NOPASSWD line locally.
+- The scheduler still reaches the node over SSH: list it in `NODES_VLLM` (e.g.
+  `user@localhost`) with key-based login to itself. `install-vllm.sh` and
+  `tune-host.sh` call `sudo`; type the password or add the NOPASSWD line.
 
 ## DGX Spark (GB10)
 
-- arm64, so vLLM uses the `*-aarch64` image.
+- arm64; `vllm/vllm-openai:latest` is multi-arch.
 - `nvidia-smi memory.total` reports `[N/A]` on unified memory, so usable VRAM
   is system RAM minus a 12 GiB OS reservation (`lib.sh::UNIFIED_RESERVE_GB`,
   `scheduler/inventory.py::_UNIFIED_RESERVE_BYTES`). The planner budgets with

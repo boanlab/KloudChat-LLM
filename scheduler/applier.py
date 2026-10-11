@@ -54,6 +54,8 @@ class ChangePlan:
     actions: list[NodeAction] = field(default_factory=list)
     #: Orchestrator .env values to write
     local_env: dict[str, str] = field(default_factory=dict)
+    #: Every desired orchestrator URL value, changed or not
+    local_urls: dict[str, str] = field(default_factory=dict)
 
     @property
     def is_empty(self) -> bool:
@@ -215,6 +217,7 @@ def compute_diff(
         desired = _url_csvs(target, specs, nodes, known)
         actual = _read_env_keys(local_env_path, desired)
         change.local_env = {k: v for k, v in desired.items() if actual.get(k, "") != v}
+        change.local_urls = desired
 
     return change
 
@@ -247,9 +250,9 @@ def apply(
 
     Actions run in order. The first failure on a node skips that node's remaining
     actions (an env write must precede the recreate that reads it); other nodes
-    continue. The orchestrator .env is written last, with the URL of every
-    start or recreate that failed or was skipped removed from the values in
-    ``change.local_env``.
+    continue. The orchestrator .env is written last: ``change.local_env``, with
+    the URL of every start or recreate that failed or was skipped removed from
+    every URL value, changed or not.
     """
     failures: list[str] = []
     failed_nodes: set[str] = set()
@@ -267,13 +270,19 @@ def apply(
             if action.url:
                 dead_urls.add(action.url)
 
-    if local_env_path and change.local_env:
+    def alive(csv: str) -> str:
+        return ",".join(u for u in csv.split(",") if u and u not in dead_urls)
+
+    if local_env_path:
         values = {
-            k: ",".join(u for u in v.split(",") if u and u not in dead_urls)
-            if k.endswith("_URL") or k == "WHISPER_URLS" else v
+            k: alive(v) if k.endswith("_URL") or k == "WHISPER_URLS" else v
             for k, v in change.local_env.items()
         }
-        _write_local_env(local_env_path, values)
+        for k, v in change.local_urls.items():
+            if k not in values and alive(v) != v:
+                values[k] = alive(v)
+        if values:
+            _write_local_env(local_env_path, values)
     return failures
 
 

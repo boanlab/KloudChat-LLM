@@ -93,7 +93,7 @@ class NodeSpec:
         if self.usable_vram_bytes is not None:
             base = self.usable_vram_bytes
         else:
-            base = self.gpu_count * self.total_vram_bytes - self.effective_reserve_bytes
+            base = self.gpu_count * (self.total_vram_bytes - self.effective_reserve_bytes)
         return max(0, base - self.foreign_vram_bytes)
 
     def card_budget_bytes(self) -> int:
@@ -102,7 +102,7 @@ class NodeSpec:
         if self.usable_vram_bytes is not None:
             base = self.usable_vram_bytes
         else:
-            base = cards * self.total_vram_bytes - self.effective_reserve_bytes
+            base = cards * (self.total_vram_bytes - self.effective_reserve_bytes)
         return max(0, base) // cards
 
     def card_free_bytes(self) -> list[int]:

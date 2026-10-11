@@ -12,7 +12,7 @@ sizing a node or diagnosing an OOM.
 | Model | Quant | Weights | Role |
 |---|---|---:|---|
 | `qwen3.8-27b` (Qwen3.8-27B) | NVFP4 | **21.3 GiB** (measured) | Chat. Dense, vision, 262144 context, MTP speculative decoding |
-| `qwen3.5-122b` (Qwen3.5-122B-A10B) | NVFP4 | **~72 GiB** (estimate) | Quality and judging. MoE 10B active, 131072 here. A GB10 node to itself (util 0.85) |
+| `qwen3.8-flash-next` (Qwen3.8-Flash-Next) | NVFP4 body, FP8 PLE table | **78.3 GiB** resident (measured; 124 GB on disk) | Quality and judging. MoE, 131072 here, MTP. A GB10 (util 0.81) or RTX PRO 6000 (util 0.92) node to itself |
 | `qwen3-coder-next` (Qwen3-Coder-Next-80B-A3B) | FP8 | **~75 GiB** (on disk) | Coding. Hybrid attention, 262144 context. A card to itself |
 | `bge-m3` | BF16 | **~2 GiB** | Retrieval embeddings. Pooling, shares a card |
 | `bge-reranker-v2-m3` | BF16 | **2.1 GiB** (measured) | Retrieval reranking. Pooling, shares a card |
@@ -22,19 +22,26 @@ sizing a node or diagnosing an OOM.
   RTX 5090, RTX PRO 5000, RTX PRO 6000).
 - Weight figures are `safetensors` totals on disk. The scheduler measures them
   over SSH (`model_metadata`); `models.yaml` carries a `weight:` override only
-  when that measurement is wrong.
+  when that measurement is wrong. Flash-Next declares one: its 48 GiB FP8 PLE
+  table is outside the GPU budget. On GB10 it is mapped from the checkpoint
+  files (vllm#58439, `checkpoint_mapped`) and lives in the page cache; on a
+  discrete card it sits in pinned host RAM, so the node needs 64 GiB of system
+  memory (`lib.sh::VLLM_FLASHNEXT_MIN_RAM_GB`); the downloader refuses the
+  checkpoint below that, and the planner seats a model only where its
+  checkpoint is.
 - Overestimating a weight makes the planner delegate; underestimating produces
   an OOM at startup.
 
 ## KV cost
 
 Only 16 of the 64 layers in `qwen3.8-27b` carry KV; the other 48 are linear
-attention with fixed-size state. `qwen3-coder-next` holds KV on 12 of 48
-layers.
+attention with fixed-size state. `qwen3.8-flash-next` and `qwen3-coder-next`
+hold KV on 12 of 48 layers.
 
 | Model | KV per token (fp8) | 128K | 256K |
 |---|---:|---:|---:|
 | `qwen3.8-27b` | **32 KiB** | 4.0 GiB | 8.0 GiB |
+| `qwen3.8-flash-next` | **12 KiB** | 1.5 GiB | 3.0 GiB |
 | `qwen3-coder-next` | **12 KiB** | 1.5 GiB | 3.0 GiB |
 
 Measured on GB10, from vLLM's `GPU KV cache size` line:
@@ -42,6 +49,7 @@ Measured on GB10, from vLLM's `GPU KV cache size` line:
 | Model | util | KV tokens | Concurrency |
 |---|---:|---:|---|
 | `qwen3.8-27b` | 0.56 | 993K | **3.8** sessions at 256K (MTP 5) |
+| `qwen3.8-flash-next` | 16 GiB pool | 846K | **6.5** sessions at 128K (MTP 2); about 14 GB of node memory left for the PLE page cache |
 
 Pooling models hold no KV: `planner.kv_bytes` returns 0 and the charge is
 weights plus activation.
@@ -51,7 +59,8 @@ weights plus activation.
 KV is what remains of `gpu_util × VRAM` after weights and runtime overhead.
 The planner charges 10 GiB for a generate runner (`planner.ACTIVATION_BYTES`)
 and 2 GiB for a pooling one (`POOLING_ACTIVATION_BYTES`), capped at 12% of the
-card (`ACTIVATION_MAX_FRACTION`). Measured on GB10 for `qwen3.8-27b` at util
+card (`ACTIVATION_MAX_FRACTION`); a model can declare its own (`activation` in
+`models.yaml`), as `qwen3.8-flash-next` does with 6 GiB. Measured on GB10 for `qwen3.8-27b` at util
 0.56: budget 68.1 GiB, weights 21.3 GiB, KV 30.3 GiB (993K tokens), overhead
 16.5 GiB with the MTP draft head and its KV.
 
@@ -67,12 +76,12 @@ activation + 8.8 GiB of KV per concurrent 256K session (admission margin
 1.10), against the card minus its reserve (8%, clamped to 1–8 GiB; 12 GiB on
 unified memory).
 
-| Node | VRAM | `qwen3.8-27b` | `qwen3.5-122b` | `qwen3-coder-next` | Notes |
+| Node | VRAM | `qwen3.8-27b` | `qwen3.8-flash-next` | `qwen3-coder-next` | Notes |
 |---|---:|---|---|---|---|
 | RTX 5090 | 32 G | ✗ | ✗ | ✗ | 29.4 GiB of capacity against the 27B's 33.9 GiB need; the 27B is delegated. Retrieval and transcription fit |
 | PRO 5000 | 48 G | ○ 1 session | ✗ | ✗ | The 27B alone |
-| PRO 6000 | 96 G | ○ 4 sessions | ○ alone | ○ alone | The 122B and the coder each need the card to themselves |
-| GB10 | 128 G (unified) | ○ 4 sessions | ○ alone | ○ alone | System RAM less the 12 GiB reserve |
+| PRO 6000 | 96 G | ○ 4 sessions | ○ alone, 2 sessions | ○ alone | Flash-Next and the coder each need the card to themselves |
+| GB10 | 128 G (unified) | ○ 4 sessions | ○ alone, 8 sessions | ○ alone | System RAM less the 12 GiB reserve |
 
 Sessions are the planner's sizing assumption (`concurrent_sessions`, default
 4), halved down to what the card holds.
@@ -90,8 +99,9 @@ Sessions are the planner's sizing assumption (`concurrent_sessions`, default
   `VLLM_<PREFIX>_DEVICES`, which compose passes as `NVIDIA_VISIBLE_DEVICES`.
   Not `CUDA_VISIBLE_DEVICES`: it has no value meaning "every card", and on
   GB10 it fails engine init. An unpinned node gets `all`.
-- `qwen3.5-122b` and `qwen3-coder-next` each need a node to themselves and
-  are pool models: the head node holds the 27B, retrieval and transcription.
+- `qwen3.8-flash-next` and `qwen3-coder-next` each need a node to themselves
+  and are pool models: the head node holds the 27B, retrieval and
+  transcription.
 
 ## Tuning knobs
 
@@ -109,8 +119,10 @@ and compose defaults used when placement is skipped
 | `VLLM_QWEN27B_MAX_BATCHED_TOKENS` | `16384` | Lower bound for the vision mm-budget |
 | `VLLM_QWEN27B_SPEC_TOKENS` | `5` | MTP draft tokens per step |
 | `VLLM_QWEN27B_MAX_NUM_SEQS` | `128` | The hybrid conv-state cache bounds CUDA-graph capture; unset, capture OOMs |
-| `VLLM_QWEN122B_GPU_UTIL` / `_MAX_LEN` | `0.85` / `131072` | A whole GB10 node |
-| `VLLM_QWEN122B_MAX_BATCHED_TOKENS` / `_MAX_NUM_SEQS` | `16384` / `32` | 32 matches the concurrency-gate cap |
+| `VLLM_QWENFLASH_GPU_UTIL` / `_MAX_LEN` | `0.81` / `131072` | 78.3 GiB of weights and a ~16 GiB KV pool; the rest of the node is page cache for the PLE table |
+| `VLLM_QWENFLASH_MAX_BATCHED_TOKENS` / `_MAX_NUM_SEQS` | `16384` / `16` | 16 matches the concurrency-gate cap |
+| `VLLM_QWENFLASH_SPEC_TOKENS` | `2` | MTP draft tokens per step; the checkpoint has one MTP layer |
+| `VLLM_QWENFLASH_ENGRAM` | (empty) | PLE table storage; see [env reference](env-reference.md) |
 | `VLLM_CODERNEXT_GPU_UTIL` / `_MAX_LEN` | `0.85` / `262144` | 75 GiB of weights; 12 KiB/token keeps the native context affordable |
 | `VLLM_BGEM3_GPU_UTIL` / `_MAX_LEN` | `0.08` / `8192` | Compose defaults |
 | `VLLM_RERANK_GPU_UTIL` / `_MAX_LEN` | `0.06` / `8192` | Compose defaults |
@@ -123,8 +135,9 @@ and compose defaults used when placement is skipped
   are on the node. On a shared card that can sum the utilisation fractions
   past 1.0. When driving a node by hand, name the service.
 - Parsers and `--kv-cache-dtype fp8` are set in `docker-compose.vllm.yml`.
-  Healthcheck `start_period` is 600 s for the chat services (900 s for the
-  122B) and 120 s for pooling and transcription; `unhealthy` inside that window is normal.
+  Healthcheck `start_period` is 600 s for the chat services (1500 s for
+  Flash-Next, which loads in about 15 minutes) and 120 s for pooling and
+  transcription; `unhealthy` inside that window is normal.
 
 ## Transcription (STT)
 
