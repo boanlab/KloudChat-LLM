@@ -197,7 +197,7 @@ services:
 
   code-interpreter-minio:
     container_name: kloudchat-ci-minio
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: boanlab/minio:2025-09-07
     profiles: [tools]
     restart: always
     command: [server, /data, --console-address, ':9001']
@@ -216,7 +216,7 @@ services:
 
   code-interpreter-minio-init:
     container_name: kloudchat-ci-minio-init
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: boanlab/mc:2025-08-13
     profiles: [tools]
     restart: 'no'
     depends_on:
