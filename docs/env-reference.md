@@ -116,7 +116,16 @@ Per-model `GPU_UTIL`, `MAX_LEN`, `MAX_BATCHED_TOKENS`, `MAX_NUM_SEQS` and `SPEC_
 | `INDEX_RERANK_RECALL_DISTANCE` | `0.85` | Cosine distance bound applied before reranking |
 | `INDEX_LITELLM_URL` | `http://litellm:8000` | LiteLLM on the same network |
 
-## 9. LiteLLM
+## 9. Text from scanned pages (profile `ocr`)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `OCR_CPUS` / `OCR_MEM_LIMIT` | `4` / `3g` | Cores and memory the container may use. Pages are read on CPU only |
+| `OCR_CONCURRENCY` / `OCR_THREADS` | `1` / `4` | Pages read at once, and ONNX Runtime threads per page. Keep `CONCURRENCY × THREADS` at or below `OCR_CPUS` |
+| `OCR_MAX_BODY_MB` | `64` | Largest document accepted |
+| `OCR_DPI` | `200` | Resolution a PDF page is rendered at before reading |
+
+## 10. LiteLLM
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -137,7 +146,7 @@ Read by `gen-litellm-config.sh` from the shell, not from `.env`:
 | `STT_OR_MODEL` | `mistralai/voxtral-small-24b-2507` | OpenRouter STT route, registered when no local whisper answers |
 | `KLOUDCHAT_ENV_FILE`, `KLOUDCHAT_LITELLM_CONFIG_FILE`, `KLOUDCHAT_LITELLM_CONFIG_EXAMPLE` | repository paths | Overrides used by the tests |
 
-## 10. Container-level defaults
+## 11. Container-level defaults
 
 Read by the service code, with the value compose passes where it passes one.
 Changing the others means editing `docker-compose.yml`.
@@ -153,6 +162,11 @@ Changing the others means editing `docker-compose.yml`.
 | index-shim | `INDEX_CHUNK_OVERLAP` | `150` | Chunk overlap |
 | index-shim | `INDEX_MAX_DOC_CHARS` | `2000000` | Documents are truncated beyond this |
 | index-shim | `EMBED_MODELS`, `RERANK_*`, `LITELLM_URL` | see section 8 | Compose maps them from the `INDEX_*` keys |
+| ocr-shim | `OCR_CONCURRENCY` / `OCR_THREADS` | `1` / `4`; compose passes them from `.env` | Pages read at once, and ONNX Runtime threads per page |
+| ocr-shim | `OCR_MAX_BODY_MB` / `OCR_MAX_PIXELS` / `OCR_MAX_PAGES` | `64` / `40000000` / `2000` | Largest document, largest decoded page, most pages the service opens |
+| ocr-shim | `OCR_DPI` / `OCR_IMAGE_SIDE` | `200` / `1600` | Render resolution of a PDF page, and the longest side of the picture returned for a vision model |
+| ocr-shim | `OCR_TIMEOUT_SEC` / `OCR_MIN_SCORE` | `120` / `0.5` | Per-page time limit (a page past it answers 504 but keeps its slot until the work ends), and the recogniser score below which a line is dropped |
+| ocr-shim | `OCR_QUEUE` | `4` | Requests that may wait for a slot; past that a request gets 503 before its body is read |
 | crawl4ai-shim | `DEFAULT_TIMEOUT_MS` | `30000` | Page load timeout |
 | crawl4ai-shim | `MAX_CONCURRENT_PAGES` / `QUEUE_TIMEOUT_MS` / `CACHE_TTL_S` / `CACHE_MAX_ENTRIES` | `8` / `15000` / `900` / `512` | Pages rendering at once, the wait for a slot, how long a good scrape is reused, and how many are kept |
 | crawl4ai-shim | `ADULT_HOSTS_FILE` | `/app/adult-hosts.txt` | Hosts file of adult sites a scrape refuses; baked into the image |

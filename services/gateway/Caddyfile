@@ -9,6 +9,7 @@
 #   /tools/exec/*      → code-interpreter   (x-api-key injected)
 #   /tools/research/*  → deep-research      (MCP streamable-http)
 #   /tools/stt/*       → whisper-shim
+#   /tools/ocr/*       → ocr-shim           (text from scanned pages, CPU)
 #   /metrics/<target>  → one GPU-node /metrics (vLLM or gpu-exporter), read-only
 #
 # /tools/* requires the shared key TOOLS_GATEWAY_KEY in the X-Tools-Key header;
@@ -93,6 +94,12 @@
 
 			handle_path /tools/index* {
 				reverse_proxy index-shim:8080 {
+					header_up -X-Tools-Key
+				}
+			}
+
+			handle_path /tools/ocr* {
+				reverse_proxy ocr-shim:8080 {
 					header_up -X-Tools-Key
 				}
 			}

@@ -6,6 +6,7 @@
 #   models    LiteLLM and its database
 #   whisper   transcription shim; setup.sh adds it once a backend is placed
 #   index     retrieval index (pgvector) and its shim
+#   ocr       text from scanned pages (CPU)
 name: kloudchat-llm
 
 services:
@@ -384,6 +385,32 @@ services:
       retries: 3
       start_period: 20s
     networks: [kloudchat, index-data]
+
+  # ── text from scanned pages ─────────────────────────────────────────
+  # PaddleOCR PP-OCRv5 (Korean) on CPU; models baked into the image, no egress
+  ocr-shim:
+    container_name: kloudchat-ocr-shim
+    image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-ocr-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
+    build:
+      context: ./services/ocr-shim
+    profiles: [ocr]
+    restart: always
+    environment:
+      OCR_CONCURRENCY: ${OCR_CONCURRENCY:-1}
+      OCR_THREADS: ${OCR_THREADS:-4}
+      OCR_MAX_BODY_MB: ${OCR_MAX_BODY_MB:-64}
+      OCR_DPI: ${OCR_DPI:-200}
+      LOG_LEVEL: INFO
+    # Pages are recognised on these cores; chat and the GPUs are not touched
+    cpus: ${OCR_CPUS:-4}
+    mem_limit: ${OCR_MEM_LIMIT:-3g}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8080/health')); raise SystemExit(0 if d.get('status')=='ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [kloudchat]
 
 networks:
   # Service plane behind the gateway

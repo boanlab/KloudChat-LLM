@@ -39,6 +39,7 @@ def test_every_tools_route_sits_behind_the_key():
         "/tools/research",
         "/tools/stt",
         "/tools/index",
+        "/tools/ocr",
     }
     for route in routes:
         assert f"handle_path {route}*" in authorized
@@ -55,7 +56,7 @@ def test_the_matcher_compares_the_header_and_requires_a_long_key():
 def test_the_key_is_stripped_before_every_tools_upstream():
     authorized = _block(_block(CADDYFILE, "handle /tools* {"), "handle @authorized {")
     proxies = re.findall(r"reverse_proxy [^\n{]+\{[^}]*\}", authorized)
-    assert len(proxies) == 6
+    assert len(proxies) == 7
     for proxy in proxies:
         assert "header_up -X-Tools-Key" in proxy, proxy
 
