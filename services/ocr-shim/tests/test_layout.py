@@ -95,3 +95,11 @@ def test_the_short_cells_of_an_undetected_table_are_not_two_columns():
         lines.append(line(f"{i},000원", 600, 100 + i * 40, 760, 130 + i * 40))
     assert layout.gutter(lines, 1000) is None
     assert layout.page_text(lines, [], 1000).splitlines()[0] == "항목0 0,000원"
+
+
+def test_table_membership_ignores_levelling():
+    import math
+
+    cell = line("4,200,000원", 1400, 300, 1700, 320)
+    layout.level([cell], math.radians(2), 2000, 2000)
+    assert layout.inside(cell, [1380, 295, 1720, 325])

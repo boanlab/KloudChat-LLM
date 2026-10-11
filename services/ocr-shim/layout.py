@@ -111,8 +111,9 @@ def gutter(lines: list[dict], width: float) -> float | None:
 def inside(line: dict, box: Iterable[float]) -> bool:
     """Whether the line's middle lies within `box`."""
     x0, y0, x1, y1 = box
+    # Page coordinates on both sides: table boxes are not levelled, so neither is this.
     cx = (line["box"][0] + line["box"][2]) / 2
-    cy = _center_y(line)
+    cy = (line["box"][1] + line["box"][3]) / 2
     return x0 <= cx <= x1 and y0 <= cy <= y1
 
 
