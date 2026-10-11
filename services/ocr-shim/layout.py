@@ -80,6 +80,12 @@ def rows(lines: list[dict]) -> list[list[dict]]:
     return [sorted(row, key=_left) for row in grouped]
 
 
+def _prose(column: list[dict], width: float) -> bool:
+    """Whether a column holds running text: at least three lines filling most of a half page.
+    The cells of a table the ruling finder missed are short, and are not two columns."""
+    return sum(1 for line in column if line["box"][2] - line["box"][0] > width * 0.3) >= 3
+
+
 def gutter(lines: list[dict], width: float) -> float | None:
     """The x of an empty vertical band between 35% and 65% of the page that splits the
     narrow lines into two columns of at least four lines each, or None."""
@@ -88,18 +94,15 @@ def gutter(lines: list[dict], width: float) -> float | None:
     narrow = [line for line in lines if (line["box"][2] - line["box"][0]) < width * 0.48]
     if len(narrow) < 8:
         return None
-    # Columns of prose fill most of their half; the cells of an undetected table do not.
-    if median(line["box"][2] - line["box"][0] for line in narrow) < width * 0.25:
-        return None
     step = max(1, int(width // 200))
     best: tuple[int, float] | None = None
     for x in range(int(width * 0.35), int(width * 0.65), step):
         if any(line["box"][0] < x < line["box"][2] for line in narrow):
             continue
-        left = sum(1 for line in narrow if line["box"][2] <= x)
-        right = sum(1 for line in narrow if line["box"][0] >= x)
-        if left >= 4 and right >= 4:
-            balance = min(left, right)
+        left = [line for line in narrow if line["box"][2] <= x]
+        right = [line for line in narrow if line["box"][0] >= x]
+        if len(left) >= 4 and len(right) >= 4 and _prose(left, width) and _prose(right, width):
+            balance = min(len(left), len(right))
             if best is None or balance > best[0]:
                 best = (balance, float(x))
     return best[1] if best else None
