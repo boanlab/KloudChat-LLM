@@ -16,7 +16,7 @@ external keys and node addresses.
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | token | Hugging Face gated repositories. Weight downloads only |
 | `NODES_VLLM` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (retrieval, transcription); the rest are the pool (Flash-Next, the coder); chat replicas land on any node with room. See [models.md](models.md#where-models-are-defined) |
-| `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml`. Default `qwen3.8-27b,qwen3.8-flash-next,bge-m3,bge-reranker-v2-m3,whisper-large-v3`; `qwen3.8-flash-next` needs a GB10 or RTX PRO 6000 pool node to itself (drop it on a single node); `qwen3-coder-next` is in the catalogue but not in the default |
+| `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml`. Default `qwen3.8-27b,qwen3.8-flash,bge-m3,bge-reranker-v2-m3,whisper-large-v3`; `qwen3.8-flash` needs a GB10 or RTX PRO 6000 pool node to itself (drop it on a single node); `qwen3-coder-next` is in the catalogue but not in the default |
 | `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | optional | NAVER API HUB credentials; both set enables the `naver web` and `naver news` engines |
 | `OPENAI_API_KEY` | optional | Registers `text-embedding-3-small` as the embedding fallback; passed to the LiteLLM container. Not in `.env.example`; add it by hand |
 
@@ -131,7 +131,7 @@ Per-model `GPU_UTIL`, `MAX_LEN`, `MAX_BATCHED_TOKENS`, `MAX_NUM_SEQS` and `SPEC_
 |---|---|---|
 | `LITELLM_LOG` | `INFO` | |
 | `LITELLM_URL` | `http://localhost:<GATEWAY_PORT>/litellm` | Where `manage.sh` reaches LiteLLM. Read from the shell first, then `.env` |
-| `CONCURRENCY_GATE_CAPS` | built-in caps: 128 for `qwen3.8-27b`, 16 for `qwen3.8-flash-next`, 32 for `qwen3-coder-next`, on both the `local/` and `strict-local/` alias | JSON map of model aliases to positive concurrency caps, overriding the built-in ones |
+| `CONCURRENCY_GATE_CAPS` | built-in caps: 128 for `qwen3.8-27b`, 16 for `qwen3.8-flash`, 32 for `qwen3-coder-next`, on both the `local/` and `strict-local/` alias | JSON map of model aliases to positive concurrency caps, overriding the built-in ones |
 | `CONCURRENCY_GATE_TTL` | `1.5` | Seconds between vLLM capacity polls |
 | `CONCURRENCY_GATE_SCRAPE_TIMEOUT` | `1.0` | Timeout in seconds for one vLLM metrics request |
 | `CONCURRENCY_GATE_DEBUG` | (empty) | `1` logs the overload gate's decisions |

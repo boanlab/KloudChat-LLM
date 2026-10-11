@@ -39,10 +39,10 @@ STRICT_STATE_TTL = max(POLL_TTL * 3, POLL_TTL + SCRAPE_TIMEOUT * 2)
 # In-flight caps by LiteLLM model_name; a cap with no deployment is logged and inactive
 DEFAULT_CAPS = {
     "local/qwen3.8-27b": 128,
-    "local/qwen3.8-flash-next": 16,
+    "local/qwen3.8-flash": 16,
     "local/qwen3-coder-next": 32,
     "strict-local/qwen3.8-27b": 128,
-    "strict-local/qwen3.8-flash-next": 16,
+    "strict-local/qwen3.8-flash": 16,
     "strict-local/qwen3-coder-next": 32,
 }
 

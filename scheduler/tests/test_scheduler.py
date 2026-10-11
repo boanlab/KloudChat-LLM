@@ -1011,7 +1011,7 @@ def test_a_failed_recreate_drops_an_unchanged_route():
 def test_flash_next_seats_on_one_gb10_or_one_pro6000():
     """The catalogue entry fits a GB10 and a single RTX PRO 6000 card."""
     yaml_path = Path(__file__).resolve().parents[1] / "models.yaml"
-    spec = registry.load(yaml_path, only=["qwen3.8-flash-next"])[0]
+    spec = registry.load(yaml_path, only=["qwen3.8-flash"])[0]
     spec = spec.bind(ModelMetadata(
         model_id="fn", n_layers=12, n_kv_heads=2, head_dim=256,
         weight_dtype=Dtype.NVFP4, weight_bytes=spec.weight_override, native_ctx=262144,

@@ -40,7 +40,7 @@ grep -qF "$FB_START" "$CONFIG_FILE" && grep -qF "$FB_END" "$CONFIG_FILE" \
 CTX_FALLBACK=32768
 
 # Per-model request timeout (s); deep research runs for minutes
-declare -A MODEL_TIMEOUT=( [qwen3.8-27b]=3600 [qwen3.8-flash-next]=3600 )
+declare -A MODEL_TIMEOUT=( [qwen3.8-27b]=3600 [qwen3.8-flash]=3600 )
 
 # OpenRouter provider-routing suffix on chat routes: ":floor" (cheapest),
 # ":nitro" (throughput), "" (OpenRouter default)
@@ -314,7 +314,7 @@ SECTION=$(
   echo "  ${MARKER_START}"
   # --- local (vLLM), or the OpenRouter slug where nothing is deployed ---
   emit_brain "qwen3.8-27b"   "$(env_get VLLM_QWEN27B_URL)"    "qwen/qwen3.8-27b" "$(or_price qwen/qwen3.8-27b in)" "$(or_price qwen/qwen3.8-27b out)"
-  emit_brain "qwen3.8-flash-next" "$(env_get VLLM_QWENFLASH_URL)" "qwen/qwen3.8-flash" "$(or_price qwen/qwen3.8-flash in)" "$(or_price qwen/qwen3.8-flash out)"
+  emit_brain "qwen3.8-flash" "$(env_get VLLM_QWENFLASH_URL)" "qwen/qwen3.8-flash" "$(or_price qwen/qwen3.8-flash in)" "$(or_price qwen/qwen3.8-flash out)"
   emit_brain "qwen3-coder-next" "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next" "$(or_price qwen/qwen3-coder-next in)" "$(or_price qwen/qwen3-coder-next out)"
   # Retrieval: local when placed; the OpenAI catalogue below is the fallback
   emit_vllm_embed "bge-m3" "$(env_get VLLM_BGEM3_URL)"
@@ -371,7 +371,7 @@ FALLBACKS=$(
   echo "  ${FB_START}"
   echo "  fallbacks:"
   fb_line "qwen3.8-27b"   "$(env_get VLLM_QWEN27B_URL)"  "qwen/qwen3.8-27b"
-  fb_line "qwen3.8-flash-next" "$(env_get VLLM_QWENFLASH_URL)" "qwen/qwen3.8-flash"
+  fb_line "qwen3.8-flash" "$(env_get VLLM_QWENFLASH_URL)" "qwen/qwen3.8-flash"
   fb_line "qwen3-coder-next" "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next"
   echo "  ${FB_END}"
 )
