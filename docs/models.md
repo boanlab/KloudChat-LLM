@@ -76,8 +76,8 @@ OpenRouter.
 
 | Model (alias) | Container | Port | Quant | Node | Priority | Role |
 |---|---|---|---|---|---|---|
-| `local/qwen3.8-27b` | `vllm-qwen27b` | 8001 | NVFP4 | any | 20 | Chat: conversation, vision, coding, deep research, titles, memory extraction. One replica per node with room |
-| `local/qwen3.8-flash` | `vllm-qwenflash` | 8004 | NVFP4 | pool | 30 | Quality and judging: hard questions, review, grading. Qwen3.8-Flash-Next, MoE, context floor 131072. A GB10 or RTX PRO 6000 node to itself |
+| `local/qwen3.8-27b` | `vllm-qwen27b` | 8001 | NVFP4 | any | 20 | Writing: conversation, vision, report and slide prose, file code, deep research. One replica per node with room |
+| `local/qwen3.8-flash` | `vllm-qwenflash` | 8004 | NVFP4 | pool | 30 | Reading and judging: outlines, checks, calculations, titles, memory extraction, conversation summaries, the Auto classifier, OCR re-reads. Qwen3.8-Flash-Next, MoE, context floor 131072. A GB10 or RTX PRO 6000 node to itself |
 | `local/qwen3-coder-next` | `vllm-codernext` | 8008 | FP8 | pool | 10 | Coding. Qwen3-Coder-Next-80B-A3B, hybrid attention, 12 of 48 layers hold KV |
 | `local/bge-m3` | `vllm-bgem3` | 8003 | BF16 | head | 5 | Retrieval embeddings. Pooling runner |
 | `local/bge-reranker-v2-m3` | `vllm-rerank` | 8009 | BF16 | head | 2 | Retrieval reranking. Pooling runner |
@@ -109,8 +109,12 @@ remaining nodes. A single-node cluster cannot hold both; leave
 `qwen3.8-flash` out of `VLLM_MODELS` there (it stays reachable as
 `qwen/qwen3.8-flash`). It is registered as `local/qwen3.8-flash` and
 `strict-local/qwen3.8-flash`, the same name as its OpenRouter twin, with a
-3600 s timeout and a concurrency-gate cap of 16. Titles, memory extraction, query rewriting, default chat and deep
-research all run on the 27B.
+3600 s timeout and a concurrency-gate cap of 16. KloudChat writes with the 27B
+(default chat, report and slide prose, file code, query rewriting, deep
+research) and reads and judges with Flash (outlines, checks, calculations,
+titles, memory extraction, conversation summaries, the Auto classifier), so
+the short calls stay off the node that writes answers. Which model does which
+job is chosen in KloudChat's admin screen; see its configuration guide.
 
 **Coder.** `qwen3-coder-next` is in the catalogue but not in the default
 `VLLM_MODELS`. Coverage seats every listed model once before any replica, so
