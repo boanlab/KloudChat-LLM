@@ -49,20 +49,21 @@ Measured on GB10, from vLLM's `GPU KV cache size` line:
 | Model | util | KV tokens | Concurrency |
 |---|---:|---:|---|
 | `qwen3.8-27b` | 0.56 | 993K | **3.8** sessions at 256K (MTP 5) |
-| `qwen3.8-flash-next` | 16 GiB pool | 846K | **6.5** sessions at 128K (MTP 2); about 14 GB of node memory left for the PLE page cache |
+| `qwen3.8-flash-next` | 0.81 | 773K | **5.9** sessions at 128K (MTP 2); about 15 GB of node memory left for the PLE page cache |
 
 Pooling models hold no KV: `planner.kv_bytes` returns 0 and the charge is
 weights plus activation.
 
 ## Runtime overhead
 
-KV is what remains of `gpu_util × VRAM` after weights and runtime overhead.
-The planner charges 10 GiB for a generate runner (`planner.ACTIVATION_BYTES`)
-and 2 GiB for a pooling one (`POOLING_ACTIVATION_BYTES`), capped at 12% of the
-card (`ACTIVATION_MAX_FRACTION`); a model can declare its own (`activation` in
-`models.yaml`), as `qwen3.8-flash-next` does with 6 GiB. Measured on GB10 for `qwen3.8-27b` at util
-0.56: budget 68.1 GiB, weights 21.3 GiB, KV 30.3 GiB (993K tokens), overhead
-16.5 GiB with the MTP draft head and its KV.
+KV is what remains of `gpu_util × VRAM` after weights and runtime overhead. The
+planner charges 10 GiB for a generate runner (`planner.ACTIVATION_BYTES`) and 2
+GiB for a pooling one (`POOLING_ACTIVATION_BYTES`), capped at 12% of the card
+(`ACTIVATION_MAX_FRACTION`); a model can declare its own (`activation` in
+`models.yaml`), as `qwen3.8-flash-next` does with 6 GiB (measured on GB10:
+non-torch 2.6, activation 3.0, CUDA graph 0.4). Measured on GB10 for
+`qwen3.8-27b` at util 0.56: budget 68.1 GiB, weights 21.3 GiB, KV 30.3 GiB
+(993K tokens), overhead 16.5 GiB with the MTP draft head and its KV.
 
 If the utilisation figures of co-resident containers sum past 1.0, whichever
 starts last gets only the remainder; on unified-memory nodes the OS and page
@@ -119,7 +120,7 @@ and compose defaults used when placement is skipped
 | `VLLM_QWEN27B_MAX_BATCHED_TOKENS` | `16384` | Lower bound for the vision mm-budget |
 | `VLLM_QWEN27B_SPEC_TOKENS` | `5` | MTP draft tokens per step |
 | `VLLM_QWEN27B_MAX_NUM_SEQS` | `128` | The hybrid conv-state cache bounds CUDA-graph capture; unset, capture OOMs |
-| `VLLM_QWENFLASH_GPU_UTIL` / `_MAX_LEN` | `0.81` / `131072` | 78.3 GiB of weights and a ~16 GiB KV pool; the rest of the node is page cache for the PLE table |
+| `VLLM_QWENFLASH_GPU_UTIL` / `_MAX_LEN` | `0.81` / `131072` | 78.3 GiB of weights, 6.0 GiB of overhead and a 14.6 GiB KV pool (773K tokens); the rest of the node is page cache for the PLE table |
 | `VLLM_QWENFLASH_MAX_BATCHED_TOKENS` / `_MAX_NUM_SEQS` | `16384` / `16` | 16 matches the concurrency-gate cap |
 | `VLLM_QWENFLASH_SPEC_TOKENS` | `2` | MTP draft tokens per step; the checkpoint has one MTP layer |
 | `VLLM_QWENFLASH_ENGRAM` | (empty) | PLE table storage; see [env reference](env-reference.md) |

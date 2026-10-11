@@ -30,12 +30,12 @@ models:
     port: 8004
     # Resident size; PLE table off the GPU budget
     weight: 78.3GiB
-    # Below the 10 GiB default so one RTX PRO 6000 seats it
+    # Measured on GB10; below the 10 GiB default, so one RTX PRO 6000 seats it
     activation: 6GiB
     # Half the native 262144; room spent on concurrency
     ctx_floor: 131072
     ctx_target: 131072
-    # util 0.81 on a GB10 (~16 GiB KV); 2 sessions on one RTX PRO 6000 (0.92)
+    # util 0.81 on a GB10 (773K-token KV); 2 sessions on one RTX PRO 6000 (0.92)
     concurrent_sessions: 8
     priority: 30
     placement: pool
