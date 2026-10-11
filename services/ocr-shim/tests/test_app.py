@@ -112,3 +112,48 @@ def test_a_ruled_table_is_found():
     body = client.post("/ocr", content=_png(page)).json()
     assert len(body["tables"]) == 1
     assert body["text"].count("|") >= 8
+
+
+def test_a_request_past_the_admission_limit_is_refused_before_its_body(monkeypatch):
+    monkeypatch.setattr(shim, "_admitted", shim.ADMIT)
+    assert client.post("/ocr", content=_png(_page())).status_code == 503
+    monkeypatch.setattr(shim, "_admitted", 0)
+    assert client.post("/ocr", content=_png(_page())).status_code == 200
+    assert shim._admitted == 0
+
+
+def test_a_timed_out_page_keeps_its_slot_until_the_work_ends(monkeypatch):
+    import asyncio
+    import threading
+    import time as clock
+
+    release = threading.Event()
+
+    def slow(*_):
+        release.wait(5)
+        return {}
+
+    async def scenario():
+        monkeypatch.setattr(shim, "TIMEOUT_SEC", 0.2)
+        monkeypatch.setattr(shim, "_GATE", asyncio.Semaphore(1))
+        with pytest.raises(shim.HTTPException) as late:
+            await shim._run(slow)
+        assert late.value.status_code == 504
+        # The thread is still running, so the one slot is still taken.
+        assert shim._GATE.locked()
+        release.set()
+        started = clock.monotonic()
+        while shim._GATE.locked() and clock.monotonic() - started < 5:
+            await asyncio.sleep(0.05)
+        assert not shim._GATE.locked()
+
+    asyncio.run(scenario())
+
+
+def test_frames_are_counted_only_up_to_the_cap():
+    frames = [Image.new("L", (8, 8), i) for i in range(6)]
+    buffer = io.BytesIO()
+    frames[0].save(buffer, format="TIFF", save_all=True, append_images=frames[1:])
+    picture = Image.open(io.BytesIO(buffer.getvalue()))
+    assert shim.count_frames(picture, 100) == 6
+    assert shim.count_frames(picture, 3) == 4

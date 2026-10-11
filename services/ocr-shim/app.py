@@ -49,12 +49,16 @@ IMAGE_SIDE = int(os.getenv("OCR_IMAGE_SIDE", "1600"))
 CONCURRENCY = max(1, int(os.getenv("OCR_CONCURRENCY", "1")))
 THREADS = int(os.getenv("OCR_THREADS", "4"))
 TIMEOUT_SEC = float(os.getenv("OCR_TIMEOUT_SEC", "120"))
+#: Requests let in at once, running or waiting; past that a request is refused with 503
+#: before its body is read, so a queue of large documents never sits in memory.
+ADMIT = CONCURRENCY + max(0, int(os.getenv("OCR_QUEUE", "4")))
 #: Lines below this recogniser score are dropped as noise.
 MIN_SCORE = float(os.getenv("OCR_MIN_SCORE", "0.5"))
 
 ENGINE_NAME = "rapidocr/PP-OCRv5 korean"
 
 _GATE = asyncio.Semaphore(CONCURRENCY)
+_admitted = 0
 _ENGINE: Any = None
 
 
@@ -154,6 +158,19 @@ def _render_pdf(data: bytes, page: int, dpi: int) -> tuple[Any, int, int]:
     return image, pages, used
 
 
+def count_frames(picture: Any, cap: int) -> int:
+    """Frames in a picture, counted by seeking but never past `cap` + 1: Pillow's `n_frames`
+    walks every frame of a GIF or TIFF, however many a crafted file claims."""
+    frames = 0
+    while frames <= cap:
+        try:
+            picture.seek(frames)
+        except EOFError:
+            break
+        frames += 1
+    return frames
+
+
 def _open_image(data: bytes, page: int) -> tuple[Any, int]:
     """`(image, frames)`: one frame of a picture, size checked before any decoding."""
     from PIL import Image
@@ -161,7 +178,7 @@ def _open_image(data: bytes, page: int) -> tuple[Any, int]:
     Image.MAX_IMAGE_PIXELS = MAX_PIXELS
     try:
         picture = Image.open(io.BytesIO(data))
-        frames = int(getattr(picture, "n_frames", 1) or 1)
+        frames = count_frames(picture, MAX_PAGES)
     except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
         raise Refused(413, "too_many_pixels") from exc
     except Exception as exc:  # noqa: BLE001 — Pillow raises many types for bad input
@@ -294,13 +311,37 @@ def read_page(data: bytes, page: int, dpi: int, want_image: bool) -> dict:
 
 
 async def _run(fn, *args):
-    async with _GATE:
-        try:
-            return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=TIMEOUT_SEC)
-        except asyncio.TimeoutError as exc:
-            raise HTTPException(status_code=504, detail="timeout") from exc
-        except Refused as exc:
-            raise HTTPException(status_code=exc.status, detail=exc.reason) from exc
+    """`fn` in a worker thread, at most CONCURRENCY at a time. A page that runs past the time
+    limit is answered with 504, but its slot stays taken until the thread really ends: a thread
+    cannot be stopped, and releasing early would let timed-out work pile up past the limit."""
+    await _GATE.acquire()
+    work = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    work.add_done_callback(lambda _: _GATE.release())
+    try:
+        return await asyncio.wait_for(asyncio.shield(work), timeout=TIMEOUT_SEC)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="timeout") from exc
+    except Refused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.reason) from exc
+
+
+async def _admitted_body(request: Request) -> bytes:
+    """The body of a request let in under ADMIT; refused with 503 before reading otherwise.
+    The caller releases the admission with `_leave()`."""
+    global _admitted
+    if _admitted >= ADMIT:
+        raise HTTPException(status_code=503, detail="busy")
+    _admitted += 1
+    try:
+        return await _body(request)
+    except BaseException:
+        _leave()
+        raise
+
+
+def _leave() -> None:
+    global _admitted
+    _admitted = max(0, _admitted - 1)
 
 
 @app.get("/health")
@@ -315,8 +356,11 @@ async def ocr(
     dpi: int = Query(DEFAULT_DPI, ge=72, le=MAX_DPI),
     image: int = Query(0, ge=0, le=1),
 ) -> dict:
-    data = await _body(request)
-    return await _run(read_page, data, page, dpi, bool(image))
+    data = await _admitted_body(request)
+    try:
+        return await _run(read_page, data, page, dpi, bool(image))
+    finally:
+        _leave()
 
 
 def _render(data: bytes, page: int, dpi: int) -> bytes:
@@ -330,8 +374,11 @@ async def render(
     page: int = Query(1, ge=1),
     dpi: int = Query(DEFAULT_DPI, ge=72, le=MAX_DPI),
 ) -> Response:
-    data = await _body(request)
-    return Response(await _run(_render, data, page, dpi), media_type="image/jpeg")
+    data = await _admitted_body(request)
+    try:
+        return Response(await _run(_render, data, page, dpi), media_type="image/jpeg")
+    finally:
+        _leave()
 
 
 def warm() -> None:

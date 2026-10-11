@@ -165,7 +165,8 @@ Changing the others means editing `docker-compose.yml`.
 | ocr-shim | `OCR_CONCURRENCY` / `OCR_THREADS` | `1` / `4`; compose passes them from `.env` | Pages read at once, and ONNX Runtime threads per page |
 | ocr-shim | `OCR_MAX_BODY_MB` / `OCR_MAX_PIXELS` / `OCR_MAX_PAGES` | `64` / `40000000` / `2000` | Largest document, largest decoded page, most pages the service opens |
 | ocr-shim | `OCR_DPI` / `OCR_IMAGE_SIDE` | `200` / `1600` | Render resolution of a PDF page, and the longest side of the picture returned for a vision model |
-| ocr-shim | `OCR_TIMEOUT_SEC` / `OCR_MIN_SCORE` | `120` / `0.5` | Per-page time limit, and the recogniser score below which a line is dropped |
+| ocr-shim | `OCR_TIMEOUT_SEC` / `OCR_MIN_SCORE` | `120` / `0.5` | Per-page time limit (a page past it answers 504 but keeps its slot until the work ends), and the recogniser score below which a line is dropped |
+| ocr-shim | `OCR_QUEUE` | `4` | Requests that may wait for a slot; past that a request gets 503 before its body is read |
 | crawl4ai-shim | `DEFAULT_TIMEOUT_MS` | `30000` | Page load timeout |
 | crawl4ai-shim | `MAX_CONCURRENT_PAGES` / `QUEUE_TIMEOUT_MS` / `CACHE_TTL_S` / `CACHE_MAX_ENTRIES` | `8` / `15000` / `900` / `512` | Pages rendering at once, the wait for a slot, how long a good scrape is reused, and how many are kept |
 | crawl4ai-shim | `ADULT_HOSTS_FILE` | `/app/adult-hosts.txt` | Hosts file of adult sites a scrape refuses; baked into the image |
