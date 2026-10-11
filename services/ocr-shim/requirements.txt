@@ -1,0 +1,9 @@
+fastapi==0.118.0
+uvicorn==0.37.0
+# PaddleOCR PP-OCRv5 models (Korean recognition) run through ONNX Runtime on CPU.
+rapidocr==3.10.0
+onnxruntime==1.31.0
+# PDF pages to pixels (PDFium; BSD-3-Clause / Apache-2.0).
+pypdfium2==5.14.0
+pillow==11.3.0
+numpy==2.3.5

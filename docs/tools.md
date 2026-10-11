@@ -21,6 +21,7 @@ and appends the service-specific path.
 | Deep research | `/tools/research` | `/tools/research/mcp` | deep-research | `tools` |
 | Transcription | `/tools/stt` | `/tools/stt/v1/audio/transcriptions` | whisper-shim | `whisper` |
 | Retrieval index | `/tools/index` | `/tools/index/{documents,search}` | index-shim | `index` |
+| Text from scanned pages | `/tools/ocr` | `/tools/ocr/{ocr,render}` | ocr-shim | `ocr` |
 | GPU-node metrics | `/metrics` | `/metrics/{vllm-27b,vllm-flashnext,vllm-bgem3,vllm-rerank,vllm-whisper,gpu-1,gpu-2}` | vLLM `/metrics`, gpu-exporter | `tools` |
 
 The contract is identical without the gateway, so a raw service address works
@@ -268,6 +269,30 @@ availability reported separately).
 Runs under the `index` profile. Tuning is in
 [env-reference.md](env-reference.md), the model side in
 [models.md](models.md#retrieval).
+
+### Text from scanned pages: ocr-shim
+
+Reads page images on CPU with PaddleOCR's PP-OCRv5 detector and Korean
+recogniser (Apache-2.0), run through RapidOCR on ONNX Runtime. The models are
+fetched when the image is built and checked against RapidOCR's published
+hashes; the running container needs no network beyond the gateway.
+
+- `POST /ocr?page=N&dpi=200&image=0|1` with the raw document as the body (PDF,
+  TIFF, PNG, JPEG, WEBP, BMP, GIF). `page` picks a PDF page or a TIFF frame.
+  Answers `{pages, dpi, width, height, lines:[{text, conf, box}], tables:[box],
+  confidence, text}`; with `image=1` also the page as base64 JPEG for a vision
+  model. Boxes are pixels of the rendered page (`× 72 / dpi` gives PDF points).
+- `POST /render?page=N` returns the page as JPEG only.
+- `text` is the page in reading order: rows top to bottom, a two-column stretch
+  left column first, lines inside a ruled table as `| a | b |` rows.
+- Refused: a body over `OCR_MAX_BODY_MB` (413), a picture over
+  `OCR_MAX_PIXELS` before it is decoded (413; a large PDF page is rendered
+  smaller instead), more than `OCR_MAX_PAGES` pages (413), anything that is not
+  one of the formats above (415).
+
+KloudChat decides which pages need it (no text layer), when a vision model
+re-reads a page (low confidence, a table) and which model that is (strict-local
+only). Runs under the `ocr` profile.
 
 ### Models: LiteLLM
 

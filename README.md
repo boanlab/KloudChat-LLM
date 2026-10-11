@@ -19,6 +19,7 @@ one address in its admin screen. No backend address is compiled into the UI.
 └─────────────────────────┘        │   /tools/research/* → deep-research     │
                                    │   /tools/stt/*      → whisper-shim      │
                                    │   /tools/index/*    → index-shim        │
+                                   │   /tools/ocr/*      → ocr-shim          │
                                    │                                         │
                                    │  GPU nodes: vllm-* (whisper included)   │
                                    └─────────────────────────────────────────┘
@@ -102,6 +103,7 @@ services/                   one directory per service: Dockerfile, source, confi
 | `models` | LiteLLM and its database |
 | `whisper` | transcription shim. `setup.sh` enables it once the model is placed |
 | `index` | retrieval index (pgvector) and its shim |
+| `ocr` | text from scanned pages and document photos (CPU) |
 
 The default is `tools,models`. To put tools on one machine and models on
 another, enable only the profile each machine needs: the UI accepts a
