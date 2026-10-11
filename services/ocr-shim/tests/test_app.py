@@ -56,7 +56,8 @@ def test_a_picture_is_read_into_lines_with_boxes():
     body = client.post("/ocr", content=_png(_page())).json()
     assert "2025" in body["text"] and "4200" in body["text"]
     first = body["lines"][0]
-    assert set(first) == {"text", "conf", "box"} and len(first["box"]) == 4
+    assert {"text", "conf", "box"} <= set(first) <= {"text", "conf", "box", "at"}
+    assert len(first["box"]) == 4
     assert 0 < body["confidence"] <= 1
     assert "image" not in body
 

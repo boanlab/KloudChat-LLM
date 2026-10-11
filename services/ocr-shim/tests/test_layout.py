@@ -69,3 +69,29 @@ def test_confidence_weighs_long_lines_more():
     lines = [line("가" * 30, 0, 0, 10, 10, 0.9), line("나", 0, 20, 10, 30, 0.1)]
     assert abs(layout.mean_confidence(lines) - (0.9 * 30 + 0.1) / 31) < 1e-9
     assert layout.mean_confidence([]) is None
+
+
+def test_a_tilted_page_keeps_each_row_together():
+    import math
+
+    # Two rows of two pieces each, on a page tilted 2 degrees: the right piece of the first
+    # row sits lower than the left piece of the second row would without levelling.
+    tilt = math.radians(2)
+    lines = []
+    for row, y in enumerate((100, 140)):
+        for col, x in enumerate((100, 1300)):
+            dy = (x - 100) * math.tan(tilt)
+            lines.append(line(f"{row}{col}", x, y + dy, x + 500, y + dy + 30))
+    unlevelled = layout.page_text([dict(item) for item in lines], [], 2000).splitlines()
+    assert unlevelled != ["00 01", "10 11"]
+    layout.level(lines, tilt, 2000, 2000)
+    assert layout.page_text(lines, [], 2000).splitlines() == ["00 01", "10 11"]
+
+
+def test_the_short_cells_of_an_undetected_table_are_not_two_columns():
+    lines = []
+    for i in range(8):
+        lines.append(line(f"항목{i}", 100, 100 + i * 40, 260, 130 + i * 40))
+        lines.append(line(f"{i},000원", 600, 100 + i * 40, 760, 130 + i * 40))
+    assert layout.gutter(lines, 1000) is None
+    assert layout.page_text(lines, [], 1000).splitlines()[0] == "항목0 0,000원"

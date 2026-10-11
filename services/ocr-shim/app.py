@@ -218,6 +218,9 @@ def tables(image: Any) -> list[list[float]]:
 
     gray = np.asarray(image.convert("L"))
     h, w = gray.shape
+    # Scan speckle breaks the threshold into dots that read as neither line; a median
+    # pass removes it and keeps ruled strokes.
+    gray = cv2.medianBlur(gray, 3)
     ink = cv2.adaptiveThreshold(
         255 - gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 15, -2
     )
@@ -245,18 +248,26 @@ def tables(image: Any) -> list[list[float]]:
 
 
 def recognise(image: Any) -> list[dict]:
-    """Lines with their score and box, in no particular order."""
+    """Lines with their score and box, in no particular order; each also carries its
+    position on the page turned level (`layout.level`), from the tilt of its long lines."""
+    import math
+
     import numpy as np
 
     result = engine()(np.asarray(image))
     out: list[dict] = []
     if result is None or result.boxes is None:
         return out
+    angles: list[float] = []
     for quad, text, score in zip(result.boxes, result.txts or (), result.scores or (), strict=False):
         xs = [float(point[0]) for point in quad]
         ys = [float(point[1]) for point in quad]
         if not str(text).strip():
             continue
+        (x0, y0), (x1, y1) = quad[0], quad[1]
+        run, rise = float(x1) - float(x0), float(y1) - float(y0)
+        if run > 3 * (max(ys) - min(ys)) and run > 0:
+            angles.append(math.atan2(rise, run))
         out.append(
             {
                 "text": str(text),
@@ -264,6 +275,9 @@ def recognise(image: Any) -> list[dict]:
                 "box": [round(min(xs), 1), round(min(ys), 1), round(max(xs), 1), round(max(ys), 1)],
             }
         )
+    if angles:
+        angles.sort()
+        layout.level(out, angles[len(angles) // 2], image.size[0], image.size[1])
     return out
 
 

@@ -1,8 +1,10 @@
 """Reading order and plain-text layout for recognised lines. Pure Python, no models.
 
-A line is `{"text", "conf", "box": [x0, y0, x1, y1]}` in page pixels. The page's
-text is built from them: rows top to bottom, two columns read left then right,
-and the lines inside a ruled table joined as table rows.
+A line is `{"text", "conf", "box": [x0, y0, x1, y1]}` in page pixels, optionally with
+`"at": [x, y]`, its middle on the page turned level (a scan tilted a degree or two puts
+the two ends of one row at different heights; reading order uses the level position).
+The page's text is built from them: rows top to bottom, two columns read left then
+right, and the lines inside a ruled table joined as table rows.
 """
 
 from __future__ import annotations
@@ -39,7 +41,28 @@ def _height(line: dict) -> float:
 
 
 def _center_y(line: dict) -> float:
+    if "at" in line:
+        return line["at"][1]
     return (line["box"][1] + line["box"][3]) / 2
+
+
+def _left(line: dict) -> float:
+    """The line's left edge, on the levelled page when the tilt is known."""
+    if "at" in line:
+        return line["at"][0] - (line["box"][2] - line["box"][0]) / 2
+    return line["box"][0]
+
+
+def level(lines: list[dict], angle: float, width: float, height: float) -> None:
+    """Adds `at` to each line: its middle rotated by -`angle` (radians) about the page centre."""
+    import math
+
+    cos, sin = math.cos(-angle), math.sin(-angle)
+    cx, cy = width / 2, height / 2
+    for line in lines:
+        x = (line["box"][0] + line["box"][2]) / 2 - cx
+        y = (line["box"][1] + line["box"][3]) / 2 - cy
+        line["at"] = [round(x * cos - y * sin + cx, 1), round(x * sin + y * cos + cy, 1)]
 
 
 def rows(lines: list[dict]) -> list[list[dict]]:
@@ -54,7 +77,7 @@ def rows(lines: list[dict]) -> list[list[dict]]:
             grouped[-1].append(line)
         else:
             grouped.append([line])
-    return [sorted(row, key=lambda line: line["box"][0]) for row in grouped]
+    return [sorted(row, key=_left) for row in grouped]
 
 
 def gutter(lines: list[dict], width: float) -> float | None:
@@ -64,6 +87,9 @@ def gutter(lines: list[dict], width: float) -> float | None:
         return None
     narrow = [line for line in lines if (line["box"][2] - line["box"][0]) < width * 0.48]
     if len(narrow) < 8:
+        return None
+    # Columns of prose fill most of their half; the cells of an undetected table do not.
+    if median(line["box"][2] - line["box"][0] for line in narrow) < width * 0.25:
         return None
     step = max(1, int(width // 200))
     best: tuple[int, float] | None = None
