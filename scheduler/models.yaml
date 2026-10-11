@@ -23,7 +23,7 @@ models:
   # active), hybrid attention (12 of 48 layers hold KV), NVFP4 body, FP8 PLE
   # table (48 GiB; page cache on GB10, pinned system RAM on a discrete card). A
   # pool node to itself; seated before the 27B.
-  - id: qwen3.8-flash-next
+  - id: qwen3.8-flash
     hf_repo: nvidia/Qwen3.8-Flash-Next-NVFP4
     dir: qwen3.8-flash-next-nvfp4
     env_prefix: VLLM_QWENFLASH

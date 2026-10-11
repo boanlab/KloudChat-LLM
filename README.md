@@ -138,7 +138,7 @@ script prints its usage when run without arguments.
 | Any other card, AMD / ROCm, Apple, macOS, Windows | Not supported. OpenRouter only |
 
 The local lineup is `qwen3.8-27b` (chat, vision, coding, deep research),
-`qwen3.8-flash-next` (quality and judging, a GB10 or RTX PRO 6000 node to
+`qwen3.8-flash` (quality and judging, a GB10 or RTX PRO 6000 node to
 itself), `bge-m3` and
 `bge-reranker-v2-m3` (retrieval) and `whisper-large-v3` (transcription);
 `qwen3-coder-next` (coding) is in the catalogue but not deployed by default.

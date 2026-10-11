@@ -304,7 +304,7 @@ declare -A MODEL_PRICE_IN_PM=(
   [glm-5.3]=1.40         [glm-5.3-flash]=0.15      [mimo-v2.6-flash]=0.14    [kimi-k3]=0.99
   [qwen3.8-max-0902]=2.00  [qwen3-coder-plus]=0.65
   [minimax-m3]=0.30
-  [qwen3.8-27b]=0  [qwen3.8-flash-next]=0  [qwen3-coder-next]=0
+  [qwen3.8-27b]=0  [qwen3.8-flash]=0  [qwen3-coder-next]=0
   [text-embedding-3-small]=0.02
 )
 declare -A MODEL_PRICE_OUT_PM=(
@@ -317,7 +317,7 @@ declare -A MODEL_PRICE_OUT_PM=(
   [glm-5.3]=4.40         [glm-5.3-flash]=0.50      [mimo-v2.6-flash]=0.28    [kimi-k3]=13.00
   [qwen3.8-max-0902]=6.00  [qwen3-coder-plus]=3.25
   [minimax-m3]=1.20
-  [qwen3.8-27b]=0  [qwen3.8-flash-next]=0  [qwen3-coder-next]=0
+  [qwen3.8-27b]=0  [qwen3.8-flash]=0  [qwen3-coder-next]=0
 )
 
 # OpenRouter twins of local models and the STT fallback, USD per 1M tokens,
@@ -716,7 +716,7 @@ litellm_chat_models_csv() {
     out+=("qwen/qwen3.8-27b")
   fi
   if [[ -n "$vllm_judge_url" ]]; then
-    out+=("local/qwen3.8-flash-next" "strict-local/qwen3.8-flash-next")
+    out+=("local/qwen3.8-flash" "strict-local/qwen3.8-flash")
   elif has_openrouter; then
     out+=("qwen/qwen3.8-flash")
   fi
