@@ -171,6 +171,7 @@ Changing the others means editing `docker-compose.yml`.
 | crawl4ai-shim | `MAX_CONCURRENT_PAGES` / `QUEUE_TIMEOUT_MS` / `CACHE_TTL_S` / `CACHE_MAX_ENTRIES` | `8` / `15000` / `900` / `512` | Pages rendering at once, the wait for a slot, how long a good scrape is reused, and how many are kept |
 | crawl4ai-shim | `ADULT_HOSTS_FILE` | `/app/adult-hosts.txt` | Hosts file of adult sites a scrape refuses; baked into the image |
 | crawl4ai-shim | `USER_AGENT` | browser-like string | Sent by Chromium |
+| crawl4ai-shim | `BROWSER_PROBE_INTERVAL_S` / `BROWSER_DEAD_LIMIT` / `BROWSER_EXIT_LIMIT` | `30` / `3` / `6` | How often a local page is rendered while no scrape has shown the browser working; failures in a row before `/health` answers 503, and before the process exits for Docker to restart it |
 | search-shim | `SEARXNG_URL` | `http://searxng:8080` | The SearXNG behind it |
 | search-shim | `MAX_CONCURRENT_SEARCHES` / `QUEUE_TIMEOUT_MS` | `12` / `10000` | Searches SearXNG runs at once, and the wait for a slot before `503 busy` |
 | search-shim | `CACHE_TTL_S` / `STALE_TTL_S` / `CACHE_MAX_ENTRIES` | `900` / `21600` / `2048` | How long an answer with results is reused, how much longer it is served while SearXNG cannot answer, and how many are kept |

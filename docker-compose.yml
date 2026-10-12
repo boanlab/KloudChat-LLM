@@ -171,8 +171,10 @@ services:
       QUEUE_TIMEOUT_MS: '15000'
       CACHE_TTL_S: '900'
       LOG_LEVEL: INFO
+    # /health is 503 once the browser cannot render; a shim whose restarts do
+    # not help exits, and restart: always starts it again
     healthcheck:
-      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=4)"]
       interval: 30s
       timeout: 5s
       retries: 3

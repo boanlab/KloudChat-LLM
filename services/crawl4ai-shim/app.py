@@ -14,13 +14,20 @@ MAX_CONCURRENT_PAGES render at once (the rest wait up to QUEUE_TIMEOUT_MS and
 are then told "busy"), and a successful scrape is reused for CACHE_TTL_S.
 Every request a page makes passes the network guard before it leaves the browser.
 
+A browser or Playwright driver that dies is replaced and the page retried once.
+While no scrape proves the browser works, a local page is rendered every
+BROWSER_PROBE_INTERVAL_S. /health answers 503 after BROWSER_DEAD_LIMIT failures
+in a row, and the process exits after BROWSER_EXIT_LIMIT so Docker restarts it.
+
 Page addresses are logged at DEBUG only; a warning names the host.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -67,11 +74,26 @@ browser_config: BrowserConfig | None = None
 # Browser restart count; concurrent failures restart once
 generation = 0
 restart_lock = asyncio.Lock()
-# Consecutive scrapes that found the browser dead; at DEAD_LIMIT /health fails
+# Failures in a row with the browser unusable (scrapes and probes); a working render resets it
 dead_in_a_row = 0
-DEAD_LIMIT = 3
-# Playwright errors for a dead browser process
-_DEAD_BROWSER = ("has been closed", "Target closed", "Browser closed", "Connection closed")
+# When a render last showed the browser working (monotonic seconds)
+last_ok = 0.0
+# /health answers 503 from DEAD_LIMIT; at EXIT_LIMIT the process exits for Docker to restart
+DEAD_LIMIT = int(os.environ.get("BROWSER_DEAD_LIMIT", "3"))
+EXIT_LIMIT = int(os.environ.get("BROWSER_EXIT_LIMIT", "6"))
+# Local render while no scrape has shown the browser working for this long
+PROBE_INTERVAL_S = float(os.environ.get("BROWSER_PROBE_INTERVAL_S", "30"))
+PROBE_TIMEOUT_S = 10.0
+START_TIMEOUT_S = 120.0
+# Playwright errors (lower case) for a dead browser or a dead driver connection
+_DEAD_BROWSER = (
+    "has been closed",
+    "target closed",
+    "browser closed",
+    "connection closed",
+    "handler is closed",
+    "browser.new_context",
+)
 adult = AdultList()
 gate = Gate(MAX_CONCURRENT_PAGES)
 cache = PageCache(CACHE_TTL_S, CACHE_MAX_ENTRIES)
@@ -97,12 +119,16 @@ async def lifespan(_app: FastAPI):
     )
     browser_config = cfg
     crawler = await _started(cfg)
+    _mark_ok()
     LOG.info("Crawl4AI ready")
+    watcher = asyncio.create_task(_watch())
     try:
         yield
     finally:
         LOG.info("shutting down Crawl4AI")
-        await crawler.close()
+        watcher.cancel()
+        if crawler is not None:
+            await _close_quietly(crawler)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -116,39 +142,126 @@ async def _started(cfg: BrowserConfig) -> AsyncWebCrawler:
 
 
 def _browser_gone(error: str) -> bool:
+    error = error.lower()
     return any(words in error for words in _DEAD_BROWSER)
 
 
-async def _restart_browser(seen: int) -> None:
-    """Replace a dead browser, unless another request already did (generation moved)."""
+def _mark_ok() -> None:
+    global dead_in_a_row, last_ok
+    dead_in_a_row = 0
+    last_ok = time.monotonic()
+
+
+def _browser_of(c: Any) -> Any:
+    manager = getattr(getattr(c, "crawler_strategy", None), "browser_manager", None)
+    return getattr(manager, "browser", None)
+
+
+async def _renders(c: Any) -> bool:
+    """A local page renders in a fresh context: driver, browser and renderer answer. No network."""
+    browser = _browser_of(c)
+    if browser is None or not browser.is_connected():
+        return False
+
+    async def render() -> bool:
+        context = await browser.new_context()
+        try:
+            page = await context.new_page()
+            await page.set_content("<p>ok</p>")
+            return await page.evaluate("document.body.textContent") == "ok"
+        finally:
+            await context.close()
+
+    try:
+        return await asyncio.wait_for(render(), PROBE_TIMEOUT_S)
+    except Exception as e:  # noqa: BLE001 — any failure means it cannot render
+        LOG.warning("browser probe failed: %r", e)
+        return False
+
+
+async def _close_quietly(c: Any) -> None:
+    """Close a crawler whose browser or driver may be dead; stop its driver if close fails."""
+    try:
+        await asyncio.wait_for(c.close(), PROBE_TIMEOUT_S)
+        return
+    except Exception as e:  # noqa: BLE001 — the old one is dead already
+        LOG.debug("closing the dead browser: %r", e)
+    manager = getattr(getattr(c, "crawler_strategy", None), "browser_manager", None)
+    driver = getattr(manager, "playwright", None)
+    if driver is not None:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(driver.stop(), PROBE_TIMEOUT_S)
+
+
+async def _restart_browser(seen: int) -> bool:
+    """Replace an unusable browser; True when one is in place afterwards.
+
+    One restart per generation: requests that failed on the same browser wait on
+    the lock and reuse the replacement. A browser that still renders is kept."""
     global crawler, generation
     async with restart_lock:
         if generation != seen:
-            return
-        LOG.warning("browser is gone, starting a new one")
+            return crawler is not None
+        if crawler is not None and await _renders(crawler):
+            LOG.info("browser still renders, keeping it")
+            return True
+        LOG.warning("browser is unusable, starting a new one")
         old, crawler = crawler, None
-        try:
-            if old is not None:
-                await old.close()
-        except Exception as e:  # noqa: BLE001 — the old one is dead already
-            LOG.debug("closing the dead browser: %r", e)
         generation += 1
+        if old is not None:
+            await _close_quietly(old)
         try:
-            crawler = await _started(browser_config or BrowserConfig(headless=True))
-        except Exception as e:  # noqa: BLE001 — /health reports it
+            crawler = await asyncio.wait_for(
+                _started(browser_config or BrowserConfig(headless=True)), START_TIMEOUT_S)
+        except Exception as e:  # noqa: BLE001 — /health reports it, the watcher retries
             LOG.error("a new browser did not start: %r", e)
-            return
+            return False
         LOG.info("new browser ready")
+        return True
+
+
+def _exit() -> None:
+    """End the process; Docker's restart policy starts a fresh container."""
+    os._exit(1)
+
+
+async def _check() -> None:
+    """Render a local page; replace the browser if it cannot, exit if replacing has not helped."""
+    global dead_in_a_row
+    seen = generation
+    if crawler is not None and await _renders(crawler):
+        _mark_ok()
+        return
+    dead_in_a_row += 1
+    LOG.warning("browser cannot render (%d in a row)", dead_in_a_row)
+    if dead_in_a_row >= EXIT_LIMIT:
+        LOG.error("browser still unusable after %d failures, exiting", dead_in_a_row)
+        _exit()
+        return
+    if await _restart_browser(seen) and crawler is not None and await _renders(crawler):
+        _mark_ok()
+
+
+async def _watch() -> None:
+    while True:
+        await asyncio.sleep(PROBE_INTERVAL_S)
+        if time.monotonic() - last_ok < PROBE_INTERVAL_S:
+            continue
+        try:
+            await _check()
+        except Exception as e:  # noqa: BLE001 — the watcher must outlive one bad check
+            LOG.error("browser check failed: %r", e)
 
 
 @app.get("/health")
 async def health(response: Response) -> dict[str, Any]:
-    down = dead_in_a_row >= DEAD_LIMIT
+    down = crawler is None or dead_in_a_row >= DEAD_LIMIT
     if down:
         response.status_code = 503
     return {
-        "status": "browser_down" if down else "ok" if crawler is not None else "starting",
+        "status": "browser_down" if down else "ok",
         "deadInARow": dead_in_a_row,
+        "lastOkAgoS": round(time.monotonic() - last_ok, 1) if last_ok else None,
         "backend": "crawl4ai",
         "pages": {"active": gate.active, "waiting": gate.waiting, "limit": gate.limit},
         "cache": {"entries": len(cache), "ttl_s": CACHE_TTL_S},
@@ -200,7 +313,9 @@ async def _guard_context(page, context=None, **_: Any):
             await route.fulfill(response=resp)
         except Exception as e:  # noqa: BLE001
             LOG.debug("request failed for %s: %r", _site(url), e)
-            await route.abort("failed")
+            # A dead driver fails the abort too
+            with contextlib.suppress(Exception):
+                await route.abort("failed")
 
     await target.route("**/*", guard)
 
@@ -266,36 +381,38 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": "busy: too many pages rendering"}
     global dead_in_a_row
     try:
-        # Dead browser: restart and retry once
+        # Unusable browser: replace it and retry once
         for attempt in (1, 2):
             seen = generation
-            if crawler is None:
-                dead_in_a_row += 1
-                return {"success": False, "error": "browser is restarting"}
-            try:
-                result = await asyncio.wait_for(
-                    crawler.arun(url=url, config=run_cfg),
-                    timeout=(timeout_ms / 1000.0) + 10,
-                )
-            except asyncio.TimeoutError:
-                LOG.warning("scrape timeout on %s", _site(url))
-                return {"success": False, "error": "scrape timeout"}
-            except Exception as e:
-                if attempt == 1 and _browser_gone(str(e)):
-                    dead_in_a_row += 1
-                    await _restart_browser(seen)
-                    continue
-                LOG.warning("scrape error on %s: %r", _site(url), e)
-                return {"success": False, "error": f"crawl4ai error: {e}"}
-            error = str(getattr(result, "error_message", "") or "")
-            if not getattr(result, "success", False) and _browser_gone(error):
-                dead_in_a_row += 1
-                if attempt == 1:
-                    await _restart_browser(seen)
-                    continue
+            current = crawler
+            if current is None:
+                error = "browser is restarting"
             else:
-                dead_in_a_row = 0
-            break
+                try:
+                    result = await asyncio.wait_for(
+                        current.arun(url=url, config=run_cfg),
+                        timeout=(timeout_ms / 1000.0) + 10,
+                    )
+                except asyncio.TimeoutError:
+                    LOG.warning("scrape timeout on %s", _site(url))
+                    return {"success": False, "error": "scrape timeout"}
+                except Exception as e:
+                    error = str(e)
+                    if not _browser_gone(error):
+                        LOG.warning("scrape error on %s: %r", _site(url), e)
+                        return {"success": False, "error": f"crawl4ai error: {e}"}
+                else:
+                    error = str(getattr(result, "error_message", "") or "")
+                    if getattr(result, "success", False) or not _browser_gone(error):
+                        # The browser answered, even if the page failed
+                        _mark_ok()
+                        break
+            dead_in_a_row += 1
+            LOG.warning("browser unusable on %s (%d in a row): %s",
+                        _site(url), dead_in_a_row, error.splitlines()[0][:200] if error else "")
+            if attempt == 1 and await _restart_browser(seen):
+                continue
+            return {"success": False, "error": "browser unavailable, restarting"}
     finally:
         gate.release()
 
