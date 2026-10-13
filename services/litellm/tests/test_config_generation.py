@@ -86,6 +86,7 @@ def _run_generator(
     dry_run: bool = True,
     store_prompts: str | None = "false",
     whisper_urls: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     _require_associative_array_bash()
     env_file = tmp_path / ".env"
@@ -113,6 +114,7 @@ def _run_generator(
             "KLOUDCHAT_ENV_FILE": str(env_file),
             "KLOUDCHAT_LITELLM_CONFIG_FILE": str(config_file),
             "PATH": f"{bin_dir}:{env['PATH']}",
+            **(extra_env or {}),
         }
     )
     args = [BASH, str(GENERATOR)]
@@ -198,6 +200,32 @@ def test_local_and_strict_aliases_follow_deployment_topology(
     fallback_sources = {source for mapping in fallbacks for source in mapping}
     assert ("local/qwen3.8-27b" in fallback_sources) is has_fallback
     assert not any(source.startswith("strict-local/") for source in fallback_sources)
+
+
+def test_the_27b_deployment_defaults_to_a_presence_penalty(tmp_path: Path) -> None:
+    """Callers that send none get 1.0 on the vLLM 27B; the OpenRouter twin is left alone."""
+    result, _ = _run_generator(tmp_path, with_vllm=True, with_openrouter=True)
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {model["model_name"]: model for model in models}
+
+    for alias in ("local/qwen3.8-27b", "strict-local/qwen3.8-27b"):
+        assert by_name[alias]["litellm_params"]["presence_penalty"] == 1.0
+    assert "presence_penalty" not in by_name["qwen/qwen3.8-27b"]["litellm_params"]
+
+
+@pytest.mark.parametrize(("value", "expected"), [("", None), ("0.5", 0.5), ("high", None)])
+def test_the_27b_presence_penalty_follows_the_override(
+    tmp_path: Path, value: str, expected: float | None
+) -> None:
+    result, _ = _run_generator(
+        tmp_path,
+        with_vllm=True,
+        with_openrouter=False,
+        extra_env={"KC_QWEN27B_PRESENCE_PENALTY": value},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    params = {m["model_name"]: m["litellm_params"] for m in models}["local/qwen3.8-27b"]
+    assert params.get("presence_penalty") == expected
 
 
 @pytest.mark.parametrize("with_vllm", [True, False])
