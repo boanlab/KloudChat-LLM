@@ -81,6 +81,11 @@ services:
       # ~600MB per worker
       - --num_workers
       - "${LITELLM_NUM_WORKERS:-4}"
+      # Gunicorn supervises the workers (600 s heartbeat). Uvicorn's own
+      # supervisor kills a worker that misses a 5 s ping, which a worker
+      # stalled on swap-in does, and every stream on it dies mid-answer.
+      # Preloaded workers also share the imported code (copy-on-write).
+      - --run_gunicorn
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?the LiteLLM master key is required}
       DATABASE_URL: "postgres://${LITELLM_DB_USER:-litellm}:${LITELLM_DB_PASSWORD}@litellm-db:5432/litellm"

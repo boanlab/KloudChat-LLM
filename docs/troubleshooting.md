@@ -88,6 +88,31 @@ cat /proc/sys/vm/swappiness                              # 60 by default
 | `sudo swapoff -a && sudo swapon -a` | Clears swap; risks OOM if RAM is tight |
 | Shrink `VLLM_MODELS` and re-apply placement | The real fix |
 
+## Streams dropped mid-answer
+
+Clients see `peer closed connection without sending complete message body
+(incomplete chunked read)` on several streams at once, and the gateway logs
+`aborting with incomplete response` with `reading: unexpected EOF`. Look for a
+LiteLLM worker restart at the same second:
+
+```bash
+docker logs -t kloudchat-litellm 2>&1 | grep -E 'Child process|WORKER TIMEOUT|Booting worker'
+sar -W                                  # pswpin/s in the same 10-minute slot
+```
+
+`Waiting for child process [N]` / `Child process [N] died` with no traceback
+is uvicorn's supervisor killing a worker that missed its 5 s ping; every
+stream on that worker dies with it. A worker misses the ping when it stalls
+holding the GIL, as it does on swap-in when its idle pages were swapped out.
+The compose file runs the workers under gunicorn (`--run_gunicorn`, 600 s
+heartbeat), which lets such a stall pass as a pause instead of a restart.
+Keeping the host out of swap (see [Swap thrash](#swap-thrash-mid-stream-stall))
+removes the stall itself.
+
+`reading: context canceled` in the gateway log is the client closing first,
+for example when it stops reading a looping answer; it is not an upstream
+failure.
+
 ## vLLM node unreachable
 
 The vLLM discovery in `gen-litellm-config.sh` hit a TCP failure. If no local
