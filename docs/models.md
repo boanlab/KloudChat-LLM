@@ -92,7 +92,12 @@ context, and MTP speculative decoding from the checkpoint's own draft head
 window. It is unplaced, so every node with room gets a replica, all registered
 under `local/qwen3.8-27b`; LiteLLM spreads requests across them (`least-busy`).
 Each deployment carries a 3600 s request timeout and a concurrency-gate cap of
-128 in-flight requests.
+128 in-flight requests, and a default `presence_penalty` of 1.0 that a
+request's own value replaces: without it the 27B repeats list items until the
+token limit. vLLM's `--override-generation-config` does not carry
+`presence_penalty`, so the default lives on the LiteLLM deployment.
+`KC_QWEN27B_PRESENCE_PENALTY` changes it at generation time; empty leaves it
+out. The OpenRouter twin is not given one.
 
 `qwen3.8-flash` is the quality and judging tier: Qwen3.8-Flash-Next (MoE,
 512 experts, 10 active; hybrid attention, 12 of 48 layers hold KV) from

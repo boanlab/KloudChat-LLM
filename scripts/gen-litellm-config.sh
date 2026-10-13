@@ -42,6 +42,11 @@ CTX_FALLBACK=32768
 # Per-model request timeout (s); deep research runs for minutes
 declare -A MODEL_TIMEOUT=( [qwen3.8-27b]=3600 [qwen3.8-flash]=3600 )
 
+# Default presence_penalty on the vLLM deployment (a request's own value wins).
+# The 27B repeats list items without it; vLLM's --override-generation-config
+# ignores presence_penalty, so it is set here. Empty disables it.
+declare -A MODEL_PRESENCE_PENALTY=( [qwen3.8-27b]="${KC_QWEN27B_PRESENCE_PENALTY-1.0}" )
+
 # OpenRouter provider-routing suffix on chat routes: ":floor" (cheapest),
 # ":nitro" (throughput), "" (OpenRouter default)
 OR_VARIANT="${KC_OR_VARIANT-:floor}"
@@ -227,7 +232,7 @@ __vllm_resolved_urls() {
 
 emit_vllm_chat_entry() {
   local m="$1" url="$2" ctx="$3" alias="$4" boundary="$5" strict="$6" privacy_only="$7"
-  local in_pm out_pm tmo
+  local in_pm out_pm tmo pres
   in_pm="${MODEL_PRICE_IN_PM[$m]:-}"
   out_pm="${MODEL_PRICE_OUT_PM[$m]:-}"
   echo "  - model_name: ${alias}"
@@ -237,6 +242,12 @@ emit_vllm_chat_entry() {
   echo "      api_base: ${url%/}/v1"
   tmo="${MODEL_TIMEOUT[$m]:-}"
   [[ -n "$tmo" ]] && echo "      timeout: ${tmo}"
+  pres="${MODEL_PRESENCE_PENALTY[$m]:-}"
+  if [[ "$pres" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "      presence_penalty: ${pres}"
+  elif [[ -n "$pres" ]]; then
+    warn "presence_penalty '${pres}' for ${m} is not a number — left out"
+  fi
   echo "    model_info:"
   # Required: without them the client falls back to ReAct text
   echo "      supports_function_calling: true"
