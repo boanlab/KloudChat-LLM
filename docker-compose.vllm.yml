@@ -58,6 +58,10 @@ services:
       # MTP speculative decoding from the checkpoint's own draft head
       - --speculative-config
       - '{"method":"mtp","num_speculative_tokens":${VLLM_QWEN27B_SPEC_TOKENS:-5}}'
+      # Prefix caching off: with the hybrid attention, MTP and the fp8 KV cache, a reused
+      # prefix gave 1–8 garbage tokens at temperature 0; the same request with a
+      # cache_salt answered in full
+      - --no-enable-prefix-caching
       - --tensor-parallel-size
       - "${VLLM_QWEN27B_TP:-1}"
       - --trust-remote-code
