@@ -70,6 +70,7 @@ emit_or_free() {
   echo "      input_cost_per_token: 0.0"
   echo "      output_cost_per_token: 0.0"
   emit_kchat_boundary external false false
+  or_reasoning_info "$slug"
 }
 
 # Commercial model: name `<prov>/<id>`, route `openrouter/<route_prov>/<id>`;
@@ -85,6 +86,7 @@ emit_commercial_or() {
   echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
   echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
   emit_kchat_boundary external false false
+  or_reasoning_info "${route_prov}/${id}"
 }
 
 # OpenRouter twin of a deployed local model: the router_settings.fallbacks
@@ -102,6 +104,7 @@ emit_or_fallback() {
   echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
   emit_kchat_boundary external false false
   echo "      kchat_hidden: true"
+  or_reasoning_info "$or_slug"
 }
 
 # max_input_tokens = ctx minus KC_PRE_CALL_HEADROOM for the tools schema and
@@ -293,6 +296,7 @@ emit_or_brain() {  # $1=or-slug  $2=in_pm  $3=out_pm
   echo "      input_cost_per_token: $(per_token_cost "$2")"
   echo "      output_cost_per_token: $(per_token_cost "$3")"
   emit_kchat_boundary external false false
+  or_reasoning_info "$1"
 }
 
 # Local model registration: local/ and strict-local/ over a vLLM URL, the
