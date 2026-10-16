@@ -128,6 +128,16 @@ step_enable_stt_profile() {
   echo "  [profile] COMPOSE_PROFILES=${profiles},whisper (transcription shim)"
 }
 
+# `imagegen` profile (the image shim) once IMAGEGEN_BACKENDS is set
+step_enable_imagegen_profile() {
+  [[ -n "$(env_get IMAGEGEN_BACKENDS)" ]] || return 0
+  local profiles; profiles="$(env_get COMPOSE_PROFILES)"
+  profiles="${profiles:-tools,models}"
+  [[ ",${profiles}," == *",imagegen,"* ]] && return 0
+  env_set COMPOSE_PROFILES "${profiles},imagegen"
+  echo "  [profile] COMPOSE_PROFILES=${profiles},imagegen (image shim)"
+}
+
 # SearXNG reads settings.yml only at start; a rewrite needs a container restart
 SEARXNG_CONFIG_CHANGED=0
 
@@ -347,6 +357,7 @@ role_all() {
 
   # 3) Transcription shim profile
   step_enable_stt_profile
+  step_enable_imagegen_profile
 
   step_wait_vllm
   step_gen_configs

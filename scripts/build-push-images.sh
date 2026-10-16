@@ -6,7 +6,7 @@
 # published. vLLM is built per node by install-vllm.sh.
 #
 #   SERVICE...      image short-names to build (default: all):
-#                   crawl4ai-shim, search-shim, whisper-shim, code-interpreter, deep-research, index-shim, ocr-shim, gpu-exporter
+#                   crawl4ai-shim, search-shim, whisper-shim, imagegen-shim, code-interpreter, deep-research, index-shim, ocr-shim, gpu-exporter
 #   --no-push       build only
 #   --push-only     push existing local images only
 #   --multi-arch    linux/amd64,linux/arm64 via buildx (needs buildx + QEMU; always pushes)
@@ -26,6 +26,7 @@ BUILD_TABLE=(
   "crawl4ai-shim|services/crawl4ai-shim/Dockerfile|services/crawl4ai-shim"
   "search-shim|services/search-shim/Dockerfile|services/search-shim"
   "whisper-shim|services/whisper-shim/Dockerfile|services/whisper-shim"
+  "imagegen-shim|services/imagegen-shim/Dockerfile|services/imagegen-shim"
   "code-interpreter|services/code-interpreter/Dockerfile|services/code-interpreter"
   "deep-research|services/deep-research/Dockerfile|services/deep-research"
   "index-shim|services/index-shim/Dockerfile|services/index-shim"
