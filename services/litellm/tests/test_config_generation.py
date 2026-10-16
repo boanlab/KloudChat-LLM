@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -45,7 +46,9 @@ def _fake_curl(bin_dir: Path) -> None:
                 printf '%s\n' '{"data":[{"id":"local/bge-m3","max_model_len":8192}]}' ;;
               *whisper.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/whisper-large-v3","max_model_len":448}]}' ;;
-              *openrouter.ai*) printf '%s\n' '{"data":[]}' ;;
+              *openrouter.ai*)
+                if [ -n "${KC_FAKE_OR_CATALOGUE:-}" ]; then cat "$KC_FAKE_OR_CATALOGUE"
+                else printf '%s\n' '{"data":[]}'; fi ;;
               *) exit 22 ;;
             esac
             """
@@ -339,6 +342,34 @@ def test_no_transcription_backend_at_all_delegates(tmp_path: Path) -> None:
         tmp_path, with_vllm=True, with_openrouter=True, whisper_urls="",
     )
     assert _stt_registered(result.stdout)
+
+
+def test_an_openrouter_model_that_takes_an_effort_says_so(tmp_path: Path) -> None:
+    """Without supports_reasoning, drop_params discards a caller's reasoning_effort."""
+    catalogue = tmp_path / "catalogue.json"
+    catalogue.write_text(json.dumps({"data": [
+        {"id": "z-ai/glm-5.3-flash", "pricing": {"prompt": "0", "completion": "0"},
+         "supported_parameters": ["reasoning", "reasoning_effort", "tools"],
+         "reasoning": {"mandatory": True, "supported_efforts": ["max", "high", "low"],
+                       "default_effort": "max"}},
+        {"id": "z-ai/glm-5.3", "pricing": {"prompt": "0", "completion": "0"},
+         "supported_parameters": ["tools"]},
+    ]}))
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True,
+        extra_env={"KC_FAKE_OR_CATALOGUE": str(catalogue)},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {model["model_name"]: model["model_info"] for model in models}
+
+    flash = by_name["z-ai/glm-5.3-flash"]
+    assert flash["supports_reasoning"] is True
+    assert flash["kchat_reasoning_efforts"] == ["max", "high", "low"]
+    assert flash["kchat_reasoning_default"] == "max"
+    assert flash["kchat_reasoning_mandatory"] is True
+    # No effort in the catalogue: nothing claimed
+    assert "supports_reasoning" not in by_name["z-ai/glm-5.3"]
+    assert "kchat_reasoning_efforts" not in by_name["z-ai/glm-5.3"]
 
 
 def test_every_chat_model_in_the_catalogue_is_registered() -> None:

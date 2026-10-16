@@ -355,6 +355,26 @@ or_catalogue() {
   cat "$__OR_CATALOGUE_CACHE"
 }
 
+# model_info lines for an OpenRouter slug that takes an effort: LiteLLM's
+# supports_reasoning (without it drop_params discards reasoning_effort) and the
+# levels KloudChat's /llm proxy and model listing read. Nothing when the
+# catalogue is unreachable or the model takes no effort.
+#   or_reasoning_info <slug>
+or_reasoning_info() {
+  local slug="$1"
+  or_catalogue 2>/dev/null \
+    | jq -r --arg s "$slug" '
+        first(.data[] | select(.id == $s))
+        | select(.supported_parameters // [] | index("reasoning_effort"))
+        | (.reasoning // {}) as $r
+        | "      supports_reasoning: true",
+          (($r.supported_efforts // []) | select(length > 0)
+            | "      kchat_reasoning_efforts: [" + (map(tojson) | join(", ")) + "]"),
+          ($r.default_effort // empty | "      kchat_reasoning_default: " + tojson),
+          "      kchat_reasoning_mandatory: " + (($r.mandatory // false) | tostring)
+      ' 2>/dev/null || true
+}
+
 # Live price or the declared fallback, USD per 1M tokens
 #   or_price <slug> in|out [fallback]
 or_price() {
