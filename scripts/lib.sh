@@ -239,6 +239,27 @@ declare -A VLLM_MODEL_WEIGHT_GB=(
 # GiB over the weights: activations plus KV for one request
 VLLM_RUNTIME_HEADROOM_GB=6
 
+# Image models (vllm-omni, docker-compose.imagegen.yml): download alias → HF repo.
+# Diffusers layout (model_index.json), weights under VLLM_MODELS_ROOT/<alias>.
+declare -A IMAGEGEN_MODELS=(
+  [z-image-turbo]="Tongyi-MAI/Z-Image-Turbo"
+  [qwen-image-2512]="Qwen/Qwen-Image-2512"
+)
+# Download size (GiB), for the disk check
+declare -A IMAGEGEN_MODEL_DISK_GB=(
+  [z-image-turbo]=31
+  [qwen-image-2512]=54
+)
+# Compose service and served port per alias
+declare -A IMAGEGEN_SERVICE=(
+  [z-image-turbo]=imagegen-z-image
+  [qwen-image-2512]=imagegen-qwen-image
+)
+declare -A IMAGEGEN_PORT=(
+  [z-image-turbo]=8092
+  [qwen-image-2512]=8091
+)
+
 # Download set for a node without an explicit model list
 VLLM_PREFERRED_MODELS=(qwen3.8-27b-nvfp4)
 

@@ -317,6 +317,44 @@ the model in the UI.
 
 Per-tool paths are in [tools.md](tools.md).
 
+### Self-hosted image models
+
+Two diffusion models can run on GPU nodes under vllm-omni
+(`docker-compose.imagegen.yml`, compose project `kloudchat-imagegen`). They are
+registered only as `strict-local/<name>`, with no OpenRouter twin, so a
+picture drawn with them never leaves the boundary.
+
+| Alias | Hugging Face repo | Download | Service | Port |
+|---|---|---|---|---|
+| `z-image-turbo` | `Tongyi-MAI/Z-Image-Turbo` | 31 GB | `imagegen-z-image` | 8092 |
+| `qwen-image-2512` | `Qwen/Qwen-Image-2512` | 54 GB | `imagegen-qwen-image` | 8091 |
+
+On the GPU node:
+
+```bash
+./scripts/manage-imagegen.sh download z-image-turbo   # weights under VLLM_MODELS_ROOT/<alias>
+./scripts/manage-imagegen.sh up z-image-turbo
+./scripts/manage-imagegen.sh status
+```
+
+On the orchestrator, name each backend in `.env` and regenerate:
+
+```bash
+IMAGEGEN_BACKENDS=local/z-image-turbo=http://<node>:8092,local/qwen-image-2512=http://<node>:8091
+./scripts/gen-litellm-config.sh
+docker compose up -d imagegen-shim
+docker compose up -d --force-recreate litellm
+```
+
+`imagegen-shim` turns the gateway's `chat/completions` request with
+`modalities: ["image"]` into the backend's call. A test draw goes the same way,
+not through `images/generations`.
+
+The scheduler does not place or start these models. Like any process outside
+the `vllm-*` containers, the memory they hold is measured from `nvidia-smi`
+and charged to their card ([GPU memory](gpu-memory.md)), so start them before
+`scheduler apply`. Z-Image-Turbo holds about 25 GiB while serving.
+
 ## Retrieval
 
 Two stages, both local, both through the gateway.
