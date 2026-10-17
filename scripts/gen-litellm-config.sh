@@ -154,7 +154,8 @@ emit_local_images() {
     echo "      mode: image_generation"
     echo "      input_cost_per_token: 0.0000000000"
     echo "      output_cost_per_token: 0.0000000000"
-    emit_kchat_boundary self_hosted true false
+    # privacy-only like every strict-local alias: no automatic route picks it
+    emit_kchat_boundary self_hosted true true
   done
 }
 

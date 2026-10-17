@@ -393,6 +393,7 @@ def test_each_self_hosted_image_backend_is_registered_inside_the_boundary(tmp_pa
         info = entry["model_info"]
         assert info["mode"] == "image_generation"
         assert info["kchat_data_boundary"] == "self_hosted" and info["kchat_strict_local"] is True
+        assert info["kchat_privacy_only"] is True
 
 
 def test_an_image_model_on_several_nodes_is_registered_once(tmp_path: Path) -> None:
