@@ -6,8 +6,9 @@ KloudChat asks for a picture the OpenRouter way: `/v1/chat/completions` with
 with the image in `content` and takes the size as `WIDTHxHEIGHT`, so this shim
 calls its `/v1/images/generations` instead and reshapes the reply.
 
-IMAGEGEN_BACKENDS maps each served name to its backends, `|` between nodes:
-`local/z-image-turbo=http://gpu-1:8091|http://gpu-2:8091,local/qwen-image-2512=http://gpu-1:8092`.
+IMAGEGEN_BACKENDS is comma-separated `name=url` pairs, a name repeated once per
+node: `local/z-image-turbo=http://gpu-1:8091,local/z-image-turbo=http://gpu-2:8091,
+local/qwen-image-2512=http://gpu-1:8092`.
 A request goes to the backend with the fewest pictures in flight (pool.py).
 """
 from __future__ import annotations

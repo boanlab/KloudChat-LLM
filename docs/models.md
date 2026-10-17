@@ -346,8 +346,8 @@ docker compose up -d imagegen-shim
 docker compose up -d --force-recreate litellm
 ```
 
-Running a model on more than one node: list every node after its name, `|`
-between them (`local/z-image-turbo=http://<node-1>:8091|http://<node-2>:8091`).
+Running a model on more than one node: repeat its name, one `name=URL` pair
+per node (`local/z-image-turbo=http://<node-1>:8091,local/z-image-turbo=http://<node-2>:8091`).
 Each vllm-omni server draws one picture at a time and queues the rest, so the
 shim sends each request to the node with the fewest pictures in flight, and a
 node that refuses the connection sits out for 30 seconds.

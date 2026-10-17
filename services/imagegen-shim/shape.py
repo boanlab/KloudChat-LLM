@@ -40,23 +40,18 @@ FAMILIES: dict[str, dict[str, Any]] = {
 
 
 def parse_backends(raw: str) -> dict[str, list[str]]:
-    """`{served name: [base URL, ...]}` from `name=url|url,name=url`.
+    """`{served name: [base URL, ...]}` from comma-separated `name=url` pairs.
 
-    A name given twice adds its URLs; duplicates are dropped.
+    One model on several nodes repeats its name, one pair per node; duplicate
+    URLs are dropped.
     """
     out: dict[str, list[str]] = {}
     for item in raw.split(","):
-        name, sep, urls = item.strip().partition("=")
-        name = name.strip()
-        if not (sep and name):
-            continue
-        for url in urls.split("|"):
-            url = url.strip().rstrip("/")
-            if url and url not in out.setdefault(name, []):
-                out[name].append(url)
-        if not out.get(name):
-            out.pop(name, None)
-    return out
+        name, sep, url = item.strip().partition("=")
+        name, url = name.strip(), url.strip().rstrip("/")
+        if sep and name and url and url not in out.setdefault(name, []):
+            out[name].append(url)
+    return {name: urls for name, urls in out.items() if urls}
 
 
 def family_of(model: str) -> dict[str, Any]:

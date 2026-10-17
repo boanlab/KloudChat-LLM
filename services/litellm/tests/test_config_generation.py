@@ -399,7 +399,7 @@ def test_an_image_model_on_several_nodes_is_registered_once(tmp_path: Path) -> N
     result, _ = _run_generator(
         tmp_path, with_vllm=True, with_openrouter=True,
         env_values={"IMAGEGEN_BACKENDS": (
-            "local/z-image-turbo=http://gpu-1:8091|http://gpu-2:8091,"
+            "local/z-image-turbo=http://gpu-1:8091,local/z-image-turbo=http://gpu-2:8091,"
             "local/qwen-image-2512=http://gpu-1:8092,local/z-image-turbo=http://gpu-3:8091"
         )},
     )
