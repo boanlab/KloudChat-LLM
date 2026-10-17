@@ -39,13 +39,23 @@ FAMILIES: dict[str, dict[str, Any]] = {
 }
 
 
-def parse_backends(raw: str) -> dict[str, str]:
-    """`{served name: base URL}` from `name=url,name=url`."""
-    out: dict[str, str] = {}
+def parse_backends(raw: str) -> dict[str, list[str]]:
+    """`{served name: [base URL, ...]}` from `name=url|url,name=url`.
+
+    A name given twice adds its URLs; duplicates are dropped.
+    """
+    out: dict[str, list[str]] = {}
     for item in raw.split(","):
-        name, sep, url = item.strip().partition("=")
-        if sep and name.strip() and url.strip():
-            out[name.strip()] = url.strip().rstrip("/")
+        name, sep, urls = item.strip().partition("=")
+        name = name.strip()
+        if not (sep and name):
+            continue
+        for url in urls.split("|"):
+            url = url.strip().rstrip("/")
+            if url and url not in out.setdefault(name, []):
+                out[name].append(url)
+        if not out.get(name):
+            out.pop(name, None)
     return out
 
 
