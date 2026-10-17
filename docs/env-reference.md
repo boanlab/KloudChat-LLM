@@ -82,7 +82,7 @@ change the namespace and use `./scripts/build-push-images.sh`.
 
 ## 6. GPU node startup options
 
-Read by `docker-compose.vllm.yml` on the node. `MAX_LEN` and `GPU_UTIL` are
+Read by `docker-compose.vllm.yml` (and, for `IMAGEGEN_*`, `docker-compose.vllm-omni.yml`) on the node. `MAX_LEN` and `GPU_UTIL` are
 overwritten by the placement step; the `.env.example` values apply when
 placement is skipped.
 
@@ -94,6 +94,9 @@ placement is skipped.
 | `VLLM_MODELS_ROOT` | `/var/lib/vllm/models` | Checkpoint root on the node |
 | `VLLM_<PREFIX>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root (`VLLM_QWEN27B_DIR`, `VLLM_QWENFLASH_DIR`, `VLLM_CODERNEXT_DIR`, `VLLM_BGEM3_DIR`, `VLLM_RERANK_DIR`, `VLLM_WHISPER_DIR`) |
 | `VLLM_CODERNEXT_DEEP_GEMM` | `0` | `VLLM_USE_DEEP_GEMM` for `vllm-codernext`. DeepGEMM rejects this checkpoint's FP8 scale-factor layout on GB10; `1` where the kernel takes it |
+| `VLLM_OMNI_IMAGE` | `vllm/vllm-omni:v0.30.0` | Image for `docker-compose.vllm-omni.yml` |
+| `VLLM_OMNI_ZIMAGE_DIR` / `VLLM_OMNI_QWENIMAGE_DIR` | `z-image-turbo` / `qwen-image-2512` | Image-model checkpoint directories under `VLLM_MODELS_ROOT` |
+| `VLLM_OMNI_DEVICES` | `all` | `NVIDIA_VISIBLE_DEVICES` for the image models |
 | `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling for `vllm-whisper` (`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`) |
 
 Per-model `GPU_UTIL`, `MAX_LEN`, `MAX_BATCHED_TOKENS`, `MAX_NUM_SEQS` and `SPEC_TOKENS` defaults are in [GPU memory](gpu-memory.md#tuning-knobs).

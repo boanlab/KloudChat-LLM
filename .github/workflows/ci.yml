@@ -70,6 +70,9 @@ jobs:
       - name: Validate docker-compose.vllm.yml
         run: docker compose -f docker-compose.vllm.yml config --quiet
 
+      - name: Validate docker-compose.vllm-omni.yml
+        run: docker compose -f docker-compose.vllm-omni.yml config --quiet
+
       - name: Verify pinned LiteLLM spend-log redaction
         run: |
           docker run --rm --entrypoint python \
