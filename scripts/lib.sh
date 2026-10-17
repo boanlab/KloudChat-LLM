@@ -158,22 +158,26 @@ OR_PROVIDERS=(openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI
 
 # Image generation, cheapest per picture first (picker default). Chosen on
 # 2026-10-17 by drawing a Korean sign, a diagram, a photo and a 16:9 slide on
-# each candidate: these four rendered the Korean text and kept the ratio, and
+# each candidate: these rendered the Korean text and kept the ratio, and
 # answer on chat/completions (GPT Image 2.5, FLUX 3 and Qwen Image 3 serve
-# only OpenRouter's /images endpoint).
+# only OpenRouter's /images endpoint). GPT-5.4 Image 2 added the same day
+# after the same check (16:9 kept, Korean sign right, $0.127 a picture).
 OR_IMAGE_MODELS=(
   bytedance-seed/seedream-5-0-flash
   recraft/recraft-v4.1
   x-ai/grok-imagine-image-2.0
+  openai/gpt-5.4-image-2
   google/gemini-3-pro-image
 )
 # USD per image_output token. Gemini spends ~1290 tokens on a picture; the
 # image-only models are priced as 4175 tokens per 1K picture (Seedream bills a
-# flat $0.018 whatever token count it reports; KloudChat charges usage.cost)
+# flat $0.018 whatever token count it reports; KloudChat charges usage.cost).
+# GPT-5.4 Image 2: $0.127 over 3866 output tokens for one 16:9 picture
 declare -A MODEL_IMAGE_OUT_COST=(
   [bytedance-seed/seedream-5-0-flash]=0.0000043114
   [recraft/recraft-v4.1]=0.0000083832
   [x-ai/grok-imagine-image-2.0]=0.0000095808
+  [openai/gpt-5.4-image-2]=0.0000329196
   [google/gemini-3-pro-image]=0.00012
 )
 # Audio generation through chat/completions (streaming required): gpt-audio
@@ -203,6 +207,7 @@ declare -A MODEL_IMAGE_IN_PM=(
   [bytedance-seed/seedream-5-0-flash]=0.00
   [recraft/recraft-v4.1]=0.00
   [x-ai/grok-imagine-image-2.0]=0.00
+  [openai/gpt-5.4-image-2]=0.00
   [google/gemini-3-pro-image]=2.00
 )
 
