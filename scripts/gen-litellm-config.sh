@@ -132,16 +132,19 @@ emit_or_image() {
 }
 
 # Self-hosted image models behind imagegen-shim; one entry per served name in
-# IMAGEGEN_BACKENDS (name=url,...), registered as strict-local/<name> only: no
+# IMAGEGEN_BACKENDS (name=url|url,...), registered as strict-local/<name> only: no
 # OpenRouter twin and no local/ alias, so a picture never leaves the boundary.
 # The shim still sees the backend name it was given.
 emit_local_images() {
-  local raw="$1" item name
+  local raw="$1" item name seen=","
   [[ -n "$raw" ]] || return 0
   IFS=',' read -ra items <<<"$raw"
   for item in "${items[@]}"; do
     name="${item%%=*}"; name="${name// /}"
     [[ -n "$name" && "$item" == *=* ]] || continue
+    # A name listed twice is one model on more nodes
+    [[ "$seen" == *",${name},"* ]] && continue
+    seen+="${name},"
     echo "  - model_name: strict-local/${name#local/}"
     echo "    litellm_params:"
     echo "      model: openai/${name}"

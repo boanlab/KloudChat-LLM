@@ -395,6 +395,19 @@ def test_each_self_hosted_image_backend_is_registered_inside_the_boundary(tmp_pa
         assert info["kchat_data_boundary"] == "self_hosted" and info["kchat_strict_local"] is True
 
 
+def test_an_image_model_on_several_nodes_is_registered_once(tmp_path: Path) -> None:
+    result, _ = _run_generator(
+        tmp_path, with_vllm=True, with_openrouter=True,
+        env_values={"IMAGEGEN_BACKENDS": (
+            "local/z-image-turbo=http://gpu-1:8091|http://gpu-2:8091,"
+            "local/qwen-image-2512=http://gpu-1:8092,local/z-image-turbo=http://gpu-3:8091"
+        )},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    names = [m["model_name"] for m in models if "imagegen-shim" in str(m["litellm_params"].get("api_base"))]
+    assert sorted(names) == ["strict-local/qwen-image-2512", "strict-local/z-image-turbo"]
+
+
 def test_no_image_backend_registers_no_local_image_model(tmp_path: Path) -> None:
     result, _ = _run_generator(tmp_path, with_vllm=True, with_openrouter=True)
     models, _ = _parse_dry_run(result.stdout)

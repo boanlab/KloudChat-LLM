@@ -10,7 +10,7 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install -r /app/requirements.txt
 
-COPY app.py shape.py /app/
+COPY app.py pool.py shape.py /app/
 
 EXPOSE 9100
 

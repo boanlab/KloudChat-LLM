@@ -12,7 +12,15 @@ import shape  # noqa: E402
 
 def test_backends_parse_name_equals_url_pairs():
     got = shape.parse_backends(" local/z-image-turbo=http://gpu-2:8092/ ,bad, local/flux2-klein-4b=http://gpu-2:8093")
-    assert got == {"local/z-image-turbo": "http://gpu-2:8092", "local/flux2-klein-4b": "http://gpu-2:8093"}
+    assert got == {"local/z-image-turbo": ["http://gpu-2:8092"], "local/flux2-klein-4b": ["http://gpu-2:8093"]}
+
+
+def test_a_name_on_several_nodes_keeps_every_url_once():
+    got = shape.parse_backends(
+        "local/z-image-turbo=http://gpu-1:8091|http://gpu-2:8091/,"
+        "local/z-image-turbo=http://gpu-2:8091|http://gpu-3:8091,local/empty=|"
+    )
+    assert got == {"local/z-image-turbo": ["http://gpu-1:8091", "http://gpu-2:8091", "http://gpu-3:8091"]}
 
 
 def test_the_aspect_picks_the_familys_size():
