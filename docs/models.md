@@ -320,21 +320,21 @@ Per-tool paths are in [tools.md](tools.md).
 ### Self-hosted image models
 
 Two diffusion models can run on GPU nodes under vllm-omni
-(`docker-compose.imagegen.yml`, compose project `kloudchat-imagegen`). They are
+(`docker-compose.vllm-omni.yml`, compose project `kloudchat-vllm-omni`). They are
 registered only as `strict-local/<name>`, with no OpenRouter twin, so a
 picture drawn with them never leaves the boundary.
 
 | Alias | Hugging Face repo | Download | Service | Port |
 |---|---|---|---|---|
-| `z-image-turbo` | `Tongyi-MAI/Z-Image-Turbo` | 31 GB | `imagegen-z-image` | 8091 |
-| `qwen-image-2512` | `Qwen/Qwen-Image-2512` | 54 GB | `imagegen-qwen-image` | 8092 |
+| `z-image-turbo` | `Tongyi-MAI/Z-Image-Turbo` | 31 GB | `omni-z-image` | 8091 |
+| `qwen-image-2512` | `Qwen/Qwen-Image-2512` | 54 GB | `omni-qwen-image` | 8092 |
 
 On the GPU node:
 
 ```bash
-./scripts/manage-imagegen.sh download z-image-turbo   # weights under VLLM_MODELS_ROOT/<alias>
-./scripts/manage-imagegen.sh up z-image-turbo
-./scripts/manage-imagegen.sh status
+./scripts/manage-vllm-omni.sh download z-image-turbo   # weights under VLLM_MODELS_ROOT/<alias>
+./scripts/manage-vllm-omni.sh up z-image-turbo
+./scripts/manage-vllm-omni.sh status
 ```
 
 On the orchestrator, name each backend in `.env` and regenerate:

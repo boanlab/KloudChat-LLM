@@ -1,26 +1,28 @@
-# GPU-node image models (vllm-omni). Started by hand with
-# scripts/manage-imagegen.sh, not by the scheduler; LiteLLM reaches them through
+# GPU-node vllm-omni models (image generation). Started by hand with
+# scripts/manage-vllm-omni.sh, not by the scheduler; LiteLLM reaches them through
 # imagegen-shim, which reads IMAGEGEN_BACKENDS in the orchestrator's .env:
 #
 #   IMAGEGEN_BACKENDS=local/z-image-turbo=http://<node>:8091,local/qwen-image-2512=http://<node>:8092
 #
-#   imagegen-z-image     Z-Image-Turbo — fast, ~25 GiB while serving
-#   imagegen-qwen-image  Qwen-Image-2512 — slower, better layout, ~55 GiB of weights
+#   omni-z-image     Z-Image-Turbo — fast, ~25 GiB while serving
+#   omni-qwen-image  Qwen-Image-2512 — slower, better layout, ~55 GiB of weights
 #
 # The scheduler neither places nor starts these; it charges the memory they
 # hold (nvidia-smi) to their card, so start them before `scheduler apply`.
-name: kloudchat-imagegen
+# Container names start with omni-, never vllm-: the scheduler owns vllm-* and
+# stops any it did not place.
+name: kloudchat-vllm-omni
 
-x-imagegen: &imagegen
+x-vllm-omni: &vllm-omni
   # vllm-omni: diffusion serving behind the OpenAI chat API (modalities image).
   # Pinned; arm64 and amd64.
-  image: ${IMAGEGEN_IMAGE:-vllm/vllm-omni:v0.30.0}
+  image: ${VLLM_OMNI_IMAGE:-vllm/vllm-omni:v0.30.0}
   restart: unless-stopped
   ipc: host
   entrypoint: [vllm]
   environment:
     HF_TOKEN: ${HF_TOKEN:-}
-    NVIDIA_VISIBLE_DEVICES: ${IMAGEGEN_DEVICES:-all}
+    NVIDIA_VISIBLE_DEVICES: ${VLLM_OMNI_DEVICES:-all}
   deploy:
     resources:
       reservations:
@@ -30,9 +32,9 @@ x-imagegen: &imagegen
             capabilities: [gpu]
 
 services:
-  imagegen-z-image:
-    <<: *imagegen
-    container_name: imagegen-z-image
+  omni-z-image:
+    <<: *vllm-omni
+    container_name: omni-z-image
     command:
       - serve
       - /model
@@ -44,7 +46,7 @@ services:
       - --served-model-name
       - local/z-image-turbo
     volumes:
-      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${IMAGEGEN_ZIMAGE_DIR:-z-image-turbo}:/model:ro
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_OMNI_ZIMAGE_DIR:-z-image-turbo}:/model:ro
     ports:
       - "8091:8091"
     healthcheck:
@@ -54,9 +56,9 @@ services:
       retries: 5
       start_period: 600s
 
-  imagegen-qwen-image:
-    <<: *imagegen
-    container_name: imagegen-qwen-image
+  omni-qwen-image:
+    <<: *vllm-omni
+    container_name: omni-qwen-image
     command:
       - serve
       - /model
@@ -68,7 +70,7 @@ services:
       - --served-model-name
       - local/qwen-image-2512
     volumes:
-      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${IMAGEGEN_QWENIMAGE_DIR:-qwen-image-2512}:/model:ro
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_OMNI_QWENIMAGE_DIR:-qwen-image-2512}:/model:ro
     ports:
       - "8092:8092"
     healthcheck:

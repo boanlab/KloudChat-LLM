@@ -73,7 +73,7 @@ At least one of an OpenRouter key or a vLLM node is required.
 ./scripts/download-vllm-models.sh  # 27B and whisper, if this card can serve them
 ./scripts/download-vllm-models.sh bge-m3 bge-reranker-v2-m3  # head node
 ./scripts/download-vllm-models.sh qwen3.8-flash-next-nvfp4   # pool node
-./scripts/manage-imagegen.sh download z-image-turbo  # optional: a strict-local image model
+./scripts/manage-vllm-omni.sh download z-image-turbo  # optional: a strict-local image model
 ```
 
 Every model a GPU node serves, transcription (`whisper-large-v3`) included, is
@@ -86,13 +86,13 @@ card has, or a card outside the supported set, are refused with the reason.
 ## Layout
 
 ```
-docker-compose.yml          gateway + tools + LiteLLM (composed by profiles)
-docker-compose.vllm.yml     what a GPU node serves: every vLLM service
-docker-compose.imagegen.yml self-hosted image models (vllm-omni), started by hand
-docs/                       operator documentation
-scheduler/                  model placement (its own README inside)
-scripts/                    setup · config generation · node install · operations
-services/                   one directory per service: Dockerfile, source, config
+docker-compose.yml           gateway + tools + LiteLLM (composed by profiles)
+docker-compose.vllm.yml      what a GPU node serves: every vLLM service
+docker-compose.vllm-omni.yml self-hosted image models (vllm-omni), started by hand
+docs/                        operator documentation
+scheduler/                   model placement (its own README inside)
+scripts/                     setup · config generation · node install · operations
+services/                    one directory per service: Dockerfile, source, config
 ```
 
 ### Profiles
@@ -122,7 +122,7 @@ different address per capability.
 ./scripts/setup.sh scheduler plan     # compute placement (changes nothing)
 ./scripts/setup.sh scheduler apply    # apply it
 ./scripts/manage-vllm.sh status       # GPU node status (every vLLM service)
-./scripts/manage-imagegen.sh status   # image models on this node
+./scripts/manage-vllm-omni.sh status   # image models on this node
 
 ./scripts/manage.sh user usage        # LiteLLM usage and budgets
 ```
