@@ -341,6 +341,25 @@ services:
       - host.docker.internal:host-gateway
     networks: [kloudchat]
 
+  imagegen-shim:
+    container_name: kloudchat-imagegen-shim
+    image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-imagegen-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
+    build:
+      context: ./services/imagegen-shim
+    profiles: [imagegen]
+    restart: always
+    environment:
+      IMAGEGEN_BACKENDS: ${IMAGEGEN_BACKENDS:-}
+      LOG_LEVEL: INFO
+    healthcheck:
+      # "ok" while at least one backend answers
+      test: ["CMD", "python3", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:9100/health')); raise SystemExit(0 if d.get('status')=='ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [kloudchat]
+
   # ── retrieval index ─────────────────────────────────────────────────
   # Vectors for RAG; derived data, rebuildable
   index-db:

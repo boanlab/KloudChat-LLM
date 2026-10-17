@@ -156,18 +156,24 @@ OR_PROVIDERS=(openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI
               perplexity:PERPLEXITY tencent:TENCENT deepseek:DEEPSEEK z-ai:ZAI
               xiaomi:XIAOMI moonshotai:MOONSHOTAI qwen:QWEN minimax:MINIMAX)
 
-# Image generation, cheapest first (picker default)
+# Image generation, cheapest per picture first (picker default). Chosen on
+# 2026-10-17 by drawing a Korean sign, a diagram, a photo and a 16:9 slide on
+# each candidate: these four rendered the Korean text and kept the ratio, and
+# answer on chat/completions (GPT Image 2.5, FLUX 3 and Qwen Image 3 serve
+# only OpenRouter's /images endpoint).
 OR_IMAGE_MODELS=(
-  openai/gpt-5-image-mini
-  google/gemini-2.5-flash-image
-  openai/gpt-5-image
+  bytedance-seed/seedream-5-0-flash
+  recraft/recraft-v4.1
+  x-ai/grok-imagine-image-2.0
   google/gemini-3-pro-image
 )
-# USD per image_output token; one picture is ~1290 tokens
+# USD per image_output token. Gemini spends ~1290 tokens on a picture; the
+# image-only models are priced as 4175 tokens per 1K picture (Seedream bills a
+# flat $0.018 whatever token count it reports; KloudChat charges usage.cost)
 declare -A MODEL_IMAGE_OUT_COST=(
-  [openai/gpt-5-image-mini]=0.000008
-  [google/gemini-2.5-flash-image]=0.00003
-  [openai/gpt-5-image]=0.00004
+  [bytedance-seed/seedream-5-0-flash]=0.0000043114
+  [recraft/recraft-v4.1]=0.0000083832
+  [x-ai/grok-imagine-image-2.0]=0.0000095808
   [google/gemini-3-pro-image]=0.00012
 )
 # Audio generation through chat/completions (streaming required): gpt-audio
@@ -194,9 +200,9 @@ declare -A MODEL_AUDIO_PER_CALL=(
 )
 
 declare -A MODEL_IMAGE_IN_PM=(
-  [openai/gpt-5-image-mini]=2.50
-  [google/gemini-2.5-flash-image]=0.30
-  [openai/gpt-5-image]=10.00
+  [bytedance-seed/seedream-5-0-flash]=0.00
+  [recraft/recraft-v4.1]=0.00
+  [x-ai/grok-imagine-image-2.0]=0.00
   [google/gemini-3-pro-image]=2.00
 )
 
@@ -491,11 +497,15 @@ or_price_drift() {
     fi
   done
 
-  # image_output per image token; audio/audio_output per audio token
-  local id declared actual_out actual_in
+  # image_output per image token; audio/audio_output per audio token. Image-only
+  # models appear only in the image listing
+  local id declared actual_out actual_in images
+  images="$(curl -sf --max-time 20 'https://openrouter.ai/api/v1/models?output_modalities=image' \
+             -H "Authorization: Bearer ${key}" 2>/dev/null)" || images='{"data":[]}'
   for id in "${OR_IMAGE_MODELS[@]}"; do
     declared="${MODEL_IMAGE_OUT_COST[$id]:-}"
-    actual_out="$(jq -r --arg s "$id" '.data[] | select(.id == $s) | .pricing.image_output // empty' <<<"$live" | head -1)"
+    actual_out="$(jq -r --arg s "$id" '.data[] | select(.id == $s) | .pricing.image_output // empty' \
+                  <<<"$images" | head -1)"
     if [[ -z "$actual_out" ]]; then
       echo "GONE      ${id} — image model not in the catalogue"; drift=1
     elif ! awk -v a="$actual_out" -v b="$declared" 'BEGIN { d=a-b; if (d<0) d=-d; exit !(d < 1e-9) }'; then

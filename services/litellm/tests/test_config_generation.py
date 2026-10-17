@@ -90,6 +90,7 @@ def _run_generator(
     store_prompts: str | None = "false",
     whisper_urls: str | None = None,
     extra_env: dict[str, str] | None = None,
+    env_values: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     _require_associative_array_bash()
     env_file = tmp_path / ".env"
@@ -108,6 +109,7 @@ def _run_generator(
             else ("" if include_all_classes else "http://whisper.test:9000")
         ),
     }
+    values.update(env_values or {})
     env_file.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
     config_file.write_text(_base_config(store_prompts))
 
@@ -370,6 +372,33 @@ def test_an_openrouter_model_that_takes_an_effort_says_so(tmp_path: Path) -> Non
     # No effort in the catalogue: nothing claimed
     assert "supports_reasoning" not in by_name["z-ai/glm-5.3"]
     assert "kchat_reasoning_efforts" not in by_name["z-ai/glm-5.3"]
+
+
+def test_each_self_hosted_image_backend_is_registered_inside_the_boundary(tmp_path: Path) -> None:
+    """Every name in IMAGEGEN_BACKENDS becomes a strict-local image model behind the shim only."""
+    result, _ = _run_generator(
+        tmp_path, with_vllm=True, with_openrouter=True,
+        env_values={"IMAGEGEN_BACKENDS": "local/z-image-turbo=http://gpu-2:8092, local/flux2-klein-4b=http://gpu-2:8093"},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    shim = [m for m in models if "imagegen-shim" in str(m["litellm_params"].get("api_base"))]
+    images = {m["model_name"]: m for m in shim}
+    assert set(images) == {"strict-local/z-image-turbo", "strict-local/flux2-klein-4b"}
+    # No local/ alias: nothing could route such a picture to OpenRouter
+    assert not [m for m in models if m["model_name"] in {"local/z-image-turbo", "local/flux2-klein-4b"}]
+    for name, entry in images.items():
+        # The shim is addressed by the backend name it was given
+        assert entry["litellm_params"]["model"] == f"openai/local/{name.split('/', 1)[1]}"
+        assert entry["litellm_params"]["api_base"] == "http://imagegen-shim:9100/v1"
+        info = entry["model_info"]
+        assert info["mode"] == "image_generation"
+        assert info["kchat_data_boundary"] == "self_hosted" and info["kchat_strict_local"] is True
+
+
+def test_no_image_backend_registers_no_local_image_model(tmp_path: Path) -> None:
+    result, _ = _run_generator(tmp_path, with_vllm=True, with_openrouter=True)
+    models, _ = _parse_dry_run(result.stdout)
+    assert not [m for m in models if "imagegen-shim" in str(m["litellm_params"].get("api_base"))]
 
 
 def test_every_chat_model_in_the_catalogue_is_registered() -> None:
