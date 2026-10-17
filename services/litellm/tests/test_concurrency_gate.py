@@ -490,3 +490,63 @@ def test_non_finite_capacity_metrics_are_rejected(monkeypatch) -> None:
         assert str(exc) == "invalid vllm concurrency metrics"
     else:
         raise AssertionError("non-finite vLLM metrics must fail closed")
+
+
+def test_strict_picture_model_behind_the_shim_passes_the_gate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    gate_module = _load_gate_module()
+    picture_info = {"mode": "image_generation", "kchat_strict_local": True}
+    config = {
+        "model_list": [
+            {
+                "model_name": "strict-local/z-image-turbo",
+                "litellm_params": {
+                    "model": "openai/local/z-image-turbo",
+                    "api_base": "http://imagegen-shim:9100/v1",
+                },
+                "model_info": picture_info,
+            },
+            {
+                "model_name": "strict-local/elsewhere-image",
+                "litellm_params": {
+                    "model": "openai/local/elsewhere-image",
+                    "api_base": "http://somewhere:9100/v1",
+                },
+                "model_info": picture_info,
+            },
+            {
+                "model_name": "strict-local/twinned-image",
+                "litellm_params": {
+                    "model": "openai/local/twinned-image",
+                    "api_base": "http://imagegen-shim:9100/v1",
+                },
+                "model_info": picture_info,
+            },
+        ],
+        "router_settings": {
+            "fallbacks": [{"strict-local/twinned-image": ["vendor/image"]}]
+        },
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    monkeypatch.setenv("CONFIG_FILE_PATH", str(config_path))
+
+    assert gate_module._load_shim_pictures() == {"strict-local/z-image-turbo"}
+
+    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate.gate = {}
+    gate._saturated = {}
+    gate._last_success = {}
+    gate._shim_pictures = gate_module._load_shim_pictures()
+    data = {"model": "strict-local/z-image-turbo"}
+    result = asyncio.run(gate.async_pre_call_hook(None, None, data, "aimage_generation"))
+    assert result is None
+    assert data["model"] == "strict-local/z-image-turbo"
+
+    for model in ("strict-local/elsewhere-image", "strict-local/twinned-image"):
+        refused = asyncio.run(
+            gate.async_pre_call_hook(None, None, {"model": model}, "aimage_generation")
+        )
+        assert isinstance(refused, gate_module.StrictLocalUnavailableError)
