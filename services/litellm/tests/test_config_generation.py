@@ -375,16 +375,20 @@ def test_an_openrouter_model_that_takes_an_effort_says_so(tmp_path: Path) -> Non
 
 
 def test_each_self_hosted_image_backend_is_registered_inside_the_boundary(tmp_path: Path) -> None:
-    """Every name in IMAGEGEN_BACKENDS becomes an image model behind the shim, never external."""
+    """Every name in IMAGEGEN_BACKENDS becomes a strict-local image model behind the shim only."""
     result, _ = _run_generator(
         tmp_path, with_vllm=True, with_openrouter=True,
         env_values={"IMAGEGEN_BACKENDS": "local/z-image-turbo=http://gpu-2:8092, local/flux2-klein-4b=http://gpu-2:8093"},
     )
     models, _ = _parse_dry_run(result.stdout)
-    images = {m["model_name"]: m for m in models if m["model_name"] in {"local/z-image-turbo", "local/flux2-klein-4b"}}
-    assert set(images) == {"local/z-image-turbo", "local/flux2-klein-4b"}
+    shim = [m for m in models if "imagegen-shim" in str(m["litellm_params"].get("api_base"))]
+    images = {m["model_name"]: m for m in shim}
+    assert set(images) == {"strict-local/z-image-turbo", "strict-local/flux2-klein-4b"}
+    # No local/ alias: nothing could route such a picture to OpenRouter
+    assert not [m for m in models if m["model_name"] in {"local/z-image-turbo", "local/flux2-klein-4b"}]
     for name, entry in images.items():
-        assert entry["litellm_params"]["model"] == f"openai/{name}"
+        # The shim is addressed by the backend name it was given
+        assert entry["litellm_params"]["model"] == f"openai/local/{name.split('/', 1)[1]}"
         assert entry["litellm_params"]["api_base"] == "http://imagegen-shim:9100/v1"
         info = entry["model_info"]
         assert info["mode"] == "image_generation"

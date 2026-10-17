@@ -132,7 +132,9 @@ emit_or_image() {
 }
 
 # Self-hosted image models behind imagegen-shim; one entry per served name in
-# IMAGEGEN_BACKENDS (name=url,...). No OpenRouter twin: they never leave the boundary
+# IMAGEGEN_BACKENDS (name=url,...), registered as strict-local/<name> only: no
+# OpenRouter twin and no local/ alias, so a picture never leaves the boundary.
+# The shim still sees the backend name it was given.
 emit_local_images() {
   local raw="$1" item name
   [[ -n "$raw" ]] || return 0
@@ -140,7 +142,7 @@ emit_local_images() {
   for item in "${items[@]}"; do
     name="${item%%=*}"; name="${name// /}"
     [[ -n "$name" && "$item" == *=* ]] || continue
-    echo "  - model_name: ${name}"
+    echo "  - model_name: strict-local/${name#local/}"
     echo "    litellm_params:"
     echo "      model: openai/${name}"
     echo "      api_base: http://imagegen-shim:9100/v1"
@@ -382,7 +384,7 @@ SECTION=$(
     free_count=$((free_count+1))
   done < <(or_free_models)
   if (( free_count > 0 )); then info "registered ${free_count} free models"; fi
-  # --- image generation (chat/completions with modalities ["image","text"]) ---
+  # --- image generation (chat/completions; image-only models take modalities ["image"]) ---
   for m in "${OR_IMAGE_MODELS[@]}"; do
     emit_or_image "$m" "${MODEL_IMAGE_OUT_COST[$m]}" "${MODEL_IMAGE_IN_PM[$m]}"
   done
