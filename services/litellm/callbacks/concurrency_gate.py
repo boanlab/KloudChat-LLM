@@ -150,6 +150,43 @@ def _load_gate_map() -> dict:
     return gate
 
 
+def _load_shim_pictures() -> set:
+    """Strict picture models served only through the imagegen shim.
+
+    The shim has no vLLM metrics to gate on and no fallback to spill to, so
+    such a model can only ever reach the local backend: it passes the gate.
+    """
+    try:
+        import yaml
+        path = os.environ.get("CONFIG_FILE_PATH", "/app/config.yaml")
+        cfg = yaml.safe_load(open(path)) or {}
+        deployments: dict[str, list[bool]] = {}
+        for d in cfg.get("model_list", []) or []:
+            lp = (d.get("litellm_params") or {})
+            mi = (d.get("model_info") or {})
+            name = d.get("model_name", "")
+            if not isinstance(name, str) or not name.startswith("strict-local/"):
+                continue
+            through_shim = (
+                mi.get("mode") == "image_generation"
+                and mi.get("kchat_strict_local") is True
+                and str(lp.get("api_base", "")).startswith("http://imagegen-shim:")
+            )
+            deployments.setdefault(name, []).append(through_shim)
+        twinned = {
+            k
+            for fb in (cfg.get("router_settings", {}) or {}).get("fallbacks", []) or []
+            for k, v in fb.items()
+            if v
+        }
+        return {
+            name for name, shims in deployments.items() if all(shims) and name not in twinned
+        }
+    except Exception:
+        log.exception("concurrency gate: failed to read picture models")
+        return set()
+
+
 def _scrape(url: str) -> tuple:
     """(running, waiting) from a vLLM /metrics endpoint, summed across engines."""
     running = waiting = 0.0
@@ -173,6 +210,7 @@ def _scrape(url: str) -> tuple:
 class ConcurrencyGate(CustomLogger):
     def __init__(self):
         self.gate = _load_gate_map()
+        self._shim_pictures = _load_shim_pictures()
         # Strict aliases rejected until the first successful scrape
         self._saturated = {m: g["mode"] == "reject" for m, g in self.gate.items()}
         self._last_success = {m: 0.0 for m in self.gate}
@@ -286,7 +324,10 @@ class ConcurrencyGate(CustomLogger):
                 log.warning("gate hook: model=%s gated=%s forced=%s sat=%s",
                             model, g is not None, forced, self._saturated.get(model))
             if g is None:
-                # Strict alias with no gate entry: unknown capacity, rejected.
+                # Strict alias with no gate entry: unknown capacity, rejected,
+                # unless it is a picture model the shim alone serves.
+                if model in getattr(self, "_shim_pictures", set()):
+                    return None
                 if _strict_request(data):
                     return StrictLocalUnavailableError()
                 return None
