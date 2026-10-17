@@ -10,7 +10,7 @@
 
 ## Structure
 
-One gateway port is exposed; behind it, LiteLLM and six tools are split by
+One gateway port is exposed; behind it, LiteLLM and seven tools are split by
 path ([paths and profiles](tools.md#paths-and-the-calls-behind-them)). GPU
 nodes live outside this stack: LiteLLM and whisper-shim reach them at the URLs
 the [scheduler](../scheduler/README.md) writes into `.env`. A model with no

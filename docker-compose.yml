@@ -7,6 +7,7 @@
 #   whisper   transcription shim; setup.sh adds it once a backend is placed
 #   index     retrieval index (pgvector) and its shim
 #   ocr       text from scanned pages (CPU)
+#   imagegen  shim for self-hosted image models; setup.sh adds it once IMAGEGEN_BACKENDS is set
 name: kloudchat-llm
 
 services:

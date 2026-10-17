@@ -179,8 +179,11 @@ rendering"}`. A successful scrape is kept in memory for `CACHE_TTL_S` (15 min)
 keyed by URL, formats and the main-content flag. `/health` reports pages
 rendering, waiting, and cache entries.
 
-A scrape that finds Chromium dead starts a new one. After three such scrapes in
-a row `/health` answers `503` with `"status": "browser_down"`.
+A scrape that finds Chromium or its Playwright driver dead starts a new one and
+retries the page once. While no scrape shows the browser working, a local page
+is rendered every `BROWSER_PROBE_INTERVAL_S` (30 s). After `BROWSER_DEAD_LIMIT`
+(3) failures in a row `/health` answers `503` with `"status": "browser_down"`;
+after `BROWSER_EXIT_LIMIT` (6) the process exits and Docker restarts it.
 
 ### Code execution: code-interpreter
 

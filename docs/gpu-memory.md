@@ -3,9 +3,9 @@
 What fits on which GPU, and how much VRAM each model occupies. Read this when
 sizing a node or diagnosing an OOM.
 
-> Figures cover every model in `scheduler/models.yaml`, deployed or not. There
-> is no local media backend: images, audio and video pass through to
-> OpenRouter.
+> Figures cover every model in `scheduler/models.yaml`, deployed or not. The
+> self-hosted image models (vllm-omni) are outside the scheduler; see
+> [models](models.md#self-hosted-image-models).
 
 ## The lineup
 
