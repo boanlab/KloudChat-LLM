@@ -17,8 +17,8 @@ def test_backends_parse_name_equals_url_pairs():
 
 def test_a_name_on_several_nodes_keeps_every_url_once():
     got = shape.parse_backends(
-        "local/z-image-turbo=http://gpu-1:8091|http://gpu-2:8091/,"
-        "local/z-image-turbo=http://gpu-2:8091|http://gpu-3:8091,local/empty=|"
+        "local/z-image-turbo=http://gpu-1:8091,local/z-image-turbo=http://gpu-2:8091/,"
+        "local/z-image-turbo=http://gpu-2:8091,local/z-image-turbo=http://gpu-3:8091,local/empty="
     )
     assert got == {"local/z-image-turbo": ["http://gpu-1:8091", "http://gpu-2:8091", "http://gpu-3:8091"]}
 
