@@ -256,8 +256,8 @@ declare -A IMAGEGEN_SERVICE=(
   [qwen-image-2512]=imagegen-qwen-image
 )
 declare -A IMAGEGEN_PORT=(
-  [z-image-turbo]=8092
-  [qwen-image-2512]=8091
+  [z-image-turbo]=8091
+  [qwen-image-2512]=8092
 )
 
 # Download set for a node without an explicit model list

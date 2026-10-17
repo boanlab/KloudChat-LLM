@@ -326,8 +326,8 @@ picture drawn with them never leaves the boundary.
 
 | Alias | Hugging Face repo | Download | Service | Port |
 |---|---|---|---|---|
-| `z-image-turbo` | `Tongyi-MAI/Z-Image-Turbo` | 31 GB | `imagegen-z-image` | 8092 |
-| `qwen-image-2512` | `Qwen/Qwen-Image-2512` | 54 GB | `imagegen-qwen-image` | 8091 |
+| `z-image-turbo` | `Tongyi-MAI/Z-Image-Turbo` | 31 GB | `imagegen-z-image` | 8091 |
+| `qwen-image-2512` | `Qwen/Qwen-Image-2512` | 54 GB | `imagegen-qwen-image` | 8092 |
 
 On the GPU node:
 
@@ -340,7 +340,7 @@ On the GPU node:
 On the orchestrator, name each backend in `.env` and regenerate:
 
 ```bash
-IMAGEGEN_BACKENDS=local/z-image-turbo=http://<node>:8092,local/qwen-image-2512=http://<node>:8091
+IMAGEGEN_BACKENDS=local/z-image-turbo=http://<node>:8091,local/qwen-image-2512=http://<node>:8092
 ./scripts/gen-litellm-config.sh
 docker compose up -d imagegen-shim
 docker compose up -d --force-recreate litellm

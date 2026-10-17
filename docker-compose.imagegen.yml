@@ -2,7 +2,7 @@
 # scripts/manage-imagegen.sh, not by the scheduler; LiteLLM reaches them through
 # imagegen-shim, which reads IMAGEGEN_BACKENDS in the orchestrator's .env:
 #
-#   IMAGEGEN_BACKENDS=local/z-image-turbo=http://<node>:8092,local/qwen-image-2512=http://<node>:8091
+#   IMAGEGEN_BACKENDS=local/z-image-turbo=http://<node>:8091,local/qwen-image-2512=http://<node>:8092
 #
 #   imagegen-z-image     Z-Image-Turbo — fast, ~25 GiB while serving
 #   imagegen-qwen-image  Qwen-Image-2512 — slower, better layout, ~55 GiB of weights
@@ -40,15 +40,15 @@ services:
       - --host
       - 0.0.0.0
       - --port
-      - "8092"
+      - "8091"
       - --served-model-name
       - local/z-image-turbo
     volumes:
       - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${IMAGEGEN_ZIMAGE_DIR:-z-image-turbo}:/model:ro
     ports:
-      - "8092:8092"
+      - "8091:8091"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:8092/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fs http://localhost:8091/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -64,15 +64,15 @@ services:
       - --host
       - 0.0.0.0
       - --port
-      - "8091"
+      - "8092"
       - --served-model-name
       - local/qwen-image-2512
     volumes:
       - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${IMAGEGEN_QWENIMAGE_DIR:-qwen-image-2512}:/model:ro
     ports:
-      - "8091:8091"
+      - "8092:8092"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:8091/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fs http://localhost:8092/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5

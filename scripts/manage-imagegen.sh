@@ -9,8 +9,8 @@
 #   manage-imagegen.sh status                   container + healthcheck status
 #
 # Aliases (lib.sh::IMAGEGEN_MODELS):
-#   z-image-turbo     Tongyi-MAI/Z-Image-Turbo   31 GB  imagegen-z-image    :8092
-#   qwen-image-2512   Qwen/Qwen-Image-2512       54 GB  imagegen-qwen-image :8091
+#   z-image-turbo     Tongyi-MAI/Z-Image-Turbo   31 GB  imagegen-z-image    :8091
+#   qwen-image-2512   Qwen/Qwen-Image-2512       54 GB  imagegen-qwen-image :8092
 #
 # Per-node, outside the scheduler. Compose project: kloudchat-imagegen.
 # On the orchestrator, list what runs where in IMAGEGEN_BACKENDS, then
