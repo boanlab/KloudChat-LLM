@@ -40,7 +40,8 @@ bash -n scripts/*.sh
 shellcheck -S warning -e SC1091 scripts/*.sh          # settings in .shellcheckrc
 ruff check scheduler services                         # rules in pyproject.toml
 pytest scheduler/tests services/litellm/tests services/crawl4ai-shim/tests services/search-shim/tests \
-  services/gpu-exporter/tests services/ocr-shim/tests services/imagegen-shim/tests -q
+  services/gpu-exporter/tests services/ocr-shim/tests services/imagegen-shim/tests \
+  services/gateway/tests -q
 docker compose -f docker-compose.yml config --quiet
 docker compose -f docker-compose.vllm.yml config --quiet
 docker compose -f docker-compose.vllm-omni.yml config --quiet
