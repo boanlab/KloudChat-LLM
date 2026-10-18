@@ -27,20 +27,38 @@ services:
       CODE_INTERPRETER_API_KEY: ${CODE_INTERPRETER_API_KEY:?the code execution API key is required}
       # Required from clients on /tools/* as X-Tools-Key; unset or empty refuses to start
       TOOLS_GATEWAY_KEY: ${TOOLS_GATEWAY_KEY:?the tools gateway key is required (openssl rand -hex 32)}
-      # /metrics/* upstreams: one host:port each (no path, no list). Unset points
-      # at a closed port, so that name answers 502 and the rest keep working.
-      METRICS_VLLM_27B_URL: ${METRICS_VLLM_27B_URL:-127.0.0.1:9}
-      METRICS_VLLM_FLASHNEXT_URL: ${METRICS_VLLM_FLASHNEXT_URL:-127.0.0.1:9}
-      METRICS_VLLM_BGEM3_URL: ${METRICS_VLLM_BGEM3_URL:-127.0.0.1:9}
-      METRICS_VLLM_RERANK_URL: ${METRICS_VLLM_RERANK_URL:-127.0.0.1:9}
-      METRICS_VLLM_WHISPER_URL: ${METRICS_VLLM_WHISPER_URL:-127.0.0.1:9}
-      METRICS_GPU_1_URL: ${METRICS_GPU_1_URL:-127.0.0.1:9}
-      METRICS_GPU_2_URL: ${METRICS_GPU_2_URL:-127.0.0.1:9}
     healthcheck:
       test: [CMD, wget, -qO-, 'http://localhost:8080/health']
       interval: 30s
       timeout: 5s
       retries: 3
+    networks: [kloudchat]
+
+  # GPU-node /metrics behind the gateway's /metrics/*; targets from the endpoint settings
+  metrics-shim:
+    container_name: kloudchat-metrics-shim
+    image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-metrics-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
+    build:
+      context: ./services/metrics-shim
+    profiles: [tools]
+    restart: always
+    environment:
+      VLLM_QWEN27B_URL: ${VLLM_QWEN27B_URL:-}
+      VLLM_QWENFLASH_URL: ${VLLM_QWENFLASH_URL:-}
+      VLLM_CODERNEXT_URL: ${VLLM_CODERNEXT_URL:-}
+      VLLM_BGEM3_URL: ${VLLM_BGEM3_URL:-}
+      VLLM_RERANK_URL: ${VLLM_RERANK_URL:-}
+      WHISPER_URLS: ${WHISPER_URLS:-}
+      IMAGEGEN_BACKENDS: ${IMAGEGEN_BACKENDS:-}
+      NODES_VLLM: ${NODES_VLLM:-}
+      GPU_EXPORTER_PORT: ${GPU_EXPORTER_PORT:-9835}
+      LOG_LEVEL: INFO
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9200/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks: [kloudchat]
 
   # ── model gateway ───────────────────────────────────────────────────
