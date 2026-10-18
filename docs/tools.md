@@ -22,7 +22,7 @@ and appends the service-specific path.
 | Transcription | `/tools/stt` | `/tools/stt/v1/audio/transcriptions` | whisper-shim | `whisper` |
 | Retrieval index | `/tools/index` | `/tools/index/{documents,search}` | index-shim | `index` |
 | Text from scanned pages | `/tools/ocr` | `/tools/ocr/{ocr,render}` | ocr-shim | `ocr` |
-| GPU-node metrics | `/metrics` | `/metrics/{vllm-27b,vllm-flashnext,vllm-bgem3,vllm-rerank,vllm-whisper,gpu-1,gpu-2}` | vLLM `/metrics`, gpu-exporter | `tools` |
+| GPU-node metrics | `/metrics` | `/metrics/targets`, `/metrics/<name>` | metrics-shim → vLLM `/metrics`, gpu-exporter | `tools` |
 
 The contract is identical without the gateway, so a raw service address works
 too, except that the gateway also requires the tools key
@@ -310,21 +310,26 @@ publishes no host port; it is reached through the gateway at `/litellm/*`.
 ### Metrics: vLLM and gpu-exporter
 
 KloudChat's admin 「성능 모니터링」 page reads Prometheus text from the GPU
-nodes through `/metrics/<name>`, with the same `X-Tools-Key` and the same 401
-as `/tools/*`; the key is stripped before the upstream. Each name is a fixed
-upstream from `.env`, one `host:port` each (no path, no list):
+nodes through `/metrics/*`, with the same `X-Tools-Key` and the same 401 as
+`/tools/*`; the key is stripped before `metrics-shim`. The shim builds its
+targets from `.env`, nothing to list by hand:
 
-| Name | `.env` | Upstream |
+| Kind | Found from | Upstream |
 |---|---|---|
-| `vllm-27b`, `vllm-flashnext`, `vllm-bgem3`, `vllm-rerank`, `vllm-whisper` | `METRICS_VLLM_<NAME>_URL` | that model's vLLM server, e.g. `10.40.0.254:8001` |
-| `gpu-1`, `gpu-2` | `METRICS_GPU_1_URL`, `METRICS_GPU_2_URL` | gpu-exporter on each node (`:9835`), the head node first |
+| vLLM server | `VLLM_QWEN27B_URL`, `VLLM_QWENFLASH_URL`, `VLLM_CODERNEXT_URL`, `VLLM_BGEM3_URL`, `VLLM_RERANK_URL`, `WHISPER_URLS` (every URL of a list) | that server's `/metrics` |
+| Image server | `IMAGEGEN_BACKENDS` | vllm-omni's `/health` and picture count, plus imagegen-shim's pictures in flight, as vLLM series (`running` 0–1, the rest `waiting`) |
+| GPU node | every host above, plus `NODES_VLLM` | gpu-exporter at `GPU_EXPORTER_PORT` (`:9835`) |
 
-An unset name answers 502 and the others keep working. gpu-exporter
-(`services/gpu-exporter`) reports nvidia-smi utilisation, memory, temperature
-and power plus the node's memory and CPU (on GB10 the node memory is the model
-memory). It runs beside the vLLM services, outside the scheduler's `vllm-*`
-names: `docker compose -f docker-compose.vllm.yml up -d gpu-exporter` on each
-node. Changing a `METRICS_*` value needs `docker compose up -d gateway`.
+| Path | Answer |
+|---|---|
+| `/metrics/targets` | `{"targets": [{"name", "kind": "vllm" \| "gpu", "node"}]}`, `node` the exporter's hostname, else the host |
+| `/metrics/<name>` | that target's text; 502 when it does not answer, 404 for a name not in the list |
+
+gpu-exporter (`services/gpu-exporter`) reports nvidia-smi utilisation, memory,
+temperature and power plus the node's memory and CPU (on GB10 the node memory
+is the model memory). It runs beside the vLLM services, outside the scheduler's
+`vllm-*` names: `docker compose -f docker-compose.vllm.yml up -d gpu-exporter`
+on each node. A changed endpoint setting needs `docker compose up -d metrics-shim`.
 
 ## Checking status
 

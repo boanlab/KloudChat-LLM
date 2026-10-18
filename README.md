@@ -20,6 +20,7 @@ one address in its admin screen. No backend address is compiled into the UI.
                                    │   /tools/stt/*      → whisper-shim      │
                                    │   /tools/index/*    → index-shim        │
                                    │   /tools/ocr/*      → ocr-shim          │
+                                   │   /metrics/*        → metrics-shim      │
                                    │                                         │
                                    │  GPU nodes: vllm-* (whisper included)   │
                                    └─────────────────────────────────────────┘

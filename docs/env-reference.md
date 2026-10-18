@@ -73,7 +73,7 @@ Set by hand on the compose host; the scheduler does not write these:
 | Variable | Contents |
 |---|---|
 | `IMAGEGEN_BACKENDS` | Self-hosted image models as `name=URL` pairs without `/v1`, one per node serving the name. Set: `setup.sh` enables the `imagegen` profile and `gen-litellm-config.sh` registers each name as `strict-local/<name>` only. See [models.md](models.md#self-hosted-image-models) |
-| `METRICS_VLLM_27B_URL`, `METRICS_VLLM_FLASHNEXT_URL`, `METRICS_VLLM_BGEM3_URL`, `METRICS_VLLM_RERANK_URL`, `METRICS_VLLM_WHISPER_URL`, `METRICS_GPU_1_URL`, `METRICS_GPU_2_URL` | One `host:port` each (no path, no list) behind the gateway's `/metrics/<name>`: a model's vLLM server, or gpu-exporter (`:9835`) on a GPU node, the head node as `GPU_1`. Empty answers 502. See [tools.md](tools.md#metrics-vllm-and-gpu-exporter) |
+| `GPU_EXPORTER_PORT` | gpu-exporter port on every GPU node, default `9835`. metrics-shim finds the nodes from the `VLLM_*_URL` values, `WHISPER_URLS`, `IMAGEGEN_BACKENDS` and `NODES_VLLM`. See [tools.md](tools.md#metrics-vllm-and-gpu-exporter) |
 
 ## 5. Images
 
