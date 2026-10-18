@@ -18,7 +18,7 @@ pytest.importorskip("crawl4ai")
 import app  # noqa: E402
 
 GONE = "Browser.new_context: Target page, context or browser has been closed"
-# The 2026-10-12 outage: the Playwright driver died and every call failed like this
+# Error from a dead Playwright driver
 DRIVER_GONE = ("Browser.new_context: unable to perform operation on "
                "<WriteUnixTransport closed=True reading=False 0x70e95aa7e260>; the handler is closed")
 

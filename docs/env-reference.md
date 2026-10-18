@@ -28,7 +28,7 @@ vLLM node is present.
 | Variable | Default | Notes |
 |---|---|---|
 | `GATEWAY_PORT` | `8080` | The only published port |
-| `COMPOSE_PROFILES` | `tools,models` | What to run. `setup.sh` appends `whisper` once the transcription model is placed. Add `index` for the retrieval index |
+| `COMPOSE_PROFILES` | `tools,models` | What to run. `setup.sh` appends `whisper` once the transcription model is placed and `imagegen` once `IMAGEGEN_BACKENDS` is set. Add `index` for the retrieval index, `ocr` for text from scanned pages |
 | `LITELLM_NUM_WORKERS` | `4` | LiteLLM workers, ~600 MB of RAM each |
 
 ## 3. Generated secrets
@@ -68,6 +68,13 @@ Do not set these by hand. The placement step of `setup.sh all` writes them; set
 | `VLLM_<PREFIX>_TP` | node | Cards to shard across, from `tensor_parallel` in models.yaml. Written only when it is not 1 |
 | `VLLM_<PREFIX>_DEVICES` | node | `NVIDIA_VISIBLE_DEVICES` for the container. Written only on multi-card nodes |
 
+Set by hand on the compose host; the scheduler does not write these:
+
+| Variable | Contents |
+|---|---|
+| `IMAGEGEN_BACKENDS` | Self-hosted image models as `name=URL` pairs without `/v1`, one per node serving the name. Set: `setup.sh` enables the `imagegen` profile and `gen-litellm-config.sh` registers each name as `strict-local/<name>` only. See [models.md](models.md#self-hosted-image-models) |
+| `METRICS_VLLM_27B_URL`, `METRICS_VLLM_FLASHNEXT_URL`, `METRICS_VLLM_BGEM3_URL`, `METRICS_VLLM_RERANK_URL`, `METRICS_VLLM_WHISPER_URL`, `METRICS_GPU_1_URL`, `METRICS_GPU_2_URL` | One `host:port` each (no path, no list) behind the gateway's `/metrics/<name>`: a model's vLLM server, or gpu-exporter (`:9835`) on a GPU node, the head node as `GPU_1`. Empty answers 502. See [tools.md](tools.md#metrics-vllm-and-gpu-exporter) |
+
 ## 5. Images
 
 | Variable | Default | Notes |
@@ -82,7 +89,7 @@ change the namespace and use `./scripts/build-push-images.sh`.
 
 ## 6. GPU node startup options
 
-Read by `docker-compose.vllm.yml` (and, for `IMAGEGEN_*`, `docker-compose.vllm-omni.yml`) on the node. `MAX_LEN` and `GPU_UTIL` are
+Read by `docker-compose.vllm.yml` (and, for `VLLM_OMNI_*`, `docker-compose.vllm-omni.yml`) on the node. `MAX_LEN` and `GPU_UTIL` are
 overwritten by the placement step; the `.env.example` values apply when
 placement is skipped.
 
@@ -160,6 +167,8 @@ Changing the others means editing `docker-compose.yml`.
 | whisper-shim | `HEALTH_PROBE_TIMEOUT_SEC` | `2.0` | Per-backend health probe |
 | whisper-shim | `HEALTH_CACHE_TTL_SEC` | `10` | Health cache lifetime |
 | whisper-shim | `TRANSCRIBE_TIMEOUT_SEC` | `900`; compose passes `${TRANSCRIBE_TIMEOUT_SEC:-3600}` from `.env` | Per-request timeout, sized for long recordings |
+| imagegen-shim | `GENERATE_TIMEOUT_SEC` / `HEALTH_PROBE_TIMEOUT_SEC` | `600` / `2.0` | Per-picture timeout towards vllm-omni, and the per-backend health probe |
+| imagegen-shim | `QWEN_IMAGE_STEPS` | `30` | Sampling steps for the Qwen-Image family |
 | index-shim | `EMBED_DIM` | `1536` | Vector column width: the widest model in `EMBED_MODELS` (`text-embedding-3-small` is 1536; `bge-m3` is 1024, zero-padded). Changing it after indexing is a migration; a mismatch makes `/health` report `degraded` |
 | index-shim | `INDEX_CHUNK_CHARS` | `900` | Chunk window |
 | index-shim | `INDEX_CHUNK_OVERLAP` | `150` | Chunk overlap |

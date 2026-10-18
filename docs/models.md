@@ -193,7 +193,7 @@ nodes.
 
 - **Artifacts**: no separate model. The UI produces artifacts on the chat
   deployment.
-- **Media**: no local backend; see [Media](#media).
+- **Media**: OpenRouter, plus optional self-hosted image models; see [Media](#media).
 
 ### Local to OpenRouter fallback
 
@@ -306,8 +306,9 @@ a local model over SearXNG.
 
 ## Media
 
-Images, audio and video pass through to OpenRouter via LiteLLM; the user picks
-the model in the UI.
+Images, audio and video pass through to OpenRouter via LiteLLM, apart from the
+[self-hosted image models](#self-hosted-image-models); the user picks the model
+in the UI.
 
 | Kind | Path |
 |---|---|

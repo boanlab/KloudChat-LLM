@@ -49,7 +49,7 @@ sudo dmesg -T | grep -iE "nvrm|oom" | tail -10
 |---|---|---|
 | `_initialize_kv_caches` fails | `--gpu-memory-utilization` too low: no room for weights plus KV | Raise that model's `VLLM_<PREFIX>_GPU_UTIL` in the node's `.env`, or re-run [placement](../scheduler/README.md) |
 | `max_num_seqs (...) exceeds available Mamba cache blocks` | The hybrid conv-state cache in `qwen3.8-27b` requires `max_num_seqs ≤ state blocks` during cudagraph capture | Lower `VLLM_QWEN27B_MAX_NUM_SEQS`; the log prints the block count |
-| `Assertion error (layout.hpp:60): Unknown SF transformation` | DeepGEMM rejects an FP8 block-quantised scale-factor layout on this card. Fails after the weights load | Set `VLLM_CODERNEXT_DEEP_GEMM=0` in the node's `.env` |
+| `Assertion error (layout.hpp:60): Unknown SF transformation` | DeepGEMM rejects an FP8 block-quantised scale-factor layout on this card. Fails after the weights load | Keep `VLLM_CODERNEXT_DEEP_GEMM` at `0` (the default) in the node's `.env` |
 | `ModuleNotFoundError: 'pytest'` | The derived image is missing its pytest layer | `./scripts/install-vllm.sh --reinstall` |
 | `NVRM: Out of memory` (dmesg) | Unified memory (GB10): page cache plus co-resident vLLM | `sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'`. If it recurs, shrink that node's models and re-run [placement](../scheduler/README.md) |
 | OS killer during weight load | RAM smaller than the weights | Stop other containers |

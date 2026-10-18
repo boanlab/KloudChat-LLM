@@ -8,7 +8,8 @@ conventions the codebase holds itself to.
 | Path | Contents |
 |---|---|
 | `docker-compose.yml` | The backend stack: gateway, tools, LiteLLM. Composed by profiles |
-| `docker-compose.vllm.yml` | What a GPU node serves: every vLLM model, transcription included |
+| `docker-compose.vllm.yml` | What a GPU node serves: every vLLM model, transcription included, and gpu-exporter |
+| `docker-compose.vllm-omni.yml` | Self-hosted image models (vllm-omni) on a GPU node, started by hand |
 | `docs/` | Operator documentation |
 | `scheduler/` | Python package that decides which model runs on which node |
 | `scripts/` | Setup, config generation, node installation, day-2 operations |
@@ -38,9 +39,12 @@ CI runs exactly these. Run them before opening a pull request:
 bash -n scripts/*.sh
 shellcheck -S warning -e SC1091 scripts/*.sh          # settings in .shellcheckrc
 ruff check scheduler services                         # rules in pyproject.toml
-pytest scheduler/tests services/litellm/tests services/crawl4ai-shim/tests services/search-shim/tests -q
+pytest scheduler/tests services/litellm/tests services/crawl4ai-shim/tests services/search-shim/tests \
+  services/gpu-exporter/tests services/ocr-shim/tests services/imagegen-shim/tests \
+  services/gateway/tests -q
 docker compose -f docker-compose.yml config --quiet
 docker compose -f docker-compose.vllm.yml config --quiet
+docker compose -f docker-compose.vllm-omni.yml config --quiet
 ```
 
 No shellcheck installed?
@@ -83,9 +87,9 @@ concrete command over the general principle.
 
 ## Publishing images
 
-`.github/workflows/publish-images.yml` owns the six `boanlab/kloudchat-*`
-images: `crawl4ai-shim`, `search-shim`, `whisper-shim`, `code-interpreter`,
-`deep-research`, `index-shim`. The vLLM image (`services/vllm`) is built on
+`.github/workflows/publish-images.yml` owns the nine `boanlab/kloudchat-*`
+images: `crawl4ai-shim`, `search-shim`, `whisper-shim`, `imagegen-shim`,
+`code-interpreter`, `deep-research`, `index-shim`, `ocr-shim`, `gpu-exporter`. The vLLM image (`services/vllm`) is built on
 each GPU node by `install-vllm.sh` and never pushed.
 
 | Trigger | Builds | Tags |

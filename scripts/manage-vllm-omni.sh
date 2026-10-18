@@ -39,7 +39,7 @@ known_alias() {
   [[ -n "${OMNI_MODELS[$1]:-}" ]] || { err "Unknown alias: $1 (${OMNI_ALIASES[*]})"; exit 1; }
 }
 
-# Weight directory: IMAGEGEN_<MODEL>_DIR from .env, else the alias
+# Weight directory: VLLM_OMNI_<MODEL>_DIR from .env, else the alias
 weight_dir() {
   local d=""
   case "$1" in

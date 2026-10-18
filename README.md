@@ -106,6 +106,7 @@ services/                    one directory per service: Dockerfile, source, conf
 | `whisper` | transcription shim. `setup.sh` enables it once the model is placed |
 | `index` | retrieval index (pgvector) and its shim |
 | `ocr` | text from scanned pages and document photos (CPU) |
+| `imagegen` | shim for self-hosted image models. `setup.sh` enables it once `IMAGEGEN_BACKENDS` is set |
 
 The default is `tools,models`. To put tools on one machine and models on
 another, enable only the profile each machine needs: the UI accepts a

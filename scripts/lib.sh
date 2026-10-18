@@ -156,12 +156,9 @@ OR_PROVIDERS=(openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI
               perplexity:PERPLEXITY tencent:TENCENT deepseek:DEEPSEEK z-ai:ZAI
               xiaomi:XIAOMI moonshotai:MOONSHOTAI qwen:QWEN minimax:MINIMAX)
 
-# Image generation, cheapest per picture first (picker default). Chosen on
-# 2026-10-17 by drawing a Korean sign, a diagram, a photo and a 16:9 slide on
-# each candidate: these rendered the Korean text and kept the ratio, and
-# answer on chat/completions (GPT Image 2.5, FLUX 3 and Qwen Image 3 serve
-# only OpenRouter's /images endpoint). GPT-5.4 Image 2 added the same day
-# after the same check (16:9 kept, Korean sign right, $0.127 a picture).
+# Image generation, cheapest per picture first (picker default). Criteria:
+# Korean text rendered right, 16:9 ratio kept, served on chat/completions
+# (GPT Image 2.5, FLUX 3 and Qwen Image 3 serve only OpenRouter's /images).
 OR_IMAGE_MODELS=(
   bytedance-seed/seedream-5-0-flash
   recraft/recraft-v4.1

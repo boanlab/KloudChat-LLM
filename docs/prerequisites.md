@@ -25,7 +25,7 @@ URL.
 | Python | 3.11+ with PyYAML (`setup.sh` installs `python3-yaml` through apt) | not needed |
 | Disk | 50 GB (images and runtime data) | 100 GB+ (model weights) |
 | RAM | 16 GB | 16 GB+ |
-| Open ports | `GATEWAY_PORT` (8080 by default) and nothing else | vLLM 8001–8009 and transcription 9000, reachable from the compose host |
+| Open ports | `GATEWAY_PORT` (8080 by default) and nothing else | vLLM 8001–8009, transcription 9000, image models 8091–8092 and gpu-exporter 9835, reachable from the compose host |
 
 - macOS and Windows are unsupported.
 - No Docker yet: `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`
