@@ -27,7 +27,10 @@ and appends the service-specific path.
 The contract is identical without the gateway, so a raw service address works
 too, except that the gateway also requires the tools key
 ([Authentication](#authentication)). `GET /health` on the gateway answers
-`{"status":"ok"}` without a key.
+`{"status":"ok"}` without a key. Request bodies are capped at the gateway on
+the JSON-only tools: 1 MB for search, fetch and research, 32 MB for the
+retrieval index. Uploads (code execution, transcription, scanned pages) are
+bounded by their services.
 
 LiteLLM is exposed at its service root because its admin API (`/key/*`,
 `/user/*`, `/model/info`, `/health/*`) and admin UI (`/ui/`) do not live under
@@ -155,7 +158,9 @@ on it (an API not enabled answers 401), put the two values in `.env`, run
 A Firecrawl-compatible `/v1/scrape` (also `/v0/scrape`, `/v2/scrape`) in front
 of Crawl4AI. The image carries Playwright and Chromium, so pages that need
 rendering come back as markdown body text. Page timeout `DEFAULT_TIMEOUT_MS`
-(30 s).
+(30 s); a caller's `timeout` is held between 1 s and `MAX_TIMEOUT_MS` (60 s).
+A body that is not a JSON object, or a non-numeric `timeout`/`waitFor`,
+answers 400.
 
 A URL is judged three times. Before the browser opens it, by the addresses
 its host resolves to: nothing on the deployment's own network (`netguard.py`),
@@ -163,7 +168,10 @@ and no adult site (`adultlist.py`). While the page loads, every request it
 makes (navigation, redirect, script, XHR) passes a route guard before it
 leaves the browser; the guard follows redirects itself, judges each hop, and
 aborts the request at the first refused one. After the load, the address the
-browser ended up at is checked once more. The adult list is a hosts file baked
+browser ended up at is checked once more. The shim sits on its own `fetch`
+network shared only with the gateway, so a host that re-resolves to an
+internal address after passing the guard still reaches no other service.
+The adult list is a hosts file baked
 into the image at build time from a pinned commit of StevenBlack/hosts'
 porn-only list (`ADULT_HOSTS_FILE`). It keeps hosts-file semantics: the listed
 host is refused, `www.` folded, nothing more inferred. A refused fetch answers
@@ -197,12 +205,17 @@ Memory: each sandbox gets its own cgroup with `memory.max` = `MAX_MEMORY_MB`
 nsjail, which is unlimited in a container, so the image adds two scripts:
 `cgroup-init` (the compose `command`) remounts the container's cgroup v2
 read-write with the `SYS_ADMIN` it already has, moves the service into a
-`service` leaf and enables the memory controller; `nsjail-memcg`
+`service` leaf and enables the memory, pids and cpu controllers; `nsjail-memcg`
 (`NSJAIL_BINARY`) calls nsjail with `--use_cgroupv2 --cgroup_mem_max`. The limit
 covers the whole sandbox, and a warm Python REPL is about 260 MB before user
 code, so roughly 750 MB is left for data. Going over it kills the sandbox and
 the call returns an error (`Invalid response from REPL`), not a `MemoryError`.
 The container as a whole is capped at 4 GB (`mem_limit`, no swap).
+
+Processes and CPU: each sandbox may hold `MAX_SANDBOX_PIDS` (256) processes, so
+a fork bomb stops at "Cannot fork", and `MAX_SANDBOX_CPU_MS` (1000) CPU
+milliseconds per second, one core. The container has `pids_limit: 2048` and
+`CODE_INTERPRETER_CPUS` (4) cores across every sandbox.
 
 There is no network at runtime, so no `pip install`; file skills can use only
 what the image has. Besides pandas, numpy, openpyxl, xlsxwriter, python-docx,
@@ -234,9 +247,13 @@ The UI attaches it as an HTTP MCP connector. Internals are in
 ### Transcription: whisper-shim
 
 A front end for the `vllm-whisper` backends (`openai/whisper-large-v3` on
-vLLM, placed on the GPU nodes like any other model). `WHISPER_URLS` lists the
-nodes it was placed on; with several, the shim routes by in-flight count over
-a `HEALTH_CACHE_TTL_SEC` (10 s) health cache.
+vLLM, placed on the GPU nodes like any other model). The scheduler's placements
+are the `whisper-large-v3` entries in `VLLM_PLACED`, and `WHISPER_URLS` lists
+backends you run by hand; with several, the shim routes by in-flight count over
+a `HEALTH_CACHE_TTL_SEC` (10 s) health cache. A backend that refuses the
+connection is marked down and the next one is tried; a request a backend
+accepted is not retried. Uploads over `WHISPER_MAX_UPLOAD_MB` answer 413, and
+past `WHISPER_MAX_CONCURRENT` transcriptions at once the shim answers 503.
 
 It sets the model name on every forwarded request to `WHISPER_MODEL_NAME`
 (`local/whisper-large-v3`). vLLM answers only for a name it was started with,
@@ -245,12 +262,12 @@ most often; the backend also serves that alias).
 
 Without a backend the shim's `/health` reports `degraded`, so it is fenced
 behind the `whisper` profile: `setup.sh` enables that profile once
-`WHISPER_URLS` is populated.
+`WHISPER_URLS` or `VLLM_PLACED` names a backend.
 
-The OpenRouter STT route is registered whenever no backend *answers*, which is
-not the same as `WHISPER_URLS` being empty: that variable says where the model
-was placed. `gen-litellm-config.sh` probes the URLs the same way it probes the
-chat backends, so a dead one delegates rather than 5xx-ing.
+Audio never leaves the network: transcription is registered in LiteLLM only as
+`strict-local/<id>` (through this shim) and has no OpenRouter route,
+so with no backend answering, KloudChat reports dictation as unavailable rather
+than sending the recording out.
 
 ### Retrieval index: index-shim
 
@@ -267,7 +284,10 @@ availability reported separately).
   call.
 - A new collection takes the first model in `EMBED_MODELS` that answers; the
   shim remembers it for the next unpinned call. `/health` probes embeddings
-  without changing that preference.
+  without changing that preference, at most once per
+  `INDEX_HEALTH_EMBED_TTL_SEC` (5 min) and waiting at most
+  `INDEX_HEALTH_EMBED_TIMEOUT_SEC` (3 s); a slower probe finishes in the
+  background and the last result is reported meanwhile.
 
 Runs under the `index` profile. Tuning is in
 [env-reference.md](env-reference.md), the model side in
@@ -299,13 +319,15 @@ only). Runs under the `ocr` profile.
 
 ### Models: LiteLLM
 
-The single point for every model call. A local model whose node is down or
-saturated fails over to its OpenRouter twin
-([models.md](models.md#local-to-openrouter-fallback)). Configuration is
+The single point for every model call. A local chat model whose node is down
+or saturated fails over to its OpenRouter twin
+([models.md](models.md#local-to-openrouter-fallback)); embedding, reranking,
+transcription and image models are `strict-local/*` only. Configuration is
 `services/litellm/config.yaml`, generated by `scripts/gen-litellm-config.sh`
-from the `VLLM_*_URL` values and the OpenRouter key in `.env`. The container
-receives `OPENROUTER_API_KEY` and `OPENAI_API_KEY` from `.env`. LiteLLM
-publishes no host port; it is reached through the gateway at `/litellm/*`.
+from `VLLM_ENDPOINTS`, `VLLM_PLACED`, `WHISPER_URLS`, `IMAGEGEN_BACKENDS` and
+the OpenRouter key in `.env`. The container receives `OPENROUTER_API_KEY` from
+`.env`. LiteLLM publishes no host port; it is reached through the gateway at
+`/litellm/*`.
 
 ### Metrics: vLLM and gpu-exporter
 
@@ -316,9 +338,9 @@ targets from `.env`, nothing to list by hand:
 
 | Kind | Found from | Upstream |
 |---|---|---|
-| vLLM server | `VLLM_QWEN27B_URL`, `VLLM_QWENFLASH_URL`, `VLLM_CODERNEXT_URL`, `VLLM_BGEM3_URL`, `VLLM_RERANK_URL`, `WHISPER_URLS` (every URL of a list) | that server's `/metrics` |
+| vLLM server | `VLLM_ENDPOINTS`, `VLLM_PLACED`, `WHISPER_URLS` (every URL of a list) | that server's `/metrics` |
 | Image server | `IMAGEGEN_BACKENDS` | vllm-omni's `/health` and picture count, plus imagegen-shim's pictures in flight, as vLLM series (`running` 0–1, the rest `waiting`) |
-| GPU node | every host above, plus `NODES_VLLM` | gpu-exporter at `GPU_EXPORTER_PORT` (`:9835`) |
+| GPU node | every host above, plus `VLLM_NODES` | gpu-exporter at `GPU_EXPORTER_PORT` (`:9835`) |
 
 | Path | Answer |
 |---|---|
@@ -328,8 +350,9 @@ targets from `.env`, nothing to list by hand:
 gpu-exporter (`services/gpu-exporter`) reports nvidia-smi utilisation, memory,
 temperature and power plus the node's memory and CPU (on GB10 the node memory
 is the model memory). It runs beside the vLLM services, outside the scheduler's
-`vllm-*` names: `docker compose -f docker-compose.vllm.yml up -d gpu-exporter`
-on each node. A changed endpoint setting needs `docker compose up -d metrics-shim`.
+`vllm-*` names; `install-vllm.sh` and `manage-vllm.sh up` start it on each node
+(by hand: `docker compose -f docker-compose.vllm.yml up -d gpu-exporter`). A changed endpoint setting needs
+`docker compose up -d metrics-shim`.
 
 ## Checking status
 

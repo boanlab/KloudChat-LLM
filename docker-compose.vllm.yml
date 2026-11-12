@@ -1,5 +1,5 @@
 # GPU-node services. Started per node by the scheduler over SSH; LiteLLM reaches
-# them through VLLM_*_URL in the orchestrator's .env.
+# them through VLLM_PLACED in the orchestrator's .env.
 #
 #   vllm-qwen27b    default chat — Qwen3.8-27B (dense, vision, 262K)
 #   vllm-qwenflash  quality and judging — Qwen3.8-Flash-Next (MoE, NVFP4, a node to itself)
@@ -13,9 +13,17 @@
 # value and fails engine init on GB10.
 name: kloudchat-vllm
 
+# Container logs rotated per service; the host's daemon settings do not matter
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 50m
+    max-file: "5"
+
 services:
   vllm-qwen27b:
     container_name: vllm-qwen27b
+    logging: *logging
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     # One image for every vLLM service; install-vllm.sh builds it and records
     # VLLM_IMAGE and VLLM_BASE_IMAGE in .env
@@ -89,6 +97,7 @@ services:
   # A pool node to itself.
   vllm-qwenflash:
     container_name: vllm-qwenflash
+    logging: *logging
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     restart: unless-stopped
     ipc: host
@@ -155,6 +164,7 @@ services:
   # Coding, larger. Hybrid attention: KV on 12 of 48 layers, so 262K fits.
   vllm-codernext:
     container_name: vllm-codernext
+    logging: *logging
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     restart: unless-stopped
     ipc: host
@@ -205,6 +215,7 @@ services:
   # Retrieval reranking, /v1/rerank. Pooling runner; shares a card.
   vllm-rerank:
     container_name: vllm-rerank
+    logging: *logging
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     restart: unless-stopped
     ipc: host
@@ -248,6 +259,7 @@ services:
   # Retrieval embeddings, /v1/embeddings. Pooling runner; shares a card.
   vllm-bgem3:
     container_name: vllm-bgem3
+    logging: *logging
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     restart: unless-stopped
     ipc: host
@@ -290,6 +302,7 @@ services:
   # Transcription, reached by whisper-shim through WHISPER_URLS
   vllm-whisper:
     container_name: vllm-whisper
+    logging: *logging
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     restart: unless-stopped
     ipc: host
@@ -336,16 +349,17 @@ services:
 
   # GPU utilisation, memory, temperature and power plus node memory and CPU for
   # KloudChat's performance page (gateway /metrics/gpu-*). One per node, outside
-  # the scheduler's vllm-* services; holds no GPU memory.
-  #   docker compose -f docker-compose.vllm.yml up -d gpu-exporter
+  # the scheduler's vllm-* services; holds no GPU memory. Started by
+  # install-vllm.sh and manage-vllm.sh up.
   gpu-exporter:
     container_name: gpu-exporter
+    logging: *logging
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-gpu-exporter:${KLOUDCHAT_IMAGE_TAG:-latest}
     build:
       context: ./services/gpu-exporter
     restart: unless-stopped
     ports:
-      - "9835:9835"
+      - "${GPU_EXPORTER_PORT:-9835}:9835"
     volumes:
       # The node's name for the 성능 모니터링 card (the container's own hostname is its id)
       - /etc/hostname:/host/etc/hostname:ro

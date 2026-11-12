@@ -12,16 +12,17 @@
 #   /tools/ocr/*       → ocr-shim           (text from scanned pages, CPU)
 #   /metrics/*         → metrics-shim       (GPU-node /metrics found from the endpoint settings, read-only)
 #
-# /tools/* requires the shared key TOOLS_GATEWAY_KEY in the X-Tools-Key header;
-# anything else gets 401 {"error":"unauthorized"} before any upstream is
-# contacted. The header is stripped before proxying. Fail closed: compose
-# refuses to start the gateway with TOOLS_GATEWAY_KEY unset or empty, and a key
-# shorter than 32 characters denies every /tools request here as well. Use hex
-# (`openssl rand -hex 32`): the value is substituted into a CEL string literal.
-# /metrics/* takes the same key and the same 401; metrics-shim answers only the
-# names its settings produced (/metrics/targets lists them).
+# /tools/* and /metrics/* require TOOLS_GATEWAY_KEY in X-Tools-Key; anything
+# else gets 401 {"error":"unauthorized"} before any upstream is contacted, and
+# the header is stripped before proxying. Fail closed: compose refuses to start
+# with the key unset or empty, and a key under 32 characters denies every
+# request. Hex only (`openssl rand -hex 32`): the value is substituted into a CEL
+# string literal. metrics-shim answers only the names its settings produced
+# (/metrics/targets lists them).
 # /litellm* and /v1/* are authenticated by LiteLLM itself; /health is open.
 # Service keys are injected here and never reach clients.
+# Request bodies capped per route on JSON-only tools; uploads (exec, stt, ocr)
+# are bounded by their services.
 {
 	admin off
 	auto_https off
@@ -59,12 +60,18 @@
 
 		handle @authorized {
 			handle_path /tools/search* {
+				request_body {
+					max_size 1MB
+				}
 				reverse_proxy search-shim:8080 {
 					header_up -X-Tools-Key
 				}
 			}
 
 			handle_path /tools/fetch* {
+				request_body {
+					max_size 1MB
+				}
 				reverse_proxy crawl4ai-shim:8080 {
 					header_up -X-Tools-Key
 					header_up Authorization "Bearer {$SCRAPER_API_KEY}"
@@ -79,6 +86,9 @@
 			}
 
 			handle_path /tools/research* {
+				request_body {
+					max_size 1MB
+				}
 				reverse_proxy deep-research:8081 {
 					header_up -X-Tools-Key
 					flush_interval -1
@@ -92,6 +102,9 @@
 			}
 
 			handle_path /tools/index* {
+				request_body {
+					max_size 32MB
+				}
 				reverse_proxy index-shim:8080 {
 					header_up -X-Tools-Key
 				}

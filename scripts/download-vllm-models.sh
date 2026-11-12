@@ -92,11 +92,25 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+# Every shard the index names present and non-empty; one model.safetensors otherwise.
+# hf moves a shard into place only once it is whole.
+weights_complete() {
+  local dest="$1" index="$1/model.safetensors.index.json" shard
+  [[ -f "$dest/config.json" ]] || return 1
+  if [[ -f "$index" ]]; then
+    while IFS= read -r shard; do
+      [[ -s "$dest/$shard" ]] || return 1
+    done < <(jq -r '.weight_map[]' "$index" | sort -u)
+    return 0
+  fi
+  compgen -G "$dest/*.safetensors" >/dev/null
+}
+
 pull_one() {
   local alias="$1" repo="${VLLM_MODELS[$1]}" dest="$VLLM_MODELS_ROOT/$1"
   hdr "$alias → $repo"
   echo "  dest: $dest"
-  if [[ -f "$dest/config.json" ]] && compgen -G "$dest/*.safetensors" >/dev/null; then
+  if weights_complete "$dest"; then
     ok "already downloaded ($(du -sh "$dest" | cut -f1)) — to re-download, delete the directory and re-run"
     return 0
   fi
@@ -114,6 +128,10 @@ pull_one() {
   if compgen -G "$dest/*.safetensors" >/dev/null; then
     rm -f "$dest"/*.bin "$dest"/pytorch_model*.bin 2>/dev/null || true
   fi
+  if ! weights_complete "$dest"; then
+    err "incomplete download: shards missing in $dest — re-run to resume"
+    return 1
+  fi
   local loadable
   loadable="$(du -cb "$dest"/*.safetensors 2>/dev/null | tail -1 | cut -f1 || true)"
   if [[ "${loadable:-0}" =~ ^[0-9]+$ ]] && (( loadable > 0 )); then
@@ -128,7 +146,12 @@ if (( ${#TARGETS[@]} == 0 )); then
   exit 1
 fi
 
-for a in "${TARGETS[@]}"; do pull_one "$a"; done
+failed=()
+for a in "${TARGETS[@]}"; do pull_one "$a" || failed+=("$a"); done
 
 hdr "done"
 du -sh "$VLLM_MODELS_ROOT"/* 2>/dev/null | sort -k2 || echo "  (no models yet)"
+if (( ${#failed[@]} )); then
+  err "incomplete: ${failed[*]}"
+  exit 1
+fi

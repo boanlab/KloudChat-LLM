@@ -13,8 +13,10 @@
 One gateway port is exposed; behind it, LiteLLM and seven tools are split by
 path ([paths and profiles](tools.md#paths-and-the-calls-behind-them)). GPU
 nodes live outside this stack: LiteLLM and whisper-shim reach them at the URLs
-the [scheduler](../scheduler/README.md) writes into `.env`. A model with no
-room on any node, transcription included, is served through OpenRouter.
+the [scheduler](../scheduler/README.md) writes into `.env`, or the ones you list
+yourself. A chat model with no room on any node is served through OpenRouter;
+embedding, reranking, transcription and image models are local only, so
+documents, audio and pictures never leave the network.
 
 `/tools/*` requires the shared key `TOOLS_GATEWAY_KEY` (header
 `X-Tools-Key`). The gateway port must still only be open inside a private
@@ -30,7 +32,7 @@ network.
 
 **Models and nodes**
 
-- [Model configuration](models.md): routing, OpenRouter fallback, retrieval
+- [Model configuration](models.md): registration, routing, OpenRouter fallback, strict-local, retrieval
 - [Scheduler](../scheduler/README.md): which model lands on which node
 - [GPU memory](gpu-memory.md): what fits on each node class, and the vLLM tuning knobs
 

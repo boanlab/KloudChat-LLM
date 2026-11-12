@@ -2,7 +2,7 @@
 # scripts/manage-vllm-omni.sh, not by the scheduler; LiteLLM reaches them through
 # imagegen-shim, which reads IMAGEGEN_BACKENDS in the orchestrator's .env:
 #
-#   IMAGEGEN_BACKENDS=local/z-image-turbo=http://<node>:8091,local/qwen-image-2512=http://<node>:8092
+#   IMAGEGEN_BACKENDS=z-image-turbo=http://<node>:8091,qwen-image-2512=http://<node>:8092
 #
 #   omni-z-image     Z-Image-Turbo — fast, ~25 GiB while serving
 #   omni-qwen-image  Qwen-Image-2512 — slower, better layout, ~55 GiB of weights
@@ -31,10 +31,18 @@ x-vllm-omni: &vllm-omni
             count: all
             capabilities: [gpu]
 
+# Container logs rotated per service; the host's daemon settings do not matter
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 50m
+    max-file: "5"
+
 services:
   omni-z-image:
     <<: *vllm-omni
     container_name: omni-z-image
+    logging: *logging
     command:
       - serve
       - /model
@@ -59,6 +67,7 @@ services:
   omni-qwen-image:
     <<: *vllm-omni
     container_name: omni-qwen-image
+    logging: *logging
     command:
       - serve
       - /model

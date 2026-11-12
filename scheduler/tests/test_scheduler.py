@@ -6,6 +6,8 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 from scheduler import applier, planner, registry
 from scheduler.kv_model import kv_bytes_per_token
 from scheduler.types import GB, Dtype, ModelMetadata, NodeSpec
@@ -39,6 +41,12 @@ def _node(node_id: str, gib: int, arch: str = "amd64",
     return NodeSpec(node_id=node_id, hostname=f"user@{node_id}",
                     gpu_class="pro6000", total_vram_bytes=gib * GB, arch=arch,
                     checkpoints=checkpoints)
+
+
+def _plan(specs, nodes, replicas=None, **kw):
+    """planner.plan with every model capped at `replicas` instances."""
+    from dataclasses import replace as _replace
+    return planner.plan([_replace(s, replicas=replicas) for s in specs], nodes, **kw)
 
 
 # ── memory arithmetic ───────────────────────────────────────────────────
@@ -139,20 +147,106 @@ def test_every_model_placed_before_any_replica():
 
 
 def test_spare_capacity_is_filled_unless_capped():
-    """Spare capacity takes replicas; `replicas` caps them and 1 disables."""
+    """Spare capacity takes replicas; a model's `replicas` caps them and 1 disables."""
     specs = [_spec("a", weight=20 * GB), _spec("b", weight=20 * GB)]
     nodes = [_node("n1", 96), _node("n2", 96), _node("n3", 96)]
 
-    once = planner.plan(specs, nodes, replicas=1)
+    once = _plan(specs, nodes, replicas=1)
     assert len(once.placements) == 2, "replicas=1 is how a caller turns it off"
 
     filled = planner.plan(specs, nodes)
     assert len(filled.placements) > 2, "the default should use what is left"
 
-    capped = planner.plan(specs, nodes, replicas=2)
+    capped = _plan(specs, nodes, replicas=2)
     ids = [p.model_id for p in capped.placements]
     assert ids.count("a") == 2 and ids.count("b") == 2, ids
     assert len(capped.placements) < len(filled.placements)
+
+
+def test_head_first_seats_the_first_instance_on_the_head_and_extras_anywhere():
+    """Coverage on the head only; extra instances may go to the pool."""
+    cheap = _spec("emb", weight=3 * GB, placement="head-first")
+    nodes = [_node("head", 96), _node("p1", 96), _node("p2", 96)]
+
+    covered = planner.plan([cheap], nodes, head="head", external=None)
+    homes = [p.node_id for p in covered.placements]
+    assert homes[0] == "head" and sorted(homes) == ["head", "p1", "p2"], homes
+
+    # A node-bound model never leaves the head
+    pinned = planner.plan([_spec("emb", weight=3 * GB, placement="head")], nodes, head="head")
+    assert [p.node_id for p in pinned.placements] == ["head"]
+
+
+def test_head_first_with_a_dead_head_is_delegated_not_placed_on_the_pool():
+    cheap = _spec("emb", weight=3 * GB, placement="head-first")
+    result = planner.plan([cheap], [_node("p1", 96)], head="head")
+    assert not result.placements
+    assert [d.model_id for d in result.delegations] == ["emb"]
+    assert "head" in result.delegations[0].reason
+
+
+def test_each_model_is_capped_by_its_own_replicas():
+    """One model held to a single instance does not hold the other back."""
+    from dataclasses import replace as _replace
+    specs = [_replace(_spec("a", weight=20 * GB), replicas=1), _spec("b", weight=20 * GB)]
+    result = planner.plan(specs, [_node("n1", 96), _node("n2", 96), _node("n3", 96)])
+    ids = [p.model_id for p in result.placements]
+    assert ids.count("a") == 1 and ids.count("b") == 3, ids
+
+
+def test_replicas_below_one_is_an_error():
+    path = _write_yaml("models:\n  - id: foo\n    hf_repo: org/Foo\n    replicas: 0\n")
+    try:
+        registry.load(path)
+    except ValueError as exc:
+        assert "replicas" in str(exc)
+    else:
+        raise AssertionError("replicas: 0 must raise ValueError")
+
+
+def test_replicas_is_read_from_the_catalogue():
+    path = _write_yaml(
+        "models:\n  - id: foo\n    hf_repo: org/Foo\n    replicas: 2\n"
+        "  - id: bar\n    hf_repo: org/Bar\n"
+    )
+    foo, bar = registry.load(path)
+    assert (foo.replicas, bar.replicas) == (2, None)
+
+
+def test_an_externally_served_model_needs_no_coverage_instance():
+    """A model with an instance in VLLM_ENDPOINTS places nothing for coverage, and is not delegated."""
+    specs = [_spec("a", weight=20 * GB), _spec("b", weight=20 * GB)]
+    result = _plan(specs, [_node("n1", 96)], replicas=1, external={"a": 1})
+    assert [p.model_id for p in result.placements] == ["b"]
+    assert not result.delegations
+    assert any("a: 1 instance(s) served by VLLM_ENDPOINTS" in n for n in result.notes)
+
+    # With no node at all it is still served, not delegated
+    bare = planner.plan(specs, [], external={"a": 1})
+    assert [d.model_id for d in bare.delegations] == ["b"]
+
+
+def test_external_instances_count_toward_the_replica_cap():
+    """A model's `replicas` caps its total: two external and a cap of 2 leave nothing to place."""
+    specs = [_spec("a", weight=20 * GB), _spec("b", weight=20 * GB)]
+    nodes = [_node("n1", 96), _node("n2", 96), _node("n3", 96)]
+
+    capped = _plan(specs, nodes, replicas=2, external={"a": 2})
+    ids = [p.model_id for p in capped.placements]
+    assert ids.count("a") == 0 and ids.count("b") == 2, ids
+
+    one_short = _plan(specs, nodes, replicas=3, external={"a": 2})
+    ids = [p.model_id for p in one_short.placements]
+    assert ids.count("a") == 1 and ids.count("b") == 3, ids
+
+
+def test_external_instances_weigh_against_extra_placements():
+    """With room for two instances, the model already served twice elsewhere gets neither."""
+    specs = [_spec("a", weight=20 * GB), _spec("b", weight=20 * GB)]
+    nodes = [_node("n1", 40), _node("n2", 40)]
+    result = planner.plan(specs, nodes, external={"a": 2})
+    ids = [p.model_id for p in result.placements]
+    assert ids == ["b", "b"], ids
 
 
 def test_replicas_deepen_in_priority_order():
@@ -165,12 +259,12 @@ def test_replicas_deepen_in_priority_order():
         ]
 
     four = [_node(f"n{i}", 32) for i in range(1, 5)]
-    ids = [p.model_id for p in planner.plan(specs(), four, replicas=2).placements]
+    ids = [p.model_id for p in _plan(specs(), four, replicas=2).placements]
     assert ids.count("first") == 2, ids
     assert ids.count("second") == 1 and ids.count("third") == 1, ids
 
     five = four + [_node("n5", 32)]
-    ids = [p.model_id for p in planner.plan(specs(), five, replicas=2).placements]
+    ids = [p.model_id for p in _plan(specs(), five, replicas=2).placements]
     assert ids.count("first") == 2 and ids.count("second") == 2, ids
     assert ids.count("third") == 1, ids
 
@@ -538,7 +632,7 @@ def test_co_resident_allocations_stay_within_the_card():
     """Rounded-up --gpu-memory-utilization of every model on a card sums within its budget."""
     specs = [_spec(f"m{i}", weight=int((3.3 + i * 0.7) * GB), ctx_floor=8192) for i in range(6)]
     node = _node("n1", 96)
-    result = planner.plan(specs, [node], replicas=1)
+    result = _plan(specs, [node], replicas=1)
     used = sum(p.gpu_util * node.total_vram_bytes for p in result.placements)
     assert result.placements
     assert used <= node.card_budget_bytes()
@@ -585,7 +679,7 @@ def test_a_near_tie_does_not_move_a_running_model():
 
 
 def test_a_real_capacity_difference_still_moves_it():
-    """A model that no longer fits its incumbent node moves."""
+    """A model that does not fit its incumbent node moves."""
     spec = _spec("a", weight=10 * GB, ctx_floor=16384)
     nodes = [
         NodeSpec(node_id="n1", hostname="user@n1", gpu_class="pro6000",
@@ -730,6 +824,43 @@ def test_a_share_of_zero_is_an_error():
             raise AssertionError(f"share: {value} must raise ValueError")
 
 
+def test_the_litellm_route_follows_the_runner_unless_declared():
+    path = _write_yaml(
+        "models:\n  - id: chat\n    hf_repo: org/Chat\n"
+        "    openrouter: org/chat\n    timeout: 60\n    max_inflight: 8\n"
+        "    presence_penalty: 0.5\n"
+        "  - id: emb\n    hf_repo: org/Emb\n    runner: pooling\n"
+        "  - id: rr\n    hf_repo: org/Rr\n    runner: pooling\n    api: rerank\n"
+    )
+    chat, emb, rr = registry.load(path)
+    assert (chat.api, chat.openrouter, chat.timeout, chat.max_inflight, chat.presence_penalty) == (
+        "chat", "org/chat", 60, 8, 0.5)
+    assert (emb.api, emb.openrouter, emb.max_inflight, emb.presence_penalty) == (
+        "embedding", "", registry.DEFAULT_MAX_INFLIGHT, None)
+    assert rr.api == "rerank"
+
+
+def test_an_unknown_api_or_a_negative_cap_is_an_error():
+    for extra, word in (("    api: rerankr\n", "rerankr"), ("    max_inflight: -1\n", "max_inflight")):
+        path = _write_yaml("models:\n  - id: foo\n    hf_repo: org/Foo\n" + extra)
+        try:
+            registry.load(path)
+        except ValueError as exc:
+            assert word in str(exc)
+        else:
+            raise AssertionError(f"{extra.strip()} must raise ValueError")
+
+
+def test_the_catalogue_prints_one_tab_separated_line_per_model(capsys):
+    from scheduler.__main__ import main
+    assert main(["catalog"]) == 0
+    rows = [line.split("\t") for line in capsys.readouterr().out.splitlines()]
+    assert all(len(row) == 7 and all(row) for row in rows)
+    by_id = {row[0]: row for row in rows}
+    assert by_id["bge-reranker-v2-m3"][1] == "rerank"
+    assert by_id["qwen3.8-27b"][3] == "qwen/qwen3.8-27b"
+
+
 def test_size_suffixes():
     assert registry.parse_size("1GiB") == GB
     assert registry.parse_size(1024) == 1024
@@ -750,7 +881,7 @@ def test_no_change_when_already_converged():
     assert not any(a.kind == "start" for a in change.actions)
 
 
-def test_stops_services_no_longer_planned():
+def test_stops_services_the_plan_drops():
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
     result = planner.plan([spec], nodes)
@@ -776,41 +907,42 @@ def test_leaves_containers_this_stack_does_not_place_alone():
 
 
 def _stt_spec(**kw):
-    return _spec(applier.STT_MODEL_ID, weight=4 * GB, ctx_floor=448,
+    return _spec("whisper-large-v3", weight=4 * GB, ctx_floor=448,
                  native=448, placement="head", **kw)
 
 
-def test_whisper_urls_follow_the_transcription_placement():
-    """WHISPER_URLS is the transcription model's URL, and its `{env_prefix}_URL` is not written."""
+def test_the_transcription_placement_is_written_to_vllm_placed():
+    """The transcription model's URL goes in VLLM_PLACED; WHISPER_URLS is not written."""
     stt = _stt_spec()
     nodes = [_node("n1", 96), _node("n2", 96)]
-    result = planner.plan([stt], nodes, replicas=1, head="n1")
+    result = _plan([stt], nodes, replicas=1, head="n1")
 
     urls = applier._url_csvs(result, [stt], nodes)
-    assert urls["WHISPER_URLS"] == f"http://n1:{stt.port}"
-    assert f"{stt.env_prefix}_URL" not in urls
+    assert urls["VLLM_PLACED"] == f"{stt.id}=http://n1:{stt.port}"
+    assert "WHISPER_URLS" not in urls
 
 
-def test_whisper_urls_empty_when_transcription_is_delegated():
-    """An unplaced transcription model clears WHISPER_URLS."""
+def test_vllm_placed_empty_when_transcription_is_delegated():
+    """An unplaced transcription model leaves no entry in VLLM_PLACED."""
     stt = _stt_spec()
     other = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
     result = planner.plan([other], nodes)
-    assert applier._url_csvs(result, [other], nodes, [stt])["WHISPER_URLS"] == ""
+    placed = applier._url_csvs(result, [other], nodes)["VLLM_PLACED"]
+    assert stt.id not in placed
 
 
-def test_url_csv_written_for_placed_models():
+def test_placements_written_as_id_and_url():
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
     result = planner.plan([spec], nodes)
     with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
-        f.write("VLLM_A_URL=\n")
+        f.write("VLLM_ENDPOINTS=hand=http://elsewhere:8000\n")
         env_path = f.name
     change = applier.compute_diff(
         target=result, current={}, specs=[spec], nodes=nodes, local_env_path=env_path,
     )
-    assert change.local_env["VLLM_A_URL"] == "http://n1:8001"
+    assert change.local_env == {"VLLM_PLACED": "a=http://n1:8001"}
 
 
 def test_re_applying_an_unchanged_plan_does_nothing():
@@ -880,21 +1012,19 @@ def test_an_unreadable_node_env_recreates_rather_than_assuming():
     assert any(a.kind == "recreate" for a in change.actions)
 
 
-def test_dropping_a_model_clears_its_url():
-    """A model in `known` but not in `specs` has its URL cleared."""
+def test_dropping_a_model_removes_it_from_vllm_placed():
+    """A model absent from `specs` is absent from VLLM_PLACED."""
     kept = _spec("a", weight=20 * GB, ctx_floor=16384)
-    dropped = _spec("b", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
     result = planner.plan([kept], nodes)
     with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
-        f.write("VLLM_A_URL=\nVLLM_B_URL=http://n1:8002\n")
+        f.write("VLLM_PLACED=a=http://n1:8001,b=http://n1:8002\n")
         env_path = f.name
     change = applier.compute_diff(
         target=result, current={}, specs=[kept], nodes=nodes,
-        local_env_path=env_path, known=[kept, dropped],
+        local_env_path=env_path,
     )
-    assert change.local_env["VLLM_A_URL"] == "http://n1:8001"
-    assert change.local_env["VLLM_B_URL"] == ""
+    assert change.local_env["VLLM_PLACED"] == "a=http://n1:8001"
 
 
 def test_one_node_failing_does_not_stop_the_rest():
@@ -956,7 +1086,7 @@ def test_foreign_memory_is_charged_to_the_card_that_holds_it():
                     foreign_vram_bytes=80 * GB, foreign_vram_by_card=(80 * GB, 0))
     spec_a = _spec("a", weight=40 * GB, ctx_floor=16384)
     spec_b = _spec("b", weight=40 * GB, ctx_floor=16384)
-    result = planner.plan([spec_a, spec_b], [node], replicas=1)
+    result = _plan([spec_a, spec_b], [node], replicas=1)
     assert [p.model_id for p in result.placements] == ["a"]
     assert result.placements[0].devices == (1,)
     assert [d.model_id for d in result.delegations] == ["b"]
@@ -966,10 +1096,10 @@ def test_a_failed_env_write_stops_that_node_and_drops_its_route():
     """After an env failure the node's start is skipped, and its URL leaves the orchestrator .env."""
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96), _node("n2", 96)]
-    result = planner.plan([spec], nodes, replicas=2)
+    result = _plan([spec], nodes, replicas=2)
     assert len(result.placements) == 2
     with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
-        f.write("VLLM_A_URL=old\n")
+        f.write("VLLM_PLACED=old\n")
         env_path = f.name
     change = applier.compute_diff(target=result, current={}, specs=[spec], nodes=nodes,
                                   node_env={"n1": {}, "n2": {}}, local_env_path=env_path)
@@ -984,28 +1114,28 @@ def test_a_failed_env_write_stops_that_node_and_drops_its_route():
     assert not any(h.endswith("n1") and "up -d" in c for h, c in attempted)
     assert any(h.endswith("n2") and "up -d" in c for h, c in attempted)
     text = Path(env_path).read_text()
-    assert "VLLM_A_URL=http://n2:8001" in text and "n1:8001" not in text
+    assert "VLLM_PLACED=a=http://n2:8001" in text and "n1:8001" not in text
 
 
 def test_a_failed_recreate_drops_an_unchanged_route():
     """A recreate that fails removes its URL even when the URL value itself did not change."""
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96), _node("n2", 96)]
-    result = planner.plan([spec], nodes, replicas=2)
+    result = _plan([spec], nodes, replicas=2)
     with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
-        f.write("VLLM_A_URL=http://n1:8001,http://n2:8001\n")
+        f.write("VLLM_PLACED=a=http://n1:8001,a=http://n2:8001\n")
         env_path = f.name
     running = {"n1": {"vllm-a"}, "n2": {"vllm-a"}}
     change = applier.compute_diff(target=result, current=running, specs=[spec], nodes=nodes,
                                   node_env={"n1": {}, "n2": {}}, local_env_path=env_path)
-    assert "VLLM_A_URL" not in change.local_env
+    assert "VLLM_PLACED" not in change.local_env
     assert any(a.kind == "recreate" for a in change.actions)
 
     def runner(host: str, command: str) -> tuple[int, str]:
         return (1, "oom") if host.endswith("n1") and "force-recreate" in command else (0, "")
 
     applier.apply(change, local_env_path=env_path, runner=runner)
-    assert "VLLM_A_URL=http://n2:8001\n" in Path(env_path).read_text()
+    assert "VLLM_PLACED=a=http://n2:8001\n" in Path(env_path).read_text()
 
 
 def test_flash_next_seats_on_one_gb10_or_one_pro6000():
@@ -1038,3 +1168,31 @@ if __name__ == "__main__":
             print(f"  FAIL {name}: {exc}")
     print(f"\n{str(failed) + ' failed' if failed else 'all passed'}")
     sys.exit(1 if failed else 0)
+
+
+def test_a_hand_run_model_needs_no_repo_and_cannot_be_deployed(tmp_path) -> None:
+    from scheduler import registry
+
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "models:\n  - id: byhand\n    manual: true\n    openrouter: a/b\n",
+        encoding="utf-8",
+    )
+    spec = registry.load(path)[0]
+    assert spec.manual and spec.openrouter == "a/b"
+    with pytest.raises(ValueError, match="run by hand"):
+        registry.load(path, only=["byhand"])
+
+
+def test_a_hand_run_model_is_left_out_when_no_models_are_selected(monkeypatch, tmp_path) -> None:
+    from scheduler import __main__ as cli
+
+    (tmp_path / ".env").write_text("VLLM_MODELS=\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr(cli, "MODELS_YAML", tmp_path / "models.yaml")
+    (tmp_path / "models.yaml").write_text(
+        "models:\n  - id: byhand\n    manual: true\n"
+        "  - id: real\n    hf_repo: a/b\n",
+        encoding="utf-8",
+    )
+    assert [s.id for s in cli._load_specs(None)] == ["real"]

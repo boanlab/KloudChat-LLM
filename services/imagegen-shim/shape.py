@@ -39,16 +39,21 @@ FAMILIES: dict[str, dict[str, Any]] = {
 }
 
 
+def bare(name: str) -> str:
+    """Model name without a leading `local/`."""
+    return name.strip().removeprefix("local/")
+
+
 def parse_backends(raw: str) -> dict[str, list[str]]:
-    """`{served name: [base URL, ...]}` from comma-separated `name=url` pairs.
+    """`{model name: [base URL, ...]}` from comma-separated `name=url` pairs.
 
     One model on several nodes repeats its name, one pair per node; duplicate
-    URLs are dropped.
+    URLs are dropped. A leading `local/` on a name is dropped.
     """
     out: dict[str, list[str]] = {}
     for item in raw.split(","):
         name, sep, url = item.strip().partition("=")
-        name, url = name.strip(), url.strip().rstrip("/")
+        name, url = bare(name), url.strip().rstrip("/")
         if sep and name and url and url not in out.setdefault(name, []):
             out[name].append(url)
     return {name: urls for name, urls in out.items() if urls}

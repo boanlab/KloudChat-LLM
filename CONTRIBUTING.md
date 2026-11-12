@@ -41,6 +41,7 @@ shellcheck -S warning -e SC1091 scripts/*.sh          # settings in .shellcheckr
 ruff check scheduler services                         # rules in pyproject.toml
 pytest scheduler/tests services/litellm/tests services/crawl4ai-shim/tests services/search-shim/tests \
   services/gpu-exporter/tests services/ocr-shim/tests services/imagegen-shim/tests services/metrics-shim/tests \
+  services/index-shim/tests services/whisper-shim/tests \
   services/gateway/tests -q
 docker compose -f docker-compose.yml config --quiet
 docker compose -f docker-compose.vllm.yml config --quiet
@@ -87,10 +88,11 @@ concrete command over the general principle.
 
 ## Publishing images
 
-`.github/workflows/publish-images.yml` owns the nine `boanlab/kloudchat-*`
-images: `crawl4ai-shim`, `search-shim`, `whisper-shim`, `imagegen-shim`, `metrics-shim`,
-`code-interpreter`, `deep-research`, `index-shim`, `ocr-shim`, `gpu-exporter`. The vLLM image (`services/vllm`) is built on
-each GPU node by `install-vllm.sh` and never pushed.
+`.github/workflows/publish-images.yml` owns the ten `boanlab/kloudchat-*`
+images: `crawl4ai-shim`, `search-shim`, `whisper-shim`, `imagegen-shim`,
+`metrics-shim`, `code-interpreter`, `deep-research`, `index-shim`, `ocr-shim`,
+`gpu-exporter`. The vLLM image (`services/vllm`) is built on each GPU node by
+`install-vllm.sh` and never pushed.
 
 | Trigger | Builds | Tags |
 |---|---|---|

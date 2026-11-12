@@ -14,15 +14,18 @@ Stored data is derived (chunks and vectors), rebuildable from KloudChat's source
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-import re
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import asyncpg
 import httpx
-from fastapi import FastAPI, HTTPException
+from chunking import chunk_text
+from embedding import Embedder, EmbeddingUnavailable, EmbedProbe, collection_model, gateway_name
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 log = logging.getLogger("index-shim")
@@ -34,7 +37,7 @@ DATABASE_URL = os.environ["INDEX_DATABASE_URL"]
 LITELLM_URL = os.getenv("LITELLM_URL", "http://litellm:8000")
 LITELLM_KEY = os.getenv("LITELLM_MASTER_KEY", "")
 #: Reranker model. Empty skips the second stage.
-RERANK_MODEL = os.getenv("RERANK_MODEL", "local/bge-reranker-v2-m3").strip()
+RERANK_MODEL = os.getenv("RERANK_MODEL", "strict-local/bge-reranker-v2-m3").strip()
 #: Vector candidates fetched per requested passage before reranking.
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "5"))
 #: Reranker score floor (bge-reranker-v2-m3: answering passages 0.73–0.94,
@@ -46,18 +49,17 @@ RERANK_RECALL_DISTANCE = float(os.getenv("RERANK_RECALL_DISTANCE", "0.85"))
 #: Embedding models in preference order; a collection keeps the model that
 #: first embedded it.
 EMBED_MODELS = [
-    m.strip() for m in os.getenv("EMBED_MODELS", "local/bge-m3,text-embedding-3-small").split(",")
+    m.strip() for m in os.getenv("EMBED_MODELS", "strict-local/bge-m3").split(",")
     if m.strip()
 ]
-#: Vector column width: widest model in EMBED_MODELS (text-embedding-3-small
-#: 1536; bge-m3 1024, zero-padded). Changing it is a migration.
+#: Vector column width (bge-m3 1024, zero-padded). Changing it is a migration.
 EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))
 
-#: Chunk size and overlap in characters, matching KloudChat's lexical chunker
-CHUNK = int(os.getenv("INDEX_CHUNK_CHARS", "900"))
-OVERLAP = int(os.getenv("INDEX_CHUNK_OVERLAP", "150"))
-#: Per-document ceiling; the tail is dropped
-MAX_CHARS = int(os.getenv("INDEX_MAX_DOC_CHARS", "2000000"))
+#: Embedding probe behind /health: rerun interval, and the wait per health call
+HEALTH_EMBED_TTL_SEC = float(os.getenv("INDEX_HEALTH_EMBED_TTL_SEC", "300"))
+HEALTH_EMBED_TIMEOUT_SEC = float(os.getenv("INDEX_HEALTH_EMBED_TIMEOUT_SEC", "3"))
+#: Database check behind /health
+HEALTH_DB_TIMEOUT_SEC = 1.5
 
 _SCHEMA = """
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -87,76 +89,21 @@ CREATE INDEX IF NOT EXISTS ix_chunks_embedding
 """
 
 
-def chunk_text(text: str) -> list[str]:
-    """Overlapping windows, cut at a nearby paragraph or sentence break."""
-    body = re.sub(r"\n{3,}", "\n\n", (text or "").strip())[:MAX_CHARS]
-    if not body:
-        return []
-    out: list[str] = []
-    start = 0
-    while start < len(body):
-        end = min(start + CHUNK, len(body))
-        if end < len(body):
-            window = body[start:end]
-            cut = max(window.rfind("\n\n"), window.rfind(". "), window.rfind("다.\n"))
-            # A break in the front half would leave a heading-only chunk.
-            if cut > CHUNK // 2:
-                end = start + cut
-        piece = body[start:end].strip()
-        if piece:
-            out.append(piece)
-        if end >= len(body):
-            break
-        start = max(end - OVERLAP, start + 1)
-    return out
-
-
-class _Embedder:
-    """Embeds through the gateway, remembering which model answered."""
-
-    def __init__(self) -> None:
-        self.model: Optional[str] = None
-
-    async def embed(self, texts: list[str], *, model: Optional[str] = None,
-                    remember: bool = True) -> tuple[list[list[float]], str]:
-        """Vectors and the model that produced them.
-
-        Args:
-            model: one model, no fallback (a collection's own).
-            remember: cache the answering model as the preference for the next
-                unpinned call; off for health checks."""
-        if not texts:
-            return [], model or self.model or ""
-        if model:
-            candidates = [model]
-        else:
-            candidates = ([self.model] if self.model else []) + [
-                m for m in EMBED_MODELS if m != self.model
-            ]
-        last: str = "no embedding model configured"
-        headers = {"Authorization": f"Bearer {LITELLM_KEY}"} if LITELLM_KEY else {}
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
-            for model in candidates:
-                try:
-                    r = await client.post(
-                        f"{LITELLM_URL.rstrip('/')}/v1/embeddings",
-                        json={"model": model, "input": texts},
-                        headers=headers,
-                    )
-                    r.raise_for_status()
-                    rows = (r.json() or {}).get("data") or []
-                    if len(rows) != len(texts):
-                        raise ValueError(f"{len(rows)} vectors for {len(texts)} inputs")
-                    if remember:
-                        self.model = model
-                    return [list(map(float, row["embedding"])) for row in rows], model
-                except (httpx.HTTPError, KeyError, ValueError, TypeError) as exc:
-                    last = f"{model}: {exc}"
-                    log.info("embedding via %s failed: %s", model, exc)
-                    # A failed model loses its cached preference.
-                    if remember and self.model == model:
-                        self.model = None
-        raise HTTPException(status_code=503, detail=f"embeddings unavailable ({last})")
+async def _request_embeddings(model: str, texts: list[str],
+                              timeout: Optional[float]) -> list[list[float]]:
+    """One /v1/embeddings call through the gateway."""
+    headers = {"Authorization": f"Bearer {LITELLM_KEY}"} if LITELLM_KEY else {}
+    limit = (httpx.Timeout(timeout) if timeout is not None
+             else httpx.Timeout(120.0, connect=10.0))
+    async with httpx.AsyncClient(timeout=limit) as client:
+        r = await client.post(
+            f"{LITELLM_URL.rstrip('/')}/v1/embeddings",
+            json={"model": gateway_name(model), "input": texts},
+            headers=headers,
+        )
+        r.raise_for_status()
+        rows = (r.json() or {}).get("data") or []
+        return [row["embedding"] for row in rows]
 
 
 def _to_pgvector(values: list[float]) -> str:
@@ -165,23 +112,17 @@ def _to_pgvector(values: list[float]) -> str:
     return "[" + ",".join(f"{v:.7g}" for v in padded) + "]"
 
 
-embedder = _Embedder()
+embedder = Embedder(EMBED_MODELS, _request_embeddings)
 
 
-#: A collection's embedding model: the one holding most rows
-_COLLECTION_MODEL = """
-SELECT embed_model
-  FROM chunks
- WHERE collection = $1 AND embed_model <> ''
- GROUP BY embed_model
- ORDER BY count(*) DESC
- LIMIT 1
-"""
+async def _probe_embeddings() -> str:
+    _, model = await embedder.embed(["health"], remember=False,
+                                    timeout=HEALTH_EMBED_TIMEOUT_SEC)
+    return model
 
 
-async def collection_model(conn, collection: str) -> str:
-    """Model the collection is indexed with, '' for an empty collection."""
-    return await conn.fetchval(_COLLECTION_MODEL, collection) or ""
+embed_probe = EmbedProbe(_probe_embeddings, ttl=HEALTH_EMBED_TTL_SEC,
+                         wait=HEALTH_EMBED_TIMEOUT_SEC)
 
 
 #: Declared width of the `embedding` column (pgvector's atttypmod, no header offset)
@@ -220,6 +161,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="KloudChat index shim", lifespan=lifespan)
 
 
+@app.exception_handler(EmbeddingUnavailable)
+async def _embedding_unavailable(_request: Request, exc: EmbeddingUnavailable) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
 class Document(BaseModel):
     collection: str = Field(min_length=1, max_length=200)
     doc_id: str = Field(min_length=1, max_length=200)
@@ -239,20 +185,11 @@ class Query(BaseModel):
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    """Database readiness and embedding availability, reported separately."""
-    ok_db = False
-    try:
-        async with app.state.pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
-        ok_db = True
-    except Exception as exc:  # noqa: BLE001
-        log.warning("health: database unreachable: %s", exc)
+    """Database readiness and embedding availability, reported separately.
 
-    embed_model = ""
-    try:
-        _, embed_model = await embedder.embed(["health"], remember=False)
-    except HTTPException:
-        pass
+    Bounded by the slower of HEALTH_DB_TIMEOUT_SEC and HEALTH_EMBED_TIMEOUT_SEC;
+    the embedding result is cached for HEALTH_EMBED_TTL_SEC."""
+    ok_db, embed_model = await asyncio.gather(_database_answers(), embed_probe.current())
     mismatch = getattr(app.state, "dim_error", "")
     return {
         "status": "ok" if ok_db and not mismatch else "degraded",
@@ -261,6 +198,16 @@ async def health() -> dict[str, Any]:
         "model": embed_model,
         **({"error": mismatch} if mismatch else {}),
     }
+
+
+async def _database_answers() -> bool:
+    try:
+        async with app.state.pool.acquire(timeout=HEALTH_DB_TIMEOUT_SEC) as conn:
+            await conn.fetchval("SELECT 1", timeout=HEALTH_DB_TIMEOUT_SEC)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("health: database unreachable: %s", exc)
+        return False
 
 
 @app.put("/documents")
@@ -317,7 +264,7 @@ async def _rerank(query: str, passages: list[dict]) -> Optional[list[dict]]:
             r = await client.post(
                 f"{LITELLM_URL.rstrip('/')}/v1/rerank",
                 json={
-                    "model": RERANK_MODEL,
+                    "model": gateway_name(RERANK_MODEL),
                     "query": query,
                     "documents": [p["text"] for p in passages],
                 },

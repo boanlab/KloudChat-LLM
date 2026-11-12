@@ -301,6 +301,6 @@ def node_ids_for_hosts(hosts: Sequence[str]) -> dict[str, str]:
     for host, sid in zip(hosts, short, strict=True):
         nid = sid if short.count(sid) == 1 else host.split("@")[-1]
         if nid in out:
-            raise ValueError(f"NODES_VLLM lists {host} twice")
+            raise ValueError(f"VLLM_NODES lists {host} twice")
         out[nid] = host
     return out

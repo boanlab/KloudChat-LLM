@@ -7,11 +7,13 @@ Endpoints:
 Request (firecrawl v2, the fields honoured): url, formats ["markdown", "html",
 "rawHtml"], timeout (ms), waitFor (ms), onlyMainContent.
 Response: {"success": true, "data": {"markdown", "html", "rawHtml", "metadata"}}
-or {"success": false, "error"}.
+or {"success": false, "error"}; a malformed request is answered with 400.
+timeout is held within [MIN_TIMEOUT_MS, MAX_TIMEOUT_MS] and waitFor within it.
 
 One persistent headless Chromium crawler, shared by every request. At most
 MAX_CONCURRENT_PAGES render at once (the rest wait up to QUEUE_TIMEOUT_MS and
-are then told "busy"), and a successful scrape is reused for CACHE_TTL_S.
+are then told "busy"), and a successful scrape is reused for CACHE_TTL_S unless its
+text exceeds CACHE_MAX_ENTRY_BYTES.
 Every request a page makes passes the network guard before it leaves the browser.
 
 A browser or Playwright driver that dies is replaced and the page retried once.
@@ -42,7 +44,7 @@ from crawl4ai import (
 )
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
-from gate import Gate, PageCache
+from gate import Gate, PageCache, page_times
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL,
@@ -50,6 +52,9 @@ logging.basicConfig(level=LOG_LEVEL,
 LOG = logging.getLogger("crawl4ai-shim")
 
 DEFAULT_TIMEOUT_MS = int(os.environ.get("DEFAULT_TIMEOUT_MS", "30000"))
+# Bounds on a caller's page timeout; waitFor stays within the timeout
+MIN_TIMEOUT_MS = 1000
+MAX_TIMEOUT_MS = max(MIN_TIMEOUT_MS, int(os.environ.get("MAX_TIMEOUT_MS", "60000")))
 USER_AGENT = os.environ.get(
     "USER_AGENT",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 KloudChat/1.0",
@@ -64,6 +69,8 @@ QUEUE_TIMEOUT_MS = int(os.environ.get("QUEUE_TIMEOUT_MS", "15000"))
 # Lifetime of a cached successful scrape
 CACHE_TTL_S = int(os.environ.get("CACHE_TTL_S", "900"))
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "512"))
+# Text of one cached scrape; a larger one is served but not kept
+CACHE_MAX_ENTRY_BYTES = int(os.environ.get("CACHE_MAX_ENTRY_BYTES", str(2 * 1024 * 1024)))
 # Redirect hops the route guard follows for one request
 MAX_REDIRECTS = 10
 # Adult-site hosts file, baked into the image
@@ -96,7 +103,7 @@ _DEAD_BROWSER = (
 )
 adult = AdultList()
 gate = Gate(MAX_CONCURRENT_PAGES)
-cache = PageCache(CACHE_TTL_S, CACHE_MAX_ENTRIES)
+cache = PageCache(CACHE_TTL_S, CACHE_MAX_ENTRIES, max_entry_bytes=CACHE_MAX_ENTRY_BYTES)
 
 
 @asynccontextmanager
@@ -264,7 +271,8 @@ async def health(response: Response) -> dict[str, Any]:
         "lastOkAgoS": round(time.monotonic() - last_ok, 1) if last_ok else None,
         "backend": "crawl4ai",
         "pages": {"active": gate.active, "waiting": gate.waiting, "limit": gate.limit},
-        "cache": {"entries": len(cache), "ttl_s": CACHE_TTL_S},
+        "cache": {"entries": len(cache), "ttl_s": CACHE_TTL_S,
+                  "maxEntryBytes": CACHE_MAX_ENTRY_BYTES},
         "adult_list": {"domains": len(adult)},
     }
 
@@ -339,7 +347,30 @@ def _build_metadata(result: Any, url: str) -> dict[str, Any]:
     }
 
 
-async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
+class BadRequest(ValueError):
+    """A request the shim cannot read; answered with 400."""
+
+
+def _options(payload: Any) -> tuple[list[str], int, int]:
+    """`(formats, timeout ms, waitFor ms)` of a request, bounded; BadRequest when malformed."""
+    if not isinstance(payload, dict):
+        raise BadRequest("request body must be a JSON object")
+    url = payload.get("url")
+    if url is not None and not isinstance(url, str):
+        raise BadRequest("url must be a string")
+    formats = payload.get("formats") or ["markdown"]
+    if not isinstance(formats, list) or not all(isinstance(f, str) for f in formats):
+        raise BadRequest("formats must be a list of strings")
+    try:
+        timeout_ms, wait_for_ms = page_times(
+            payload, DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
+    except ValueError as e:
+        raise BadRequest(str(e)) from None
+    return formats, timeout_ms, wait_for_ms
+
+
+async def _scrape(payload: Any) -> dict[str, Any]:
+    formats, timeout_ms, wait_for_ms = _options(payload)
     url = payload.get("url")
     if not url:
         return {"success": False, "error": "url is required"}
@@ -348,9 +379,6 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
         LOG.warning("scrape refused for %s: %s", _site(url), refused)
         return {"success": False, "error": refused}
 
-    formats = payload.get("formats") or ["markdown"]
-    timeout_ms = payload.get("timeout") or DEFAULT_TIMEOUT_MS
-    wait_for_ms = payload.get("waitFor") or 0
     only_main = bool(payload.get("onlyMainContent", True))
 
     excluded_tags = ["script", "style", "nav", "footer", "iframe", "noscript"] \
@@ -358,7 +386,7 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
 
     run_cfg = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
-        page_timeout=int(timeout_ms),
+        page_timeout=timeout_ms,
         delay_before_return_html=wait_for_ms / 1000.0 if wait_for_ms else 0,
         excluded_tags=excluded_tags,
         word_count_threshold=10,
@@ -391,7 +419,7 @@ async def _scrape(payload: dict[str, Any]) -> dict[str, Any]:
                 try:
                     result = await asyncio.wait_for(
                         current.arun(url=url, config=run_cfg),
-                        timeout=(timeout_ms / 1000.0) + 10,
+                        timeout=(timeout_ms + wait_for_ms) / 1000.0 + 10,
                     )
                 except asyncio.TimeoutError:
                     LOG.warning("scrape timeout on %s", _site(url))
@@ -465,7 +493,10 @@ async def _handle(req: Request) -> JSONResponse:
     except Exception as e:
         return JSONResponse({"success": False, "error": f"invalid json: {e}"},
                             status_code=400)
-    return JSONResponse(await _scrape(payload))
+    try:
+        return JSONResponse(await _scrape(payload))
+    except BadRequest as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=400)
 
 
 @app.post("/v2/scrape")

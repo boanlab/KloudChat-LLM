@@ -3,7 +3,7 @@
 What fits on which GPU, and how much VRAM each model occupies. Read this when
 sizing a node or diagnosing an OOM.
 
-> Figures cover every model in `scheduler/models.yaml`, deployed or not. The
+> Figures cover every placeable model in `scheduler/models.yaml`, deployed or not. The
 > self-hosted image models (vllm-omni) are outside the scheduler; see
 > [models](models.md#self-hosted-image-models).
 
@@ -101,15 +101,15 @@ Sessions are the planner's sizing assumption (`concurrent_sessions`, default
   Not `CUDA_VISIBLE_DEVICES`: it has no value meaning "every card", and on
   GB10 it fails engine init. An unpinned node gets `all`.
 - `qwen3.8-flash` and `qwen3-coder-next` each need a node to themselves
-  and are pool models: the head node holds the 27B, retrieval and
-  transcription.
+  and are pool models: the head node holds retrieval, transcription and a
+  27B replica.
 
 ## Tuning knobs
 
 Normally nobody sets these. The placement step of `setup.sh all`
 (`python3 -m scheduler apply`) measures node capacity, computes `MAX_LEN` and
 `GPU_UTIL` per model, and writes them into that node's `.env` (see
-[scheduler](../scheduler/README.md)). The values below are the `.env.example`
+[scheduler](../scheduler/README.md)). The values below are the `.env.node.example`
 and compose defaults used when placement is skipped
 (`KLOUDCHAT_SKIP_SCHEDULER=1`).
 
@@ -149,11 +149,12 @@ like every other model.
 |---|---|
 | Weights | **3.1 GiB** measured (the repository ships several serialisations; vLLM reads one) |
 | Context | 448, the decoder window. Longer clips are split by the server |
-| Placement | `head`, priority 4, below `bge-m3`: losing embeddings turns retrieval lexical, losing this one still transcribes through OpenRouter |
+| Placement | `head-first`, priority 4, below `bge-m3`: losing embeddings turns retrieval lexical, losing this one turns dictation off |
 | Sessions | `concurrent_sessions: 4` |
 
-`WHISPER_URLS` is written from the placement. Empty (no room, or no GPU node)
-sends STT to OpenRouter (`STT_OR_MODEL`).
+The placement is written to `VLLM_PLACED` as `whisper-large-v3=URL`. With no
+entry there and no `WHISPER_URLS` (no room, or no GPU node), dictation is off:
+audio is never sent to OpenRouter.
 
 ## Throughput
 

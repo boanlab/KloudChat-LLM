@@ -4,7 +4,11 @@
    size, onto the roomiest eligible node.
 2. Restoration — leftover capacity raises contexts toward their targets.
 3. Replication — remaining capacity takes extra instances, weighted by
-   ``share``; ``replicas`` caps it, 1 turns it off.
+   ``share``; a model's ``replicas`` caps its own, 1 turns it off.
+
+Instances already served elsewhere (``external``, from VLLM_ENDPOINTS) count as
+instances: a model with one needs no coverage instance, and every later round
+and the model's ``replicas`` cap see the total.
 
 ``placement`` restricts a model to the head node or the pool before any phase.
 Unplaced models are delegated to OpenRouter with a reason.
@@ -181,22 +185,23 @@ def plan(
     specs: Sequence[ModelSpec],
     nodes: Sequence[NodeSpec],
     *,
-    replicas: Optional[int] = None,
     deployed: Optional[dict[str, frozenset[str]]] = None,
     head: Optional[str] = None,
+    external: Optional[dict[str, int]] = None,
 ) -> Plan:
     """Decide the placement.
 
     Args:
         specs: models to deploy, with metadata bound.
         nodes: probed nodes.
-        replicas: cap on instances per model; None fills spare capacity, 1 disables.
+        external: model id to the instances already served outside the nodes.
         deployed: model id to node ids already running it; a near-tie keeps it there.
-        head: head node id (first in NODES_VLLM). None on a single-node cluster,
+        head: head node id (first in VLLM_NODES). None on a single-node cluster,
             where ``placement`` constrains nothing.
     """
     result = Plan()
     deployed = deployed or {}
+    external = {k: v for k, v in (external or {}).items() if v > 0}
 
     # Unsupported cards: nothing placed, node kept in the notes
     for n in nodes:
@@ -209,7 +214,8 @@ def plan(
 
     if not nodes:
         for spec in specs:
-            result.delegations.append(Delegation(spec.id, "no GPU node available"))
+            if not external.get(spec.id):
+                result.delegations.append(Delegation(spec.id, "no GPU node available"))
         return result
 
     # Per-card budget; free bytes per card by CUDA device ordinal
@@ -222,6 +228,12 @@ def plan(
         specs, key=lambda s: (s.priority, need_bytes(s, s.ctx_floor)), reverse=True
     )
     for spec in ordered:
+        if external.get(spec.id):
+            result.notes.append(
+                f"{spec.id}: {external[spec.id]} instance(s) served by VLLM_ENDPOINTS, "
+                "none placed for coverage"
+            )
+            continue
         allowed = _eligible(spec, nodes, head)
         holders = [n for n in allowed if _carries(n, spec)]
         seatable = {
@@ -257,9 +269,8 @@ def plan(
     _restore_context(result, specs, by_id, free, card_capacity)
 
     # 3. Replication, then restoration again for the replicas
-    if replicas is None or replicas > 1:
-        _replicate(result, specs, nodes, free, card_capacity, replicas, head)
-        _restore_context(result, specs, by_id, free, card_capacity)
+    _replicate(result, specs, nodes, free, card_capacity, head, external)
+    _restore_context(result, specs, by_id, free, card_capacity)
 
     return result
 
@@ -279,11 +290,13 @@ def _worst_fit(
 
 
 def _eligible(spec: ModelSpec, nodes: Sequence[NodeSpec],
-              head: Optional[str]) -> list[NodeSpec]:
-    """Nodes allowed by ``placement``; unfiltered when ``head`` is None (single-node cluster)."""
-    if head is None or spec.placement == "any":
+              head: Optional[str], *, extra: bool = False) -> list[NodeSpec]:
+    """Nodes allowed by ``placement``; unfiltered when ``head`` is None (single-node cluster).
+
+    ``extra`` asks for an additional instance: ``head-first`` then allows any node."""
+    if head is None or spec.placement == "any" or (extra and spec.placement == "head-first"):
         return list(nodes)
-    if spec.placement == "head":
+    if spec.placement in ("head", "head-first"):
         return [n for n in nodes if n.node_id == head]
     return [n for n in nodes if n.node_id != head]
 
@@ -297,11 +310,11 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
              card_capacity: dict[str, int]) -> str:
     """Delegation reason over ``nodes`` (what ``placement`` left): no node, arch, checkpoint, cards, or capacity."""
     if not nodes:
-        if spec.placement == "head":
-            return ("the head node — the first in NODES_VLLM — is not answering, "
-                    "and placement: head keeps this model off the pool")
+        if spec.placement in ("head", "head-first"):
+            return ("the head node — the first in VLLM_NODES — is not answering, "
+                    f"and placement: {spec.placement} puts its first instance there")
         return ("no pool node is answering — the pool is every node in "
-                "NODES_VLLM but the first")
+                "VLLM_NODES but the first")
 
     where = _scope(spec)
     servable = [n for n in nodes if spec.runs_on(n.arch)]
@@ -353,7 +366,7 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
 
 def _scope(spec: ModelSpec) -> str:
     """Scope of a delegation reason's figures."""
-    return {"head": "the head node", "pool": "the pool"}.get(
+    return {"head": "the head node", "head-first": "the head node", "pool": "the pool"}.get(
         spec.placement, "this cluster"
     )
 
@@ -402,25 +415,32 @@ def _restore_context(
 def _replicate(
     plan_: Plan, specs: Sequence[ModelSpec], nodes: Sequence[NodeSpec],
     free: dict[str, list[int]], card_capacity: dict[str, int],
-    replicas: Optional[int], head: Optional[str] = None,
+    head: Optional[str] = None,
+    external: Optional[dict[str, int]] = None,
 ) -> None:
-    """Extra instances, one per round to the model furthest below its share (``instances / share``)."""
+    """Extra instances, one per round to the model furthest below its share (``instances / share``).
+
+    A model's count is its placed instances plus the ``external`` ones."""
+    external = external or {}
     placed = {p.model_id for p in plan_.placements}
-    eligible = [s for s in specs if s.id in placed]
-    counts = {s.id: 1 for s in eligible}
+    eligible = [s for s in specs if s.id in placed or external.get(s.id)]
+    counts = {
+        s.id: external.get(s.id, 0) + sum(1 for p in plan_.placements if p.model_id == s.id)
+        for s in eligible
+    }
 
     grew = True
     while grew:
         grew = False
         for spec in sorted(eligible,
                            key=lambda s: (counts[s.id] / s.share, -s.priority)):
-            if replicas is not None and counts[spec.id] >= replicas:
+            if spec.replicas is not None and counts[spec.id] >= spec.replicas:
                 continue
             used = {p.node_id for p in plan_.placements if p.model_id == spec.id}
             seatable = {
                 n.node_id: _fit_sessions(spec, n, free[n.node_id],
                                           card_capacity[n.node_id])
-                for n in _eligible(spec, nodes, head)
+                for n in _eligible(spec, nodes, head, extra=True)
                 if n.node_id not in used and _carries(n, spec)
             }
             candidates = [n for n in nodes if seatable.get(n.node_id) is not None]

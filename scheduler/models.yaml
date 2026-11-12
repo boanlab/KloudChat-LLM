@@ -3,7 +3,8 @@
 # Undeclared fields: derived from the checkpoint's config.json and size on disk
 # (see "Derived values" at the bottom).
 #
-# placement: "head" = first target in NODES_VLLM; "pool" = every other node;
+# placement: "head" = first target in VLLM_NODES; "pool" = every other node;
+# "head-first" = the first instance on the head, extra ones on any node;
 # unset = anywhere. Ignored on a single-node cluster.
 
 models:
@@ -18,6 +19,14 @@ models:
     # Native context as the floor: no shorter window
     ctx_floor: 262144
     priority: 20
+    openrouter: qwen/qwen3.8-27b
+    # Deep research runs for minutes
+    timeout: 3600
+    # --max-num-seqs
+    max_inflight: 128
+    # Repeats list items without it; vLLM's --override-generation-config ignores
+    # presence_penalty. KC_QWEN27B_PRESENCE_PENALTY overrides, empty sends none
+    presence_penalty: 1.0
 
   # Quality and judging: hard questions, review, grading. MoE (512 experts, 10
   # active), hybrid attention (12 of 48 layers hold KV), NVFP4 body, FP8 PLE
@@ -39,6 +48,10 @@ models:
     concurrent_sessions: 8
     priority: 30
     placement: pool
+    openrouter: qwen/qwen3.8-flash
+    timeout: 3600
+    # --max-num-seqs
+    max_inflight: 16
 
   # Coding. 80B-A3B, FP8, hybrid attention (12 of 48 layers hold KV), 75 GiB:
   # a pool card to itself. Not in the default VLLM_MODELS.
@@ -49,9 +62,19 @@ models:
     port: 8008
     priority: 10
     placement: pool
+    openrouter: qwen/qwen3-coder-next
+    max_inflight: 32
 
-  # Transcription, behind whisper-shim (/tools/stt); OpenRouter STT when no
-  # WHISPER_URLS backend answers
+  # Run by hand (VLLM_ENDPOINTS), never deployed; listed for the OpenRouter
+  # fallback and the timeout.
+  - id: deepseek-v4-flash
+    manual: true
+    env_prefix: VLLM_DSFLASH
+    openrouter: deepseek/deepseek-v4-flash
+    timeout: 3600
+
+  # Transcription, behind whisper-shim (/tools/stt). Audio stays inside the
+  # network: with no backend, dictation is off, with no OpenRouter route.
   - id: whisper-large-v3
     hf_repo: openai/whisper-large-v3
     dir: whisper-large-v3
@@ -59,8 +82,8 @@ models:
     # whisper-shim's backend port
     port: 9000
     runner: transcription
-    placement: head
-    # Below bge-m3: STT has an OpenRouter fallback
+    placement: head-first
+    # Below bge-m3
     priority: 4
     # 448-token decoder context; longer audio split server-side
     concurrent_sessions: 4
@@ -71,12 +94,13 @@ models:
     env_prefix: VLLM_RERANK
     port: 8009
     runner: pooling
+    api: rerank
     # Query and passage share the window
     ctx_floor: 8192
     priority: 2
-    placement: head
+    placement: head-first
 
-  # Retrieval embeddings; OpenAI fallback in gen-litellm-config.sh
+  # Retrieval embeddings
   - id: bge-m3
     hf_repo: BAAI/bge-m3
     env_prefix: VLLM_BGEM3
@@ -84,7 +108,7 @@ models:
     runner: pooling
     # Above whisper and the reranker: the whole retrieval path
     priority: 5
-    placement: head
+    placement: head-first
     # One chunk at a time
     ctx_floor: 8192
 
@@ -109,6 +133,29 @@ models:
 #                   at most 12% of the card
 #   priority        0                        placement order, highest first;
 #                                            ties seat the largest first
-#   placement       any                      "head", "pool", or any node
+#   placement       any                      "head", "head-first", "pool", or any node
 #   share           1                        weight for extra instances, among
 #                                            models competing for the same nodes
+#   replicas        unlimited                cap on the model's instances, external
+#                                            ones (VLLM_ENDPOINTS) included; 1 keeps
+#                                            it to one. Unset, spare capacity takes
+#                                            extra instances by share
+#
+#   manual          false                    run by hand: no hf_repo needed, never
+#                                            placed, and VLLM_MODELS cannot select it
+#
+# LiteLLM registration (gen-litellm-config.sh):
+#
+#   api             from runner              chat (generate), embedding (pooling),
+#                                            transcription; "rerank" for a reranker
+#   openrouter      none                     OpenRouter slug: the spill and fallback
+#                                            target, and the route with no vLLM
+#   timeout         LiteLLM default          request timeout in seconds
+#   max_inflight    256                      requests running per node before
+#                                            local/ spills and strict-local/ refuses
+#   presence_penalty none                    default on the vLLM deployment;
+#                                            KC_<env_prefix without VLLM_>_PRESENCE_PENALTY
+#                                            overrides
+#
+# A vLLM in VLLM_ENDPOINTS serving a model not listed here registers as chat
+# with these defaults.

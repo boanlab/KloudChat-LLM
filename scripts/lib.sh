@@ -208,9 +208,6 @@ declare -A MODEL_IMAGE_IN_PM=(
   [google/gemini-3-pro-image]=2.00
 )
 
-# RAG embedding fallback, registered with OPENAI_API_KEY
-OPENAI_EMBED_CATALOG=(text-embedding-3-small)
-
 # vLLM catalogue: download alias → HF repo
 declare -A VLLM_MODELS=(
   # Chat, NVFP4
@@ -333,8 +330,6 @@ declare -A MODEL_PRICE_IN_PM=(
   [glm-5.3]=1.40         [glm-5.3-flash]=0.15      [mimo-v2.6-flash]=0.14    [kimi-k3]=0.99
   [qwen3.8-max-0902]=2.00  [qwen3-coder-plus]=0.65
   [minimax-m3]=0.30
-  [qwen3.8-27b]=0  [qwen3.8-flash]=0  [qwen3-coder-next]=0
-  [text-embedding-3-small]=0.02
 )
 declare -A MODEL_PRICE_OUT_PM=(
   [gpt-6-astra]=50       [gpt-6.1-sol]=10       [gpt-6-luna]=0.50      [gpt-5.4-nano]=1.25
@@ -346,20 +341,17 @@ declare -A MODEL_PRICE_OUT_PM=(
   [glm-5.3]=4.40         [glm-5.3-flash]=0.50      [mimo-v2.6-flash]=0.28    [kimi-k3]=13.00
   [qwen3.8-max-0902]=6.00  [qwen3-coder-plus]=3.25
   [minimax-m3]=1.20
-  [qwen3.8-27b]=0  [qwen3.8-flash]=0  [qwen3-coder-next]=0
 )
 
-# OpenRouter twins of local models and the STT fallback, USD per 1M tokens,
+# OpenRouter twins of local models, USD per 1M tokens,
 # keyed by slug; or_price prefers the live figure
 declare -A OR_TWIN_PRICE_IN_PM=(
   [qwen/qwen3.8-27b]=0.42  [qwen/qwen3.8-flash]=0.15
   [qwen/qwen3-coder-next]=0.12
-  [mistralai/voxtral-small-24b-2507]=0.10
 )
 declare -A OR_TWIN_PRICE_OUT_PM=(
   [qwen/qwen3.8-27b]=3.00  [qwen/qwen3.8-flash]=0.47
   [qwen/qwen3-coder-next]=0.80
-  [mistralai/voxtral-small-24b-2507]=0.30
 )
 
 per_token_cost() { awk -v v="$1" 'BEGIN { printf "%.10f", v/1000000 }'; }
@@ -601,18 +593,6 @@ vllm_union_node_models() {
   done
 }
 
-# Whether any URL in the csv answers /v1/models with a model
-vllm_any_url_alive() {
-  local csv="$1" u
-  [[ -n "$csv" ]] || return 1
-  local IFS=,
-  for u in $csv; do
-    [[ -n "$u" ]] || continue
-    [[ -n "$(__vllm_node_models "$u")" ]] && return 0
-  done
-  return 1
-}
-
 # State of one URL:
 #   0 = ready   (/v1/models 200 with at least one model)
 #   1 = loading (HTTP answers but not ready: 503, empty model list)
@@ -651,10 +631,10 @@ vllm_discover_max_len() {
   return 1
 }
 
-# URL host → ssh target: the matching user@host from NODES_VLLM, else the host
+# URL host → ssh target: the matching user@host from VLLM_NODES, else the host
 __vllm_ssh_target() {
   local host="$1" csv entry
-  csv="$(env_get NODES_VLLM 2>/dev/null)"
+  csv="$(env_get VLLM_NODES 2>/dev/null)"
   local IFS=,
   for entry in $csv; do
     entry="${entry// /}"
@@ -742,11 +722,92 @@ vllm_wait_until_ready() {
   return 0
 }
 
+# scheduler/models.yaml, read once through the scheduler: CATALOG_IDS in file
+# order, CATALOG_<field>[id] per model
+CATALOG_IDS=()
+declare -gA CATALOG_API=() CATALOG_PREFIX=() CATALOG_OR=() CATALOG_TIMEOUT=() \
+  CATALOG_MAX_INFLIGHT=() CATALOG_PRESENCE=()
+load_model_catalog() {
+  (( ${#CATALOG_IDS[@]} )) && return 0
+  local rows id api prefix or tmo cap pres
+  rows="$(cd "$__PROJECT_DIR" && python3 -m scheduler catalog)" \
+    || { err "scheduler/models.yaml unreadable — python3 with PyYAML required"; return 1; }
+  while IFS=$'\t' read -r id api prefix or tmo cap pres; do
+    [[ "$pres" == - ]] && pres=""
+    [[ -n "$id" ]] || continue
+    CATALOG_IDS+=("$id")
+    CATALOG_API[$id]="$api"
+    CATALOG_PREFIX[$id]="$prefix"
+    CATALOG_OR[$id]="${or/#-/}"
+    CATALOG_TIMEOUT[$id]="${tmo/#-/}"
+    CATALOG_MAX_INFLIGHT[$id]="$cap"
+    CATALOG_PRESENCE[$id]="$pres"
+  done <<<"$rows"
+}
+
+# Local models and where they are served, from VLLM_ENDPOINTS (hand-run; "id=url"
+# as given, a bare URL by the names its /v1/models lists), VLLM_PLACED (the
+# scheduler's, "id=url").
+# LOCAL_IDS: catalogue order, then models only the endpoint lists name;
+# LOCAL_URLS[id] a CSV; LOCAL_SERVED["id url"] vLLM's name for it on that server.
+LOCAL_IDS=()
+declare -gA LOCAL_URLS=() LOCAL_SERVED=()
+__local_add() {  # $1=id  $2=url  $3=served name
+  local id="$1" url
+  url="$(__vllm_normalize_url "$2")"
+  [[ -n "$id" && -n "$url" ]] || return 0
+  [[ -n "${LOCAL_URLS[$id]+set}" ]] || LOCAL_URLS[$id]=""
+  LOCAL_SERVED["$id $url"]="${3:-local/$id}"
+  [[ ",${LOCAL_URLS[$id]}," == *",${url},"* ]] && return 0
+  LOCAL_URLS[$id]="${LOCAL_URLS[$id]:+${LOCAL_URLS[$id]},}${url}"
+}
+# vLLM's name for model $1 on server $2
+local_served_at() { echo "${LOCAL_SERVED["$1 $(__vllm_normalize_url "$2")"]:-local/$1}"; }
+# Model id for a served name: without local/, else its last path segment
+__local_id() { local n="${1#local/}"; echo "${n##*/}"; }
+resolve_local_models() {
+  load_model_catalog || return 1
+  LOCAL_IDS=(); LOCAL_URLS=(); LOCAL_SERVED=()
+  local item id url served names extra=() IFS=, listed
+  listed="$(env_get VLLM_ENDPOINTS),$(env_get VLLM_PLACED)"
+  for item in $listed; do
+    item="${item//[[:space:]]/}"
+    [[ -n "$item" ]] || continue
+    if [[ "$item" == *=* ]]; then
+      id="${item%%=*}"; id="${id#local/}"; url="${item#*=}"
+      # The listed name when the server answers; local/<id> otherwise
+      served="$(IFS=$'\n'; for n in $(__vllm_node_models "$url"); do
+                  [[ "$(__local_id "$n")" == "$id" || "$(__local_id "${n,,}")" == "${id,,}" ]] && { echo "$n"; break; }
+                done)"
+      __local_add "$id" "$url" "$served"
+      extra+=("$id")
+    else
+      names="$(__vllm_node_models "$item")"
+      [[ -n "$names" ]] || { warn "vllm unreachable, skipped: ${item} (name it as id=url to register it anyway)"; continue; }
+      while IFS= read -r served; do
+        [[ -n "$served" ]] || continue
+        id="$(__local_id "$served")"
+        __local_add "$id" "$item" "$served"
+        extra+=("$id")
+      done <<<"$names"
+    fi
+  done
+  for id in "${CATALOG_IDS[@]}"; do
+    [[ -n "${LOCAL_URLS[$id]:-}" ]] && LOCAL_IDS+=("$id")
+  done
+  for id in "${extra[@]}"; do
+    [[ -n "${CATALOG_API[$id]:-}" || " ${LOCAL_IDS[*]} " == *" ${id} "* ]] && continue
+    LOCAL_IDS+=("$id")
+  done
+  return 0
+}
+
+# Route a local model registers under: its catalogue api, chat when unlisted
+local_api() { echo "${CATALOG_API[$1]:-chat}"; }
+
 # LiteLLM team allowlist: every chat model gen-litellm-config.sh registers
 litellm_chat_models_csv() {
-  local vllm_chat_url; vllm_chat_url="$(env_get VLLM_QWEN27B_URL 2>/dev/null || true)"
-  local vllm_judge_url; vllm_judge_url="$(env_get VLLM_QWENFLASH_URL 2>/dev/null || true)"
-  local vllm_coder_url; vllm_coder_url="$(env_get VLLM_CODERNEXT_URL 2>/dev/null || true)"
+  resolve_local_models >/dev/null || return 1
   local out=() m
   if has_openrouter; then
     for m in "${OPENAI_MODELS[@]}";     do out+=("openai/$m");     done
@@ -763,24 +824,17 @@ litellm_chat_models_csv() {
     for m in "${MINIMAX_MODELS[@]}";    do out+=("minimax/$m");    done
   fi
   # Same routes as gen-litellm-config.sh emit_brain
-  if [[ -n "$vllm_chat_url" ]]; then
-    out+=("local/qwen3.8-27b" "strict-local/qwen3.8-27b")
-  elif has_openrouter; then
-    out+=("qwen/qwen3.8-27b")
-  fi
-  if [[ -n "$vllm_judge_url" ]]; then
-    out+=("local/qwen3.8-flash" "strict-local/qwen3.8-flash")
-  elif has_openrouter; then
-    out+=("qwen/qwen3.8-flash")
-  fi
-  if [[ -n "$vllm_coder_url" ]]; then
-    out+=("local/qwen3-coder-next" "strict-local/qwen3-coder-next")
-  elif has_openrouter; then
-    out+=("qwen/qwen3-coder-next")
-  fi
-  if has_openrouter; then
-    for m in "${OPENAI_EMBED_CATALOG[@]}"; do out+=("$m"); done
-  fi
+  for m in "${CATALOG_IDS[@]}"; do
+    [[ "${CATALOG_API[$m]}" == chat ]] || continue
+    if [[ -n "${LOCAL_URLS[$m]:-}" ]]; then
+      out+=("local/$m" "strict-local/$m")
+    elif has_openrouter && [[ -n "${CATALOG_OR[$m]}" ]]; then
+      out+=("${CATALOG_OR[$m]}")
+    fi
+  done
+  for m in "${LOCAL_IDS[@]}"; do
+    [[ -z "${CATALOG_API[$m]:-}" ]] && out+=("local/$m" "strict-local/$m")
+  done
   local IFS=,
   echo "${out[*]:-}"
 }
@@ -828,7 +882,7 @@ team_id_by_alias() {
 # Repository path on a remote node, relative to the login user's $HOME
 KLOUDCHAT_REMOTE_DIR="${KLOUDCHAT_REMOTE_DIR:-KloudChat-LLM}"
 
-# Whether a NODES_VLLM target is this host: localhost, loopback, $HOSTNAME, the
+# Whether a VLLM_NODES target is this host: localhost, loopback, $HOSTNAME, the
 # short hostname, a local IPv4 address, or a name resolving to one
 is_local_host() {
   local target="${1#*@}"
@@ -867,6 +921,7 @@ rsync_push() {
   rsync -az --delete \
     --exclude='.git/' \
     --exclude='.env' \
+    --exclude='.env.bak.*' \
     --exclude='data/' \
     --exclude='whisper/.cache/' \
     --exclude='services/searxng/settings.yml' \
@@ -880,21 +935,22 @@ rsync_push() {
     "${__PROJECT_DIR}/" "${host}:${KLOUDCHAT_REMOTE_DIR}/"
 }
 
+# Keys a GPU node reads; the orchestrator's other secrets stay off the node
+NODE_ENV_KEY_RE='^(VLLM_|HF_|KLOUDCHAT_IMAGE_|WHISPER_|GPU_EXPORTER_)[A-Z0-9_]*='
+
 # Seed a node's .env only when absent; the scheduler owns it afterwards
 rsync_push_env_if_absent() {
-  local host="$1"
+  local host="$1" tmp rc=0
   if ssh_run "$host" "test -f .env" 2>/dev/null; then
     echo "  → ${host}: .env exists, keeping node-local overrides"
     return 0
   fi
-  echo "  → ${host}: seeding .env (none present)"
-  rsync_push_file "$host" ".env"
-}
-
-rsync_push_file() {
-  local host="$1" path="$2"
-  echo "  → rsync ${path} → ${host}:${KLOUDCHAT_REMOTE_DIR}/${path}"
-  rsync -az "${__PROJECT_DIR}/${path}" "${host}:${KLOUDCHAT_REMOTE_DIR}/${path}"
+  echo "  → ${host}: seeding .env (none present; GPU keys only)"
+  tmp="$(umask 077; mktemp)"
+  grep -E "$NODE_ENV_KEY_RE" "${__PROJECT_DIR}/.env" > "$tmp" || true
+  rsync -az --chmod=F600 "$tmp" "${host}:${KLOUDCHAT_REMOTE_DIR}/.env" || rc=$?
+  rm -f "$tmp"
+  return "$rc"
 }
 
 # ssh, cd into the repo, run; -n leaves the caller's stdin alone (while-read loops)

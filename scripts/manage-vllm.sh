@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage:
-#   manage-vllm.sh up [--recreate] [svc...]     verify weights + compose up
+#   manage-vllm.sh up [--recreate] [svc...]     verify weights + compose up, gpu-exporter included
 #                                               (omit svc = every service with local weights)
 #   manage-vllm.sh down [-v]                    stop + remove containers
 #   manage-vllm.sh restart [svc]                restart
@@ -14,6 +14,7 @@
 #   vllm-bgem3       BAAI/bge-m3 — retrieval embeddings
 #   vllm-rerank      BAAI/bge-reranker-v2-m3 — retrieval reranking
 #   vllm-whisper     openai/whisper-large-v3 — transcription
+#   gpu-exporter     hardware metrics for KloudChat's performance page
 # Per-node manual control; placement is the scheduler's (python3 -m scheduler
 # apply). Compose project: kloudchat-vllm.
 set -euo pipefail
@@ -96,6 +97,8 @@ cmd_up() {
     recreate_args=(--force-recreate)
   fi
   docker compose -f "$COMPOSE_FILE" up -d --no-build "${recreate_args[@]}" "${up_svcs[@]}"
+  docker compose -f "$COMPOSE_FILE" up -d gpu-exporter \
+    || warn "gpu-exporter did not start — the performance page shows no hardware metrics for this node"
 
   echo
   echo "  → ./scripts/manage-vllm.sh status"
@@ -109,7 +112,7 @@ cmd_logs()    { docker compose -f "$COMPOSE_FILE" logs -f "$@"; }
 cmd_status() {
   docker compose -f "$COMPOSE_FILE" ps
   echo
-  for c in "${VLLM_SERVICES[@]}"; do
+  for c in "${VLLM_SERVICES[@]}" gpu-exporter; do
     s="$(docker inspect "$c" --format '{{.State.Health.Status}}' 2>/dev/null || echo missing)"
     printf "  %-15s %s\n" "$c:" "$s"
   done

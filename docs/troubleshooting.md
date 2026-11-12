@@ -63,8 +63,8 @@ routes `apply` wrote to `.env`.
 
 - A failure on a node stops that node's remaining actions; other nodes
   continue.
-- A service whose start or recreate failed is left out of the `VLLM_*_URL`
-  and `WHISPER_URLS` routes written to `.env`, so LiteLLM never registers it.
+- A service whose start or recreate failed is left out of the `VLLM_PLACED`
+  value written to `.env`, so LiteLLM never registers it.
 - A node classified `unsupported` holds nothing; the plan says so in its
   notes.
 
@@ -140,7 +140,7 @@ curl -sf http://localhost:8080/litellm/health/readiness    # verifies backends
 
 | Cause | Action |
 |---|---|
-| `LITELLM_MASTER_KEY` empty | Re-run `gen-env.sh`, or fill it in |
+| `LITELLM_MASTER_KEY` empty | `gen-env.sh --fill`, or fill it in |
 | Database migration failed | `docker logs kloudchat-litellm-db`: is postgres healthy |
 | Hit `:8000` directly | Use `/litellm/*`; the gateway is the only published port |
 | `manage.sh` cannot connect | Gateway up on `GATEWAY_PORT`? Elsewhere: set `LITELLM_URL` to `http://<host>:<GATEWAY_PORT>/litellm` |
@@ -156,7 +156,7 @@ docker exec kloudchat-litellm cat /app/config.yaml | grep -E "model_name|api_bas
 - Missing from `model/info` too: a config generation problem. Run
   `./scripts/gen-litellm-config.sh`, then
   `docker compose up -d --force-recreate litellm`.
-- Only the local models missing: `VLLM_*_URL` is empty in `.env`, or the node
+- Only the local models missing: no URL for them is in `VLLM_ENDPOINTS` or `VLLM_PLACED`, or the node
   is down (see the section above).
 - Present in `model/info` but not in the UI: a UI-side problem. Check the
   backend address in the admin screen and the team model allowlist
@@ -208,7 +208,7 @@ See [models.md](models.md#retrieval) for the two stages.
 | Cause | Action |
 |---|---|
 | `index` not in `COMPOSE_PROFILES` | Add it and re-run `setup.sh up`; `index-db` and `index-shim` do not start otherwise |
-| No embedding deployment | `INDEX_EMBED_MODELS` is tried in order: `local/bge-m3` needs a vLLM placement, `text-embedding-3-small` needs `OPENAI_API_KEY`. `GET /tools/index/health` reports whether embeddings answer |
+| No embedding deployment | `strict-local/bge-m3` needs a vLLM placement (or an endpoint in `VLLM_ENDPOINTS`); there is no external fallback. `GET /tools/index/health` reports whether embeddings answer |
 | Collection never indexed | The index starts empty; the UI fills it through `PUT /tools/index/documents`. Losing the volume costs a re-index, not a document |
 | Results arrive but are weak | The reranker may be missing; the search response carries `"reranked": true\|false`. Without it search falls back to vector order |
 
