@@ -10,12 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from targets import discover, image_text  # noqa: E402
 
 ENV = {
-    "VLLM_QWEN27B_URL": "http://172.29.52.2:8001",
-    "VLLM_QWENFLASH_URL": "http://172.29.52.3:8004,http://172.29.52.5:8004/",
-    "VLLM_BGEM3_URL": "http://172.29.52.2:8003",
+    "VLLM_ENDPOINTS": "qwen3.8-27b=http://172.29.52.2:8001,bge-m3=http://172.29.52.2:8003",
+    "VLLM_PLACED": "qwen3.8-flash=http://172.29.52.3:8004,qwen3.8-flash=http://172.29.52.5:8004/",
     "WHISPER_URLS": "http://172.29.52.2:9000",
-    "IMAGEGEN_BACKENDS": "local/z-image-turbo=http://172.29.52.5:8091,local/qwen-image-2512=http://172.29.52.5:8092",
-    "NODES_VLLM": "boan@10.40.0.254,boan@10.40.0.253",
+    "IMAGEGEN_BACKENDS": "z-image-turbo=http://172.29.52.5:8091,local/qwen-image-2512=http://172.29.52.5:8092",
+    "VLLM_NODES": "boan@10.40.0.254,boan@10.40.0.253",
 }
 
 
@@ -41,17 +40,30 @@ def test_every_endpoint_and_node_becomes_one_target():
 
 
 def test_a_node_listed_twice_is_one_target():
-    env = {"VLLM_QWEN27B_URL": "http://gpu-1:8001", "VLLM_RERANK_URL": "gpu-1:8009", "NODES_VLLM": "u@gpu-1"}
+    env = {"VLLM_ENDPOINTS": "http://gpu-1:8001,gpu-1:8009", "VLLM_NODES": "u@gpu-1"}
     assert [t.name for t in discover(env)] == ["vllm-gpu-1-8001", "vllm-gpu-1-8009", "gpu-gpu-1"]
+
+
+def test_the_endpoint_and_placed_lists_are_read():
+    env = {
+        "VLLM_ENDPOINTS": "http://gpu-1:8001, qwen3.8-flash=http://gpu-2:8004",
+        "VLLM_PLACED": "bge-m3=http://gpu-3:8010",
+        "VLLM_MODELS": "qwen3.8-27b",
+    }
+    names = {t.name for t in discover(env)}
+    assert names == {
+        "vllm-gpu-1-8001", "vllm-gpu-2-8004", "vllm-gpu-3-8010",
+        "gpu-gpu-1", "gpu-gpu-2", "gpu-gpu-3",
+    }
 
 
 def test_no_settings_no_targets():
     assert discover({}) == []
-    assert discover({"VLLM_QWEN27B_URL": " , ", "IMAGEGEN_BACKENDS": "broken"}) == []
+    assert discover({"VLLM_ENDPOINTS": " , ", "IMAGEGEN_BACKENDS": "broken"}) == []
 
 
 def test_the_exporter_port_can_be_moved():
-    env = {"NODES_VLLM": "u@gpu-9", "GPU_EXPORTER_PORT": "9900"}
+    env = {"VLLM_NODES": "u@gpu-9", "GPU_EXPORTER_PORT": "9900"}
     assert discover(env)[0].url == "http://gpu-9:9900"
 
 

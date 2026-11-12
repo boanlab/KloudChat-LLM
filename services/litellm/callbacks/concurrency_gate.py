@@ -8,12 +8,14 @@ or anything is waiting. The pre-call hook then:
   local/*         rewrites the request to the OpenRouter twin (spill)
   strict-local/*  returns strict_local_unavailable; the model id never changes
 
-Gate entries come from /app/config.yaml: hosted_vllm/local/* deployments give the
-metrics URLs, model_info.kchat_strict_local marks reject-only aliases, and
-router_settings.fallbacks names each spill twin. Caps: DEFAULT_CAPS, overridable
-with CONCURRENCY_GATE_CAPS ({"local/<model>": <int>}).
+Gate entries come from /app/config.yaml: hosted_vllm/* deployments give the
+metrics URLs, model_info.kchat_strict_local marks reject-only aliases,
+model_info.kchat_max_inflight the cap (DEFAULT_CAP for a strict alias without
+one), and router_settings.fallbacks names each spill twin. CONCURRENCY_GATE_CAPS
+({"local/<model>": <int>}) overrides the caps.
 
-Unreachable metrics: normal aliases stay local (fail-open); strict aliases are
+Unreachable metrics: a node that cannot be scraped is left out of the verdict.
+With none reachable, normal aliases stay local (fail-open) and strict aliases are
 rejected (fail-closed).
 """
 from __future__ import annotations
@@ -34,17 +36,15 @@ log = logging.getLogger("litellm-concurrency-gate")
 
 POLL_TTL = float(os.environ.get("CONCURRENCY_GATE_TTL", "1.5"))
 SCRAPE_TIMEOUT = float(os.environ.get("CONCURRENCY_GATE_SCRAPE_TIMEOUT", "1.0"))
-# Age past which a strict alias's last good sample no longer counts
+# Age beyond which a strict alias's last good sample is stale
 STRICT_STATE_TTL = max(POLL_TTL * 3, POLL_TTL + SCRAPE_TIMEOUT * 2)
-# In-flight caps by LiteLLM model_name; a cap with no deployment is logged and inactive
-DEFAULT_CAPS = {
-    "local/qwen3.8-27b": 128,
-    "local/qwen3.8-flash": 16,
-    "local/qwen3-coder-next": 32,
-    "strict-local/qwen3.8-27b": 128,
-    "strict-local/qwen3.8-flash": 16,
-    "strict-local/qwen3-coder-next": 32,
-}
+#: Request metadata key naming the model a spilled request was rewritten from and to
+SPILL_KEY = "kchat_spill"
+#: model_info modes of the retrieval models
+_POOLING_MODES = ("embedding", "rerank")
+# In-flight cap for a strict alias whose deployments declare none (model_info
+# kchat_max_inflight, from scheduler/models.yaml)
+DEFAULT_CAP = 256
 
 
 class StrictLocalUnavailableError(RuntimeError):
@@ -71,32 +71,35 @@ def _metrics_url(api_base: str) -> str:
     return base.rstrip("/") + "/metrics"
 
 
+def _apply_cap_overrides(caps: dict[str, int]) -> None:
+    """CONCURRENCY_GATE_CAPS over the declared caps; a local/ cap also covers its strict alias."""
+    env_caps = os.environ.get("CONCURRENCY_GATE_CAPS")
+    if not env_caps:
+        return
+    try:
+        requested = {k: int(v) for k, v in json.loads(env_caps).items()}
+    except Exception:
+        log.warning("concurrency gate: bad CONCURRENCY_GATE_CAPS, using the declared caps")
+        return
+    overrides: dict[str, int] = {}
+    for model, cap in requested.items():
+        if model.startswith("strict-local/") and cap <= 0:
+            log.warning(
+                "concurrency gate: ignoring nonpositive strict cap for '%s'",
+                model,
+            )
+            continue
+        overrides[model] = cap
+    caps.update(overrides)
+    for model, cap in overrides.items():
+        if model.startswith("local/") and cap > 0:
+            strict_model = "strict-local/" + model.removeprefix("local/")
+            if strict_model not in requested:
+                caps[strict_model] = cap
+
+
 def _load_gate_map() -> dict:
     """Gate entries (metrics URLs, cap, mode, twin) from the LiteLLM config."""
-    caps = dict(DEFAULT_CAPS)
-    env_caps = os.environ.get("CONCURRENCY_GATE_CAPS")
-    if env_caps:
-        try:
-            requested = {k: int(v) for k, v in json.loads(env_caps).items()}
-            overrides: dict[str, int] = {}
-            for model, cap in requested.items():
-                if model.startswith("strict-local/") and cap <= 0:
-                    log.warning(
-                        "concurrency gate: ignoring nonpositive strict cap for '%s'",
-                        model,
-                    )
-                    continue
-                overrides[model] = cap
-            caps.update(overrides)
-            # A local/* cap also applies to its strict alias unless given separately.
-            for model, cap in overrides.items():
-                if model.startswith("local/") and cap > 0:
-                    strict_model = "strict-local/" + model.removeprefix("local/")
-                    if strict_model not in requested:
-                        caps[strict_model] = cap
-        except Exception:
-            log.warning("concurrency gate: bad CONCURRENCY_GATE_CAPS, using defaults")
-
     gate: dict = {}
     try:
         import yaml
@@ -105,17 +108,28 @@ def _load_gate_map() -> dict:
 
         metrics: dict[str, list[str]] = {}
         strict_models: set = set()
+        caps: dict[str, int] = {}
         for d in cfg.get("model_list", []) or []:
             lp = (d.get("litellm_params") or {})
             mi = (d.get("model_info") or {})
             name = d.get("model_name", "")
             routed = lp.get("model", "")
-            if isinstance(routed, str) and routed.startswith("hosted_vllm/local/") and lp.get("api_base"):
+            # Embedding and rerank hold no chat queue: not gated on vLLM metrics
+            if mi.get("mode") in _POOLING_MODES:
+                continue
+            if isinstance(routed, str) and routed.startswith("hosted_vllm/") and lp.get("api_base"):
                 url = _metrics_url(lp["api_base"])
                 if url not in metrics.setdefault(name, []):
                     metrics[name].append(url)
                 if mi.get("kchat_strict_local") is True:
                     strict_models.add(name)
+                declared = mi.get("kchat_max_inflight")
+                if isinstance(declared, int) and declared > 0:
+                    caps.setdefault(name, declared)
+        # Strict aliases are always gated: unknown capacity is refused
+        for name in strict_models:
+            caps.setdefault(name, DEFAULT_CAP)
+        _apply_cap_overrides(caps)
 
         twin: dict = {}
         for fb in (cfg.get("router_settings", {}) or {}).get("fallbacks", []) or []:
@@ -137,25 +151,24 @@ def _load_gate_map() -> dict:
                     "mode": "spill",
                     "or": twin[model],
                 }
-            elif cap > 0:
-                missing = []
-                if model not in metrics:
-                    missing.append("no local vLLM deployment")
-                if model not in twin and model not in strict_models:
-                    missing.append("no OpenRouter twin in router_settings.fallbacks")
-                log.warning("concurrency gate: cap '%s' is inactive — %s",
-                            model, " / ".join(missing))
+            elif cap > 0 and model not in metrics:
+                log.warning("concurrency gate: cap '%s' is inactive — no local vLLM deployment", model)
     except Exception:
         log.exception("concurrency gate: failed to load config — gate disabled")
     return gate
 
 
-def _load_shim_pictures() -> set:
-    """Strict picture models served only through the imagegen shim.
+def _load_shim_models() -> set:
+    """Strict models with no capacity gate: pictures and transcription through
+    their shim, embedding and rerank straight to vLLM.
 
-    The shim has no vLLM metrics to gate on and no fallback to spill to, so
-    such a model can only ever reach the local backend: it passes the gate.
+    None has vLLM chat metrics to gate on or a fallback to spill to, so each can
+    only ever reach the local backend: it passes the gate.
     """
+    shims = {
+        "image_generation": "http://imagegen-shim:",
+        "audio_transcription": "http://whisper-shim:",
+    }
     try:
         import yaml
         path = os.environ.get("CONFIG_FILE_PATH", "/app/config.yaml")
@@ -167,10 +180,11 @@ def _load_shim_pictures() -> set:
             name = d.get("model_name", "")
             if not isinstance(name, str) or not name.startswith("strict-local/"):
                 continue
-            through_shim = (
-                mi.get("mode") == "image_generation"
-                and mi.get("kchat_strict_local") is True
-                and str(lp.get("api_base", "")).startswith("http://imagegen-shim:")
+            prefix = shims.get(mi.get("mode"))
+            through_shim = mi.get("kchat_strict_local") is True and (
+                (prefix is not None and str(lp.get("api_base", "")).startswith(prefix))
+                or (mi.get("mode") in _POOLING_MODES
+                    and str(lp.get("model", "")).startswith("hosted_vllm/"))
             )
             deployments.setdefault(name, []).append(through_shim)
         twinned = {
@@ -180,10 +194,10 @@ def _load_shim_pictures() -> set:
             if v
         }
         return {
-            name for name, shims in deployments.items() if all(shims) and name not in twinned
+            name for name, shim in deployments.items() if all(shim) and name not in twinned
         }
     except Exception:
-        log.exception("concurrency gate: failed to read picture models")
+        log.exception("concurrency gate: failed to read shim models")
         return set()
 
 
@@ -210,7 +224,7 @@ def _scrape(url: str) -> tuple:
 class ConcurrencyGate(CustomLogger):
     def __init__(self):
         self.gate = _load_gate_map()
-        self._shim_pictures = _load_shim_pictures()
+        self._shim_models = _load_shim_models()
         # Strict aliases rejected until the first successful scrape
         self._saturated = {m: g["mode"] == "reject" for m, g in self.gate.items()}
         self._last_success = {m: 0.0 for m in self.gate}
@@ -256,12 +270,11 @@ class ConcurrencyGate(CustomLogger):
 
         for model, g in self.gate.items():
             try:
-                samples: list[tuple[float, float]] = []
-                for url in g["metrics"]:
-                    sample = samples_by_url[url]
-                    if isinstance(sample, Exception):
-                        raise sample
-                    samples.append(sample)
+                # Reachable nodes only; LiteLLM's cooldown keeps traffic off the rest
+                results = [samples_by_url[url] for url in g["metrics"]]
+                samples = [r for r in results if not isinstance(r, Exception)]
+                if not samples:
+                    raise results[0]
                 running = sum(sample[0] for sample in samples)
                 waiting = sum(sample[1] for sample in samples)
                 # Any saturated deployment saturates the alias
@@ -325,8 +338,8 @@ class ConcurrencyGate(CustomLogger):
                             model, g is not None, forced, self._saturated.get(model))
             if g is None:
                 # Strict alias with no gate entry: unknown capacity, rejected,
-                # unless it is a picture model the shim alone serves.
-                if model in getattr(self, "_shim_pictures", set()):
+                # unless a shim alone serves it (pictures, transcription).
+                if model in getattr(self, "_shim_models", set()):
                     return None
                 if _strict_request(data):
                     return StrictLocalUnavailableError()
@@ -348,6 +361,13 @@ class ConcurrencyGate(CustomLogger):
                 log.warning("concurrency gate: rejecting saturated strict-local model %s", model)
                 # LiteLLM raises an Exception returned by this hook before routing.
                 return StrictLocalUnavailableError()
+            # The response headers name the spill, as LiteLLM does for a router fallback,
+            # so the caller's usage record shows the request left for OpenRouter
+            metadata = data.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+                data["metadata"] = metadata
+            metadata[SPILL_KEY] = {"from": model, "to": g["or"]}
             data["model"] = g["or"]
             if os.environ.get("CONCURRENCY_GATE_DEBUG") == "1":
                 log.warning("concurrency gate: %s → spill to %s", model, g["or"])
@@ -356,6 +376,28 @@ class ConcurrencyGate(CustomLogger):
             log.exception("concurrency gate: pre_call hook failed")
             if isinstance(data, dict) and _strict_request(data):
                 return StrictLocalUnavailableError()
+            return None
+
+    async def async_post_call_response_headers_hook(
+        self,
+        data: dict,
+        user_api_key_dict: Any,
+        response: Any,
+        request_headers: Optional[dict] = None,
+        litellm_call_info: Optional[dict] = None,
+    ) -> Optional[dict]:
+        """Headers a router fallback would carry, for a request the gate spilled."""
+        del user_api_key_dict, response, request_headers, litellm_call_info
+        try:
+            spill = (data.get("metadata") or {}).get(SPILL_KEY) if isinstance(data, dict) else None
+            if not isinstance(spill, dict) or not spill.get("to"):
+                return None
+            return {
+                "x-litellm-attempted-fallbacks": "1",
+                "x-litellm-model-group": str(spill["to"]),
+            }
+        except Exception:
+            log.exception("concurrency gate: spill headers failed")
             return None
 
     async def async_post_call_failure_hook(

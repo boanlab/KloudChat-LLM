@@ -22,11 +22,20 @@ BASE_PORT = 8001
 DEFAULT_CONCURRENT_SESSIONS = 4
 
 #: "generate" | "pooling" (vLLM --runner names); "transcription" marks the STT
-#: backend reached through /tools/stt rather than a LiteLLM chat route.
+#: backend behind whisper-shim.
 RUNNERS = ("generate", "pooling", "transcription")
 
-#: "head": first node in NODES_VLLM; "pool": every other node; "any": unconstrained
-PLACEMENTS = ("any", "head", "pool")
+#: Route LiteLLM registers: chat (local/ and strict-local/), embedding, rerank,
+#: transcription (strict-local only, through whisper-shim)
+APIS = ("chat", "embedding", "rerank", "transcription")
+_API_BY_RUNNER = {"generate": "chat", "pooling": "embedding", "transcription": "transcription"}
+
+#: In-flight cap for a chat model that declares none: spill or refuse only once vLLM queues
+DEFAULT_MAX_INFLIGHT = 256
+
+#: "head": first node in VLLM_NODES; "pool": every other node; "any": unconstrained;
+#: "head-first": the first instance on the head node, extra instances on any node
+PLACEMENTS = ("any", "head", "head-first", "pool")
 
 _SIZE = re.compile(r"^\s*([\d.]+)\s*([KMGT]i?B)?\s*$", re.I)
 _UNITS = {
@@ -66,6 +75,8 @@ class ModelSpec:
     priority: int = 0
     #: One of PLACEMENTS. Ignored on a single-node cluster.
     placement: str = "any"
+    #: Cap on this model's instances, external ones included; None fills spare capacity
+    replicas: Optional[int] = None
     #: Relative weight for extra instances among models competing for the same nodes
     share: float = 1.0
     #: Cards to shard across on one node (--tensor-parallel-size). Above 1 the
@@ -73,6 +84,18 @@ class ModelSpec:
     tensor_parallel: int = 1
     #: One of RUNNERS. Pooling holds no KV cache; transcription is sized like generate.
     runner: str = "generate"
+    #: One of APIS
+    api: str = "chat"
+    #: OpenRouter slug: the fallback twin, and the route when no vLLM serves it
+    openrouter: str = ""
+    #: LiteLLM request timeout in seconds; 0 keeps LiteLLM's default
+    timeout: int = 0
+    #: In-flight requests per node before local/ spills and strict-local/ refuses
+    max_inflight: int = DEFAULT_MAX_INFLIGHT
+    #: Default presence_penalty on the deployment; None sends none
+    presence_penalty: Optional[float] = None
+    #: Run by hand (VLLM_ENDPOINTS), never placed; listed for its LiteLLM routes
+    manual: bool = False
     #: Filled by bind()
     metadata: Optional[ModelMetadata] = None
     #: Native context; 0 before probing
@@ -114,7 +137,8 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
     model_id = str(entry["id"]).strip()
     if not model_id:
         raise ValueError("a models.yaml entry has no id")
-    if "hf_repo" not in entry:
+    manual = bool(entry.get("manual"))
+    if "hf_repo" not in entry and not manual:
         raise ValueError(f"{model_id}: hf_repo is required")
 
     runner = str(entry.get("runner") or "generate").strip().lower()
@@ -134,10 +158,24 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
     if share <= 0:
         raise ValueError(f"{model_id}: share must be above zero, not {share}")
 
+    api = str(entry.get("api") or _API_BY_RUNNER[runner]).strip().lower()
+    if api not in APIS:
+        raise ValueError(f"{model_id}: api {api!r} is not one of {', '.join(APIS)}")
+    max_inflight = int(entry.get("max_inflight") or DEFAULT_MAX_INFLIGHT)
+    if max_inflight <= 0:
+        raise ValueError(f"{model_id}: max_inflight must be above zero")
+    raw_penalty = entry.get("presence_penalty")
+
+    raw_replicas = entry.get("replicas")
+    replicas = None if raw_replicas is None else int(raw_replicas)
+    if replicas is not None and replicas < 1:
+        raise ValueError(f"{model_id}: replicas must be at least 1, not {replicas}")
+
     env_prefix = str(entry.get("env_prefix") or _env_prefix_from_id(model_id))
     return ModelSpec(
         id=model_id,
-        hf_repo=str(entry["hf_repo"]),
+        hf_repo=str(entry.get("hf_repo") or ""),
+        manual=manual,
         dir=str(entry.get("dir") or model_id),
         # Derived from env_prefix so the .env key and compose service agree
         service=str(entry.get("service") or env_prefix.lower().replace("_", "-")),
@@ -150,9 +188,15 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
         priority=int(entry.get("priority") or 0),
         placement=placement,
         share=share,
+        replicas=replicas,
         tensor_parallel=max(1, int(entry.get("tensor_parallel") or 1)),
         arches=tuple(entry.get("arches") or ()),
         runner=runner,
+        api=api,
+        openrouter=str(entry.get("openrouter") or "").strip(),
+        timeout=int(entry.get("timeout") or 0),
+        max_inflight=max_inflight,
+        presence_penalty=None if raw_penalty is None else float(raw_penalty),
         ctx_target_override=int(entry["ctx_target"]) if entry.get("ctx_target") else None,
         weight_override=parse_size(entry["weight"]) if entry.get("weight") else None,
         activation_override=(
@@ -181,5 +225,11 @@ def load(path: Path | str, *, only: Iterable[str] | None = None) -> list[ModelSp
         raise KeyError(
             f"models not defined in models.yaml: {', '.join(missing)} "
             f"(defined: {', '.join(by_id)})"
+        )
+    hand_run = [w for w in wanted if by_id[w].manual]
+    if hand_run:
+        raise ValueError(
+            f"run by hand, not deployable: {', '.join(hand_run)} "
+            "(serve it and list it in VLLM_ENDPOINTS)"
         )
     return [by_id[w] for w in wanted]

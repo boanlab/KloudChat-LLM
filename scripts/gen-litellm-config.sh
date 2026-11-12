@@ -39,13 +39,9 @@ grep -qF "$FB_START" "$CONFIG_FILE" && grep -qF "$FB_END" "$CONFIG_FILE" \
 # Context when /v1/models yields no max_model_len
 CTX_FALLBACK=32768
 
-# Per-model request timeout (s); deep research runs for minutes
-declare -A MODEL_TIMEOUT=( [qwen3.8-27b]=3600 [qwen3.8-flash]=3600 )
-
-# Default presence_penalty on the vLLM deployment (a request's own value wins).
-# The 27B repeats list items without it; vLLM's --override-generation-config
-# ignores presence_penalty, so it is set here. Empty disables it.
-declare -A MODEL_PRESENCE_PENALTY=( [qwen3.8-27b]="${KC_QWEN27B_PRESENCE_PENALTY-1.0}" )
+# Local models: scheduler/models.yaml for timeout, cap, presence_penalty and the
+# OpenRouter twin; VLLM_ENDPOINTS and VLLM_PLACED for where they run
+resolve_local_models || exit 1
 
 # OpenRouter provider-routing suffix on chat routes: ":floor" (cheapest),
 # ":nitro" (throughput), "" (OpenRouter default)
@@ -131,21 +127,21 @@ emit_or_image() {
   emit_kchat_boundary external false false
 }
 
-# Self-hosted image models behind imagegen-shim; one entry per served name in
-# IMAGEGEN_BACKENDS (name=url,...; a name repeats per node), registered as strict-local/<name> only: no
-# OpenRouter twin and no local/ alias, so a picture never leaves the boundary.
-# The shim still sees the backend name it was given.
+# Self-hosted image models behind imagegen-shim; one entry per name in
+# IMAGEGEN_BACKENDS (name=url,...; a name repeats per node, a leading local/ is
+# dropped), registered as strict-local/<name> only: no OpenRouter twin and no
+# local/ alias, so a picture never leaves the boundary.
 emit_local_images() {
   local raw="$1" item name seen=","
   [[ -n "$raw" ]] || return 0
   IFS=',' read -ra items <<<"$raw"
   for item in "${items[@]}"; do
-    name="${item%%=*}"; name="${name// /}"
+    name="${item%%=*}"; name="${name// /}"; name="${name#local/}"
     [[ -n "$name" && "$item" == *=* ]] || continue
     # A name listed twice is one model on more nodes
     [[ "$seen" == *",${name},"* ]] && continue
     seen+="${name},"
-    echo "  - model_name: strict-local/${name#local/}"
+    echo "  - model_name: strict-local/${name}"
     echo "    litellm_params:"
     echo "      model: openai/${name}"
     echo "      api_base: http://imagegen-shim:9100/v1"
@@ -159,20 +155,27 @@ emit_local_images() {
   done
 }
 
-# STT through OpenRouter: a chat deployment called with an audio content part
-# (OpenRouter has no transcription endpoint); hidden from the picker
-emit_or_stt() {
-  local id="$1" in_pm="$2" out_pm="$3"
-  has_openrouter || return 0
-  echo "  - model_name: ${id}"
+# Self-hosted transcription behind whisper-shim, registered as strict-local/<id>
+# only (the catalogue's transcription model) while WHISPER_URLS or VLLM_PLACED names a backend:
+# no OpenRouter twin and no local/ alias, so a recording never leaves the boundary.
+emit_local_stt() {
+  local id="" m
+  for m in "${CATALOG_IDS[@]}"; do
+    [[ "${CATALOG_API[$m]}" == transcription ]] && { id="$m"; break; }
+  done
+  id="${id:-whisper-large-v3}"
+  local urls="$1,${LOCAL_URLS[$id]:-}"
+  [[ -n "${urls//[[:space:],]/}" ]] || return 0
+  echo "  - model_name: strict-local/${id}"
   echo "    litellm_params:"
-  echo "      model: openrouter/${id}"
-  echo "      api_key: os.environ/OPENROUTER_API_KEY"
+  echo "      model: openai/${id}"
+  echo "      api_base: http://whisper-shim:9000/v1"
+  echo "      api_key: none"
   echo "    model_info:"
-  echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
-  echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
-  emit_kchat_boundary external false false
-  echo "      kchat_hidden: true"
+  echo "      mode: audio_transcription"
+  echo "      input_cost_per_token: 0.0000000000"
+  echo "      output_cost_per_token: 0.0000000000"
+  emit_kchat_boundary self_hosted true true
 }
 
 # Audio models (mode: audio_speech); per-clip models carry output_cost_per_request
@@ -191,68 +194,37 @@ emit_or_audio() {
   emit_kchat_boundary external false false
 }
 
-# Local embedding deployment, when placed
-emit_vllm_embed() {
-  local m="$1" url_csv="$2" urls
+# Local embedding and rerank deployments, registered as strict-local/<id> only: no
+# local/ alias and no external route (a document never leaves the boundary)
+emit_vllm_pooling() {  # $1=id  $2=url_csv  $3=embedding|rerank
+  local m="$1" url_csv="$2" mode="$3" served urls
   [[ -n "$url_csv" ]] || return 0
-  urls="$(__vllm_resolved_urls "local/${m}" "$url_csv")"
+  urls="$(__vllm_resolved_urls "$m" "$url_csv")"
   while IFS= read -r url; do
     [[ -n "$url" ]] || continue
-    echo "  - model_name: local/${m}"
+    served="$(local_served_at "$m" "$url")"
+    echo "  - model_name: strict-local/${m}"
     echo "    litellm_params:"
-    echo "      model: hosted_vllm/local/${m}"
+    echo "      model: hosted_vllm/${served}"
     echo "      api_base: ${url%/}/v1"
     echo "    model_info:"
-    # mode: embedding keeps it out of the picker
-    echo "      mode: embedding"
+    # mode keeps it out of the picker
+    echo "      mode: ${mode}"
     echo "      input_cost_per_token: 0.0000000000"
     echo "      output_cost_per_token: 0.0000000000"
-    emit_kchat_boundary self_hosted false false
+    emit_kchat_boundary self_hosted true true
   done <<< "$urls"
 }
 
-# Local reranker, /v1/rerank through LiteLLM's hosted_vllm path
-emit_vllm_rerank() {
-  local m="$1" url_csv="$2" urls
-  [[ -n "$url_csv" ]] || return 0
-  urls="$(__vllm_resolved_urls "local/${m}" "$url_csv")"
-  while IFS= read -r url; do
-    [[ -n "$url" ]] || continue
-    echo "  - model_name: local/${m}"
-    echo "    litellm_params:"
-    echo "      model: hosted_vllm/local/${m}"
-    echo "      api_base: ${url%/}/v1"
-    echo "    model_info:"
-    echo "      mode: rerank"
-    echo "      input_cost_per_token: 0.0000000000"
-    echo "      output_cost_per_token: 0.0000000000"
-    emit_kchat_boundary self_hosted false false
-  done <<< "$urls"
-}
-
-# OpenAI embedding fallback, with OPENAI_API_KEY only (OpenRouter serves no
-# embedding models)
-emit_openai_embed() {
-  local m="$1" in_pm
-  [[ -n "$(env_get OPENAI_API_KEY)" ]] || return 0
-  in_pm="${MODEL_PRICE_IN_PM[$m]:-}"
-  echo "  - model_name: ${m}"
-  echo "    model_info:"
-  echo "      mode: embedding"
-  [[ -n "$in_pm" ]] && echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
-  emit_kchat_boundary external false false
-  echo "    litellm_params:"
-  echo "      model: openai/${m}"
-  echo "      api_key: os.environ/OPENAI_API_KEY"
-}
-
-# URLs from the csv that serve this model_name, deduplicated; the whole csv
-# when none answer yet (LiteLLM's cooldown recovers once they do)
+# URLs from the csv that serve model $1 under its served name, deduplicated; the
+# whole csv when none answer yet (LiteLLM's cooldown recovers once they do)
 __vllm_resolved_urls() {
-  local want="$1" url_csv="$2" discovered
-  discovered="$(vllm_union_node_models "$url_csv" \
-    | awk -F'\t' -v w="$want" '$2==w {print $1}' \
-    | awk '!seen[$0]++')"
+  local id="$1" url_csv="$2" discovered pairs url
+  pairs="$(vllm_union_node_models "$url_csv")"
+  discovered="$(local IFS=,; for url in $url_csv; do
+      url="$(__vllm_normalize_url "$url")"
+      awk -F'\t' -v u="$url" -v w="$(local_served_at "$id" "$url")" '$1==u && $2==w {print $1}' <<<"$pairs"
+    done | awk '!seen[$0]++')"
   if [[ -n "$discovered" ]]; then echo "$discovered"; return 0; fi
   local IFS=, u
   for u in $url_csv; do
@@ -261,19 +233,26 @@ __vllm_resolved_urls() {
   done | awk '!seen[$0]++'
 }
 
+# Default presence_penalty: KC_<env_prefix without VLLM_>_PRESENCE_PENALTY when
+# set (empty sends none), else the catalogue's
+presence_penalty_for() {
+  local prefix="${CATALOG_PREFIX[$1]:-}" var
+  [[ -n "$prefix" ]] || return 0
+  var="KC_${prefix#VLLM_}_PRESENCE_PENALTY"
+  if [[ -n "${!var+set}" ]]; then echo "${!var}"; else echo "${CATALOG_PRESENCE[$1]:-}"; fi
+}
+
 emit_vllm_chat_entry() {
   local m="$1" url="$2" ctx="$3" alias="$4" boundary="$5" strict="$6" privacy_only="$7"
-  local in_pm out_pm tmo pres
-  in_pm="${MODEL_PRICE_IN_PM[$m]:-}"
-  out_pm="${MODEL_PRICE_OUT_PM[$m]:-}"
+  local tmo pres served; served="$(local_served_at "$m" "$url")"
   echo "  - model_name: ${alias}"
   echo "    litellm_params:"
-  # strict-local/* aliases the same deployment; the served id stays local/<m>
-  echo "      model: hosted_vllm/local/${m}"
+  # strict-local/* aliases the same deployment under vLLM's served name
+  echo "      model: hosted_vllm/${served}"
   echo "      api_base: ${url%/}/v1"
-  tmo="${MODEL_TIMEOUT[$m]:-}"
+  tmo="${CATALOG_TIMEOUT[$m]:-}"
   [[ -n "$tmo" ]] && echo "      timeout: ${tmo}"
-  pres="${MODEL_PRESENCE_PENALTY[$m]:-}"
+  pres="$(presence_penalty_for "$m")"
   if [[ "$pres" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
     echo "      presence_penalty: ${pres}"
   elif [[ -n "$pres" ]]; then
@@ -284,11 +263,11 @@ emit_vllm_chat_entry() {
   echo "      supports_function_calling: true"
   echo "      supports_tool_choice: true"
   echo "      max_input_tokens: $(__declared_max_input_tokens "$ctx")"
-  if [[ -n "$in_pm" && -n "$out_pm" ]]; then
-    echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
-    echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
-  fi
+  echo "      input_cost_per_token: 0.0000000000"
+  echo "      output_cost_per_token: 0.0000000000"
   emit_kchat_boundary "$boundary" "$strict" "$privacy_only"
+  # In-flight cap per node for the concurrency gate
+  echo "      kchat_max_inflight: ${CATALOG_MAX_INFLIGHT[$m]:-256}"
 }
 
 emit_vllm_chat() {
@@ -297,7 +276,7 @@ emit_vllm_chat() {
   regular_boundary=self_hosted
   has_openrouter && regular_boundary=hybrid
   # Context per deployment from /v1/models; the scheduler sets it per node
-  urls="$(__vllm_resolved_urls "local/${m}" "$url_csv")"
+  urls="$(__vllm_resolved_urls "$m" "$url_csv")"
   while IFS= read -r url; do
     [[ -n "$url" ]] || continue
     local ctx
@@ -332,7 +311,7 @@ emit_or_brain() {  # $1=or-slug  $2=in_pm  $3=out_pm
 emit_brain() {  # $1=local-model  $2=url_csv  $3=or-slug  $4=or_in_pm  $5=or_out_pm
   if [[ -n "$2" ]]; then
     emit_vllm_chat "$1" "$2"
-  elif has_openrouter; then
+  elif has_openrouter && [[ -n "$3" ]]; then
     # Exclusive with emit_or_fallback (same model_name)
     emit_or_brain "$3" "$4" "$5"
   fi
@@ -356,18 +335,24 @@ fi
 SECTION=$(
   echo "  ${MARKER_START}"
   # --- local (vLLM), or the OpenRouter slug where nothing is deployed ---
-  emit_brain "qwen3.8-27b"   "$(env_get VLLM_QWEN27B_URL)"    "qwen/qwen3.8-27b" "$(or_price qwen/qwen3.8-27b in)" "$(or_price qwen/qwen3.8-27b out)"
-  emit_brain "qwen3.8-flash" "$(env_get VLLM_QWENFLASH_URL)" "qwen/qwen3.8-flash" "$(or_price qwen/qwen3.8-flash in)" "$(or_price qwen/qwen3.8-flash out)"
-  emit_brain "qwen3-coder-next" "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next" "$(or_price qwen/qwen3-coder-next in)" "$(or_price qwen/qwen3-coder-next out)"
-  # Retrieval: local when placed; the OpenAI catalogue below is the fallback
-  emit_vllm_embed "bge-m3" "$(env_get VLLM_BGEM3_URL)"
-  emit_vllm_rerank "bge-reranker-v2-m3" "$(env_get VLLM_RERANK_URL)"
-  # STT fallback whenever no local whisper answers
-  stt="${STT_OR_MODEL:-mistralai/voxtral-small-24b-2507}"
-  vllm_any_url_alive "$(env_get WHISPER_URLS)" || emit_or_stt "$stt" "$(or_price "$stt" in)" "$(or_price "$stt" out)"
-  # --- commercial (OpenRouter), plus the OpenAI embedding fallback ---
+  for m in "${CATALOG_IDS[@]}"; do
+    [[ "${CATALOG_API[$m]}" == chat ]] || continue
+    or_slug="${CATALOG_OR[$m]}"
+    emit_brain "$m" "${LOCAL_URLS[$m]:-}" "$or_slug" \
+      "$([[ -n "$or_slug" ]] && or_price "$or_slug" in)" "$([[ -n "$or_slug" ]] && or_price "$or_slug" out)"
+  done
+  # Served by a vLLM in VLLM_ENDPOINTS, not in the catalogue
+  for m in "${LOCAL_IDS[@]}"; do
+    [[ -z "${CATALOG_API[$m]:-}" ]] && emit_vllm_chat "$m" "${LOCAL_URLS[$m]}"
+  done
+  # Retrieval: local only, no external fallback
+  for m in "${LOCAL_IDS[@]}"; do
+    case "$(local_api "$m")" in
+      embedding|rerank) emit_vllm_pooling "$m" "${LOCAL_URLS[$m]}" "$(local_api "$m")" ;;
+    esac
+  done
+  # --- commercial (OpenRouter) ---
   for m in "${OPENAI_MODELS[@]}";        do emit_commercial_or openai "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  for m in "${OPENAI_EMBED_CATALOG[@]}"; do emit_openai_embed "$m"; done
   for m in "${ANTHROPIC_MODELS[@]}"; do emit_commercial_or anthropic "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
   for m in "${GOOGLE_MODELS[@]}";    do emit_commercial_or google    "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
   for m in "${XAI_MODELS[@]}";        do emit_commercial_or x-ai       "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
@@ -393,14 +378,17 @@ SECTION=$(
     emit_or_image "$m" "${MODEL_IMAGE_OUT_COST[$m]}" "${MODEL_IMAGE_IN_PM[$m]}"
   done
   emit_local_images "$(env_get IMAGEGEN_BACKENDS)"
+  emit_local_stt "$(env_get WHISPER_URLS)"
   # --- audio generation (speech + music), same transport ---
   for m in "${OR_AUDIO_MODELS[@]}"; do
     emit_or_audio "$m" "${MODEL_AUDIO_IN_PM[$m]}" "${MODEL_AUDIO_OUT_PM[$m]}" "${MODEL_AUDIO_PER_CALL[$m]:-}"
   done
   # --- OpenRouter twins of the deployed local models (fallback targets, hidden) ---
-  emit_or_fallback "$(env_get VLLM_QWEN27B_URL)"  "qwen/qwen3.8-27b" "$(or_price qwen/qwen3.8-27b in)" "$(or_price qwen/qwen3.8-27b out)"
-  emit_or_fallback "$(env_get VLLM_QWENFLASH_URL)" "qwen/qwen3.8-flash" "$(or_price qwen/qwen3.8-flash in)" "$(or_price qwen/qwen3.8-flash out)"
-  emit_or_fallback "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next" "$(or_price qwen/qwen3-coder-next in)" "$(or_price qwen/qwen3-coder-next out)"
+  for m in "${CATALOG_IDS[@]}"; do
+    or_slug="${CATALOG_OR[$m]}"
+    [[ "${CATALOG_API[$m]}" == chat && -n "$or_slug" ]] || continue
+    emit_or_fallback "${LOCAL_URLS[$m]:-}" "$or_slug" "$(or_price "$or_slug" in)" "$(or_price "$or_slug" out)"
+  done
   echo "  ${MARKER_END}"
 )
 
@@ -414,9 +402,10 @@ fb_line() {  # $1=local-model  $2=url_csv  $3=or-slug
 FALLBACKS=$(
   echo "  ${FB_START}"
   echo "  fallbacks:"
-  fb_line "qwen3.8-27b"   "$(env_get VLLM_QWEN27B_URL)"  "qwen/qwen3.8-27b"
-  fb_line "qwen3.8-flash" "$(env_get VLLM_QWENFLASH_URL)" "qwen/qwen3.8-flash"
-  fb_line "qwen3-coder-next" "$(env_get VLLM_CODERNEXT_URL)" "qwen/qwen3-coder-next"
+  for m in "${CATALOG_IDS[@]}"; do
+    [[ "${CATALOG_API[$m]}" == chat && -n "${CATALOG_OR[$m]}" ]] || continue
+    fb_line "$m" "${LOCAL_URLS[$m]:-}" "${CATALOG_OR[$m]}"
+  done
   echo "  ${FB_END}"
 )
 

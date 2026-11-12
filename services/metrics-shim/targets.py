@@ -6,15 +6,9 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-#: Model endpoint settings scanned for vLLM servers; each a comma-separated URL list.
-VLLM_KEYS = (
-    "VLLM_QWEN27B_URL",
-    "VLLM_QWENFLASH_URL",
-    "VLLM_CODERNEXT_URL",
-    "VLLM_BGEM3_URL",
-    "VLLM_RERANK_URL",
-    "WHISPER_URLS",
-)
+#: Model endpoint settings scanned for vLLM servers, each a comma-separated list:
+#: VLLM_ENDPOINTS and VLLM_PLACED (``url`` or ``id=url``) and WHISPER_URLS.
+_VLLM_KEY = re.compile(r"^(VLLM_ENDPOINTS|VLLM_PLACED|WHISPER_URLS)$")
 GPU_EXPORTER_PORT = 9835
 #: vllm-omni's request histogram for one picture.
 IMAGE_HANDLER = "/v1/images/generations"
@@ -58,7 +52,7 @@ def _images(raw: str) -> list[tuple[str, str]]:
 def discover(env: dict[str, str]) -> list[Target]:
     """Every model server and GPU node the settings name, once each.
 
-    GPU nodes: hosts of the model endpoints plus NODES_VLLM (`user@host`), each
+    GPU nodes: hosts of the model endpoints plus VLLM_NODES (`user@host`), each
     with its gpu-exporter.
     """
     found: dict[str, Target] = {}
@@ -69,16 +63,16 @@ def discover(env: dict[str, str]) -> list[Target]:
         if target.kind != "gpu" and target.address not in hosts:
             hosts.append(target.address)
 
-    for key in VLLM_KEYS:
-        for raw in env.get(key, "").split(","):
-            if parsed := _base(raw):
+    for key in sorted(k for k in env if _VLLM_KEY.match(k)):
+        for raw in env[key].split(","):
+            if parsed := _base(raw.rpartition("=")[2]):
                 url, host, port = parsed
                 add(Target(f"vllm-{_slug(host)}-{port}", "vllm", url, host))
     for model, raw in _images(env.get("IMAGEGEN_BACKENDS", "")):
         if parsed := _base(raw):
             url, host, port = parsed
-            add(Target(f"image-{_slug(host)}-{port}", "image", url, host, model))
-    for node in env.get("NODES_VLLM", "").split(","):
+            add(Target(f"image-{_slug(host)}-{port}", "image", url, host, f"local/{model.removeprefix('local/')}"))
+    for node in env.get("VLLM_NODES", "").split(","):
         host = node.strip().rpartition("@")[2]
         if host and host not in hosts:
             hosts.append(host)

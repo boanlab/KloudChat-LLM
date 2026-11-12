@@ -23,6 +23,8 @@ def test_every_model_in_the_catalogue_has_a_service_here(services: dict) -> None
     from scheduler import registry
 
     for spec in registry.load(MODELS_YAML):
+        if spec.manual:
+            continue
         assert spec.service in services, (
             f"{spec.id} is in the catalogue but {spec.service} is not a service "
             "in docker-compose.vllm.yml — the scheduler would place it and the "

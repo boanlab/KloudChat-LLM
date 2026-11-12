@@ -3,8 +3,9 @@
     python3 -m scheduler inventory          probe results per node
     python3 -m scheduler plan               compute placement, change nothing
     python3 -m scheduler apply [-y]         apply the computed placement
+    python3 -m scheduler catalog            models.yaml as TSV, for the shell scripts
 
-Nodes and models come from ``NODES_VLLM`` and ``VLLM_MODELS`` in .env, and can be
+Nodes and models come from ``VLLM_NODES`` and ``VLLM_MODELS`` in .env, and can be
 overridden in place with ``--hosts`` and ``--models``.
 """
 
@@ -16,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from scheduler import applier, inventory, model_metadata, planner, registry
+from scheduler import applier, endpoints, inventory, model_metadata, planner, registry
 from scheduler.types import GB, ModelMetadata, NodeSpec
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -52,8 +53,8 @@ def _remote_workdir() -> str:
 
 
 def _resolve_hosts(arg: Optional[str]) -> dict[str, str]:
-    """Node id to SSH target from ``--hosts`` or NODES_VLLM; exits on a repeated target."""
-    hosts = _csv(arg) if arg else _csv(_env("NODES_VLLM"))
+    """Node id to SSH target from ``--hosts`` or VLLM_NODES; exits on a repeated target."""
+    hosts = _csv(arg) if arg else _csv(_env("VLLM_NODES"))
     try:
         return inventory.node_ids_for_hosts(hosts)
     except ValueError as exc:
@@ -61,13 +62,14 @@ def _resolve_hosts(arg: Optional[str]) -> dict[str, str]:
 
 
 def _head_node(hosts: dict[str, str]) -> Optional[str]:
-    """Head node id: the first target in NODES_VLLM. None for a single-node cluster."""
+    """Head node id: the first target in VLLM_NODES. None for a single-node cluster."""
     return next(iter(hosts), None) if len(hosts) > 1 else None
 
 
 def _load_specs(arg: Optional[str]) -> list[registry.ModelSpec]:
     wanted = _csv(arg) if arg else _csv(_env("VLLM_MODELS"))
-    return registry.load(MODELS_YAML, only=wanted or None)
+    specs = registry.load(MODELS_YAML, only=wanted or None)
+    return [s for s in specs if not s.manual]
 
 
 def _bind(specs, probes, models_root: str):
@@ -105,7 +107,7 @@ def _bind(specs, probes, models_root: str):
 
 def _probe(hosts: dict[str, str], specs) -> list:
     if not hosts:
-        print("NODES_VLLM is empty — there is nothing to probe", file=sys.stderr)
+        print("VLLM_NODES is empty — there is nothing to probe", file=sys.stderr)
         return []
     return inventory.probe_cluster(
         hosts,
@@ -155,14 +157,20 @@ def _build_plan(args):
     bound, failed = _bind(specs, probes, _env("VLLM_MODELS_ROOT", "/var/lib/vllm/models"))
     nodes = [p.spec for p in probes if p.alive]
     head = _head_node(hosts)
+    # Served elsewhere already (VLLM_ENDPOINTS); transcription is hand-run through WHISPER_URLS
+    external = {
+        mid: n for mid, n in endpoints.count_instances(_env("VLLM_ENDPOINTS")).items()
+        if any(s.id == mid and s.runner != "transcription" for s in specs)
+    }
     result = planner.plan(
         bound, nodes,
-        replicas=args.replicas,
         deployed=_deployed(probes, bound),
         head=head,
+        external=external,
     )
     for model_id, reason in failed:
-        result.delegations.append(planner.Delegation(model_id, reason))
+        if not external.get(model_id):
+            result.delegations.append(planner.Delegation(model_id, reason))
     return result, probes, bound, head
 
 
@@ -209,8 +217,6 @@ def cmd_apply(args) -> int:
         nodes=[p.spec for p in probes if p.alive],
         layout=applier.RemoteLayout(workdir=_remote_workdir()),
         local_env_path=str(ENV_FILE),
-        # Whole catalogue, so a model dropped from VLLM_MODELS has its URL cleared
-        known=registry.load(MODELS_YAML),
         # Current node options, so an unchanged plan recreates nothing
         node_env={
             p.spec.node_id: inventory.read_env(
@@ -248,9 +254,23 @@ def cmd_apply(args) -> int:
     return 0
 
 
+def cmd_catalog(args) -> int:
+    """One line per model: id, api, env_prefix, openrouter, timeout,
+    max_inflight, presence_penalty; "-" for an empty field."""
+    del args
+    for s in registry.load(MODELS_YAML):
+        fields = (
+            s.id, s.api, s.env_prefix, s.openrouter, s.timeout or "",
+            s.max_inflight, "" if s.presence_penalty is None else s.presence_penalty,
+        )
+        print("\t".join(str(f) if f != "" else "-" for f in fields))
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="scheduler", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("catalog", help="models.yaml as TSV").set_defaults(func=cmd_catalog)
 
     for name, handler, help_text in (
         ("inventory", cmd_inventory, "probe results per node"),
@@ -258,11 +278,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         ("apply", cmd_apply, "apply the computed placement"),
     ):
         p = sub.add_parser(name, help=help_text)
-        p.add_argument("--hosts", help="SSH target CSV (default: NODES_VLLM in .env)")
+        p.add_argument("--hosts", help="SSH target CSV (default: VLLM_NODES in .env)")
         p.add_argument("--models", help="model id CSV (default: VLLM_MODELS in .env)")
-        p.add_argument("--replicas", type=int, default=None,
-                       help="cap instances per model (default: fill spare "
-                            "capacity by priority; 1 disables replication)")
         if name == "apply":
             p.add_argument("-y", "--yes", action="store_true", help="apply without confirmation")
         p.set_defaults(func=handler)

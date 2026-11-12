@@ -27,7 +27,7 @@ Set under `deep-research.environment` in `docker-compose.yml` as `LDR_*`.
 | Variable | Value |
 |---|---|
 | `LDR_LLM_PROVIDER` | `openai_endpoint` (through LiteLLM) |
-| `LDR_LLM_MODEL` | `${DEEP_RESEARCH_MODEL:-local/qwen3.8-27b}` |
+| `LDR_LLM_MODEL` | `${DEEP_RESEARCH_MODEL:-qwen3.8-27b}`, `local/` added when it has no slash |
 | `LDR_LLM_OPENAI_ENDPOINT_URL` | `${DEEP_RESEARCH_LLM_URL:-http://litellm:8000/v1}` |
 | `LDR_LLM_OPENAI_ENDPOINT_API_KEY` | `${LITELLM_MASTER_KEY}` |
 | `LDR_SEARCH_TOOL` | `searxng`, with `LDR_SEARCH_ENGINE_WEB_SEARXNG_DEFAULT_PARAMS_INSTANCE_URL=http://search-shim:8080` |

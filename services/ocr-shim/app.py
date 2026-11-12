@@ -9,7 +9,7 @@ nothing is downloaded at run time and nothing leaves the host.
                   → {width, height, lines:[{text, conf, box}], tables:[box],
                      confidence, text, pages, image?}
     POST /render  same body and page → the page as JPEG (for a vision model)
-    GET  /health
+    GET  /health  503 while a page has run past STUCK_SEC; past EXIT_SEC the process exits
 
 A box is `[x0, y0, x1, y1]` in pixels of the rendered page; `dpi` says how the
 page was rendered, so a caller can map boxes back to PDF points (×72/dpi).
@@ -29,7 +29,7 @@ from typing import Any
 
 import layout
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 LOG = logging.getLogger("ocr-shim")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
@@ -49,6 +49,13 @@ IMAGE_SIDE = int(os.getenv("OCR_IMAGE_SIDE", "1600"))
 CONCURRENCY = max(1, int(os.getenv("OCR_CONCURRENCY", "1")))
 THREADS = int(os.getenv("OCR_THREADS", "4"))
 TIMEOUT_SEC = float(os.getenv("OCR_TIMEOUT_SEC", "120"))
+#: Wait for a free page slot before a request is refused with 503.
+QUEUE_WAIT_SEC = TIMEOUT_SEC
+#: A page running this long has hung its worker thread; /health then reports it.
+STUCK_SEC = 3 * TIMEOUT_SEC
+#: A hung page this old ends the process: the thread cannot be stopped, and
+#: restart: always starts a fresh one (Docker does not restart on unhealthy).
+EXIT_SEC = 5 * TIMEOUT_SEC
 #: Requests let in at once, running or waiting; past that a request is refused with 503
 #: before its body is read, so a queue of large documents never sits in memory.
 ADMIT = CONCURRENCY + max(0, int(os.getenv("OCR_QUEUE", "4")))
@@ -59,6 +66,8 @@ ENGINE_NAME = "rapidocr/PP-OCRv5 korean"
 
 _GATE = asyncio.Semaphore(CONCURRENCY)
 _admitted = 0
+#: Start times (monotonic) of the pages in worker threads, by job.
+_running: dict[int, float] = {}
 _ENGINE: Any = None
 
 
@@ -324,13 +333,24 @@ def read_page(data: bytes, page: int, dpi: int, want_image: bool) -> dict:
     return body
 
 
+def _finished(job: int) -> None:
+    _running.pop(job, None)
+    _GATE.release()
+
+
 async def _run(fn, *args):
-    """`fn` in a worker thread, at most CONCURRENCY at a time. A page that runs past the time
+    """`fn` in a worker thread, at most CONCURRENCY at a time. A request that waits past
+    QUEUE_WAIT_SEC for a slot is answered with 503. A page that runs past the time
     limit is answered with 504, but its slot stays taken until the thread really ends: a thread
     cannot be stopped, and releasing early would let timed-out work pile up past the limit."""
-    await _GATE.acquire()
+    try:
+        await asyncio.wait_for(_GATE.acquire(), timeout=QUEUE_WAIT_SEC)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=503, detail="busy") from exc
     work = asyncio.ensure_future(asyncio.to_thread(fn, *args))
-    work.add_done_callback(lambda _: _GATE.release())
+    job = id(work)
+    _running[job] = time.monotonic()
+    work.add_done_callback(lambda _: _finished(job))
     try:
         return await asyncio.wait_for(asyncio.shield(work), timeout=TIMEOUT_SEC)
     except asyncio.TimeoutError as exc:
@@ -358,9 +378,29 @@ def _leave() -> None:
     _admitted = max(0, _admitted - 1)
 
 
+def oldest_page_sec() -> float:
+    """Seconds the longest-running page has been in its worker thread; 0 when none runs."""
+    if not _running:
+        return 0.0
+    return time.monotonic() - min(_running.values())
+
+
 @app.get("/health")
-async def health() -> dict:
-    return {"status": "ok", "engine": ENGINE_NAME}
+async def health() -> JSONResponse:
+    oldest = oldest_page_sec()
+    body = {"status": "ok", "engine": ENGINE_NAME, "running": len(_running),
+            "oldestPageSec": round(oldest, 1)}
+    if oldest > EXIT_SEC:
+        LOG.error("a page has hung its worker for %.0fs — exiting for a restart", oldest)
+        asyncio.get_running_loop().call_later(0.5, _exit)
+    if oldest > STUCK_SEC:
+        body["status"] = "stuck"
+        return JSONResponse(body, status_code=503)
+    return JSONResponse(body)
+
+
+def _exit() -> None:
+    os._exit(1)
 
 
 @app.post("/ocr")

@@ -1,34 +1,35 @@
 """OpenAI-compatible transcription front end over the GPU nodes' vllm-whisper backends.
 
 `/v1/audio/transcriptions` goes to the healthy backend with the fewest in-flight
-requests; with none healthy, to the first. `model` is rewritten to MODEL_NAME
-(vLLM 404s other names; clients default to `whisper-1`). No OpenRouter fallback:
-with WHISPER_URLS empty the shim is not deployed and LiteLLM registers
-OpenRouter STT instead.
+requests; with none healthy, to each in configured order. A backend that refuses
+the connection is passed over for the next. Uploads are capped at
+WHISPER_MAX_UPLOAD_MB (413) and at most WHISPER_MAX_CONCURRENT run at once (503).
+`model` is rewritten to MODEL_NAME (vLLM 404s other names; clients default to
+`whisper-1`). No OpenRouter fallback: audio never leaves the network, so with no
+backend (WHISPER_URLS, or whisper-large-v3 in VLLM_PLACED) the shim is not
+deployed and dictation is off.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-import time
-from collections import defaultdict
 from typing import Any
 
 import httpx
+from backends import Backends, Unreachable, parse_urls
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
+from upload import Slots, TooLarge, rebuild_form
 
 LOG = logging.getLogger("whisper-shim")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 
 
 def _parse_backends() -> list[str]:
-    """Backend URLs from WHISPER_URLS (comma-separated)."""
-    raw = os.getenv("WHISPER_URLS", "")
-    urls = [u.strip().rstrip("/") for u in raw.split(",") if u.strip()]
+    """Backend URLs from WHISPER_URLS (hand-run) and VLLM_PLACED (scheduler)."""
+    urls = parse_urls(os.getenv("WHISPER_URLS", ""), os.getenv("VLLM_PLACED", ""))
     if not urls:
-        raise RuntimeError("WHISPER_URLS is empty")
+        raise RuntimeError("no transcription backend in WHISPER_URLS or VLLM_PLACED")
     return urls
 
 
@@ -38,134 +39,79 @@ MODEL_NAME: str = os.getenv("WHISPER_MODEL_NAME", "local/whisper-large-v3")
 HEALTH_PROBE_TIMEOUT_SEC = float(os.getenv("HEALTH_PROBE_TIMEOUT_SEC", "2.0"))
 HEALTH_CACHE_TTL_SEC    = float(os.getenv("HEALTH_CACHE_TTL_SEC", "10"))
 TRANSCRIBE_TIMEOUT_SEC  = float(os.getenv("TRANSCRIBE_TIMEOUT_SEC", "900"))
-
-# In-flight count per backend; one shim replica per stack
-_INFLIGHT: dict[str, int] = defaultdict(int)
-_INFLIGHT_LOCK = asyncio.Lock()
-
-# Backend health, refreshed every HEALTH_CACHE_TTL_SEC
-_HEALTH: dict[str, bool] = {}
-_HEALTH_AT: float = 0.0
-_HEALTH_LOCK = asyncio.Lock()
+#: Upload ceiling, the same figure the GPU nodes' vllm-whisper accepts
+MAX_UPLOAD_BYTES = int(float(os.getenv("WHISPER_MAX_UPLOAD_MB", "100")) * 1024 * 1024)
+#: Multipart framing allowed on top of the audio in Content-Length
+FORM_OVERHEAD_BYTES = 64 * 1024
+#: Transcriptions held at once (each holds its upload in memory); past it, 503
+MAX_CONCURRENT = int(os.getenv("WHISPER_MAX_CONCURRENT", "8"))
 
 LOG.info("Whisper backends: %s", ", ".join(BACKENDS))
 
 app = FastAPI(title="KloudChat Whisper Shim")
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Backend selection
-# ──────────────────────────────────────────────────────────────────────
-
-async def _probe_health(client: httpx.AsyncClient, backend: str) -> bool:
+async def _probe_health(backend: str) -> bool:
     try:
-        r = await client.get(f"{backend}/health", timeout=HEALTH_PROBE_TIMEOUT_SEC)
+        async with httpx.AsyncClient(timeout=HEALTH_PROBE_TIMEOUT_SEC) as client:
+            r = await client.get(f"{backend}/health")
         return r.status_code < 400
     except httpx.HTTPError:
         return False
 
 
-async def _refresh_health(client: httpx.AsyncClient) -> None:
-    """Refresh the health cache if stale; concurrent callers share one probe round."""
-    global _HEALTH_AT
-    async with _HEALTH_LOCK:
-        fresh = _HEALTH and (time.monotonic() < _HEALTH_AT + HEALTH_CACHE_TTL_SEC)
-        if fresh:
-            return
-        results = await asyncio.gather(*(_probe_health(client, b) for b in BACKENDS))
-        _HEALTH.clear()
-        for b, ok in zip(BACKENDS, results, strict=True):
-            _HEALTH[b] = ok
-        _HEALTH_AT = time.monotonic()
-        LOG.info("Whisper health: %s",
-                 ", ".join(f"{b}={'up' if ok else 'down'}" for b, ok in _HEALTH.items()))
+backends = Backends(BACKENDS, _probe_health, ttl=HEALTH_CACHE_TTL_SEC)
+slots = Slots(MAX_CONCURRENT)
 
-
-async def _pick_backend(client: httpx.AsyncClient) -> str:
-    """Healthy backend with the fewest in-flight requests."""
-    if len(BACKENDS) == 1:
-        return BACKENDS[0]
-
-    await _refresh_health(client)
-    healthy = [b for b in BACKENDS if _HEALTH.get(b)]
-    if not healthy:
-        LOG.warning("All whisper backends unhealthy; forwarding to %s anyway", BACKENDS[0])
-        return BACKENDS[0]
-    if len(healthy) == 1:
-        return healthy[0]
-
-    healthy.sort(key=lambda b: _INFLIGHT[b])
-    chosen = healthy[0]
-    LOG.info(
-        "Routing to %s — candidates: %s",
-        chosen,
-        ", ".join(f"{b}[inflight={_INFLIGHT[b]}]" for b in healthy),
-    )
-    return chosen
-
-
-async def _inc_inflight(backend: str) -> None:
-    async with _INFLIGHT_LOCK:
-        _INFLIGHT[backend] += 1
-
-
-async def _dec_inflight(backend: str) -> None:
-    async with _INFLIGHT_LOCK:
-        _INFLIGHT[backend] = max(0, _INFLIGHT[backend] - 1)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Routes
-# ──────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    async with httpx.AsyncClient() as client:
-        await _refresh_health(client)
+    await backends.refresh()
     return {
-        "status": "ok" if any(_HEALTH.values()) else "degraded",
-        "backends": [{"url": b, "up": _HEALTH.get(b, False), "inflight": _INFLIGHT[b]} for b in BACKENDS],
+        "status": "ok" if any(backends.health.values()) else "degraded",
+        "backends": [{"url": b, "up": backends.health.get(b, False),
+                      "inflight": backends.inflight[b]} for b in BACKENDS],
     }
-
-
-async def _rebuild_form(request: Request) -> tuple[dict, dict]:
-    """(files, fields) for httpx, with `model` replaced by MODEL_NAME."""
-    form = await request.form()
-    files: dict[str, tuple] = {}
-    fields: dict[str, str] = {}
-    for key, value in form.multi_items():
-        if hasattr(value, "filename"):
-            files[key] = (value.filename, await value.read(),
-                          value.content_type or "application/octet-stream")
-        else:
-            fields[key] = str(value)
-    fields["model"] = MODEL_NAME
-    return files, fields
 
 
 @app.post("/v1/audio/transcriptions")
 async def transcribe(request: Request) -> Response:
-    """Forward the upload to the least-busy backend and mirror its response."""
+    """Forward the upload to the least-busy reachable backend and mirror its response."""
+    length = request.headers.get("content-length", "")
+    if length.isdigit() and int(length) > MAX_UPLOAD_BYTES + FORM_OVERHEAD_BYTES:
+        raise HTTPException(413, f"upload exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+    if not slots.take():
+        raise HTTPException(503, "too many transcriptions in progress",
+                            headers={"Retry-After": "5"})
     try:
-        files, fields = await _rebuild_form(request)
+        return await _transcribe(request)
+    finally:
+        slots.give()
+
+
+async def _transcribe(request: Request) -> Response:
+    try:
+        files, fields = await rebuild_form(await request.form(), MODEL_NAME, MAX_UPLOAD_BYTES)
+    except TooLarge as e:
+        raise HTTPException(413, str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f"could not read the upload: {e}") from e
     if not files:
         raise HTTPException(400, "no audio file in the request")
 
     async with httpx.AsyncClient(timeout=TRANSCRIBE_TIMEOUT_SEC) as client:
-        backend = await _pick_backend(client)
-        await _inc_inflight(backend)
+        async def post(backend: str) -> httpx.Response:
+            return await client.post(f"{backend}/v1/audio/transcriptions",
+                                     files=files, data=fields)
+
         try:
-            r = await client.post(
-                f"{backend}/v1/audio/transcriptions",
-                files=files, data=fields,
-            )
+            backend, r = await backends.send(
+                post, unreachable=(httpx.ConnectError, httpx.ConnectTimeout))
+        except Unreachable as e:
+            raise HTTPException(502, f"whisper backends unreachable: {e}") from e
         except httpx.HTTPError as e:
-            LOG.warning("whisper backend %s request failed: %s", backend, e)
-            raise HTTPException(502, f"whisper backend {backend} unreachable: {e}") from e
-        finally:
-            await _dec_inflight(backend)
+            LOG.warning("whisper backend request failed: %s", e)
+            raise HTTPException(502, f"whisper backend failed: {e}") from e
 
     # Backend status and headers (Content-Type varies with response_format), minus hop-by-hop
     excluded = {"content-length", "transfer-encoding", "connection"}

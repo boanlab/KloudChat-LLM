@@ -29,11 +29,11 @@ one address in its admin screen. No backend address is compiled into the UI.
 `/tools/*` requires the shared key `TOOLS_GATEWAY_KEY` in an `X-Tools-Key`
 header (KloudChat's API sends it); without it the gateway answers 401. **The
 gateway port must still only be open inside a private network**: the code
-execution endpoint sits behind it. Each
-backing store (the two databases, MinIO, redis, valkey) is on an internal
-network shared only with the service that owns it. Internal service keys (code
-execution, document fetching) are injected by the gateway; the UI never learns
-them. Only `/litellm/*` and `/v1/*` pass the caller's key through.
+execution endpoint sits behind it. Each backing store (the two databases,
+MinIO, redis, valkey) is on an internal network shared only with the service
+that owns it. Internal service keys (code execution, document fetching) are
+injected by the gateway; the UI never learns them. Only `/litellm/*` and
+`/v1/*` pass the caller's key through.
 
 ## Quick start
 
@@ -59,27 +59,31 @@ Print them again at any time:
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | optional | Hugging Face gated repositories, for weight downloads |
-| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. The first is the head node (retrieval, transcription); the rest are the pool (Flash-Next, the coder) |
-| `VLLM_MODELS` | model id CSV | What to deploy. Defined in `scheduler/models.yaml` |
+| `VLLM_NODES` | `user@host,...` | GPU node SSH targets. The first is the head node (retrieval, transcription); the rest are the pool (Flash-Next, the coder) |
+| `VLLM_MODELS` | model id CSV | What the scheduler deploys, from `scheduler/models.yaml` |
+| `VLLM_ENDPOINTS` | CSV, optional | vLLM servers you run yourself: `http://host:port` (the generator asks what it serves) or `id=http://host:port`. Never written by the scheduler, which counts each entry as an instance of its model |
 
-`VLLM_*_URL` is written by the placement step inside `setup.sh all`. To manage
-those by hand, run `KLOUDCHAT_SKIP_SCHEDULER=1 ./scripts/setup.sh all`.
+`VLLM_PLACED` is written by the placement step inside `setup.sh all`; with
+`KLOUDCHAT_SKIP_SCHEDULER=1 ./scripts/setup.sh all` the scheduler writes
+nothing. Hand-run transcription servers go in `WHISPER_URLS` and self-hosted
+image models in `IMAGEGEN_BACKENDS`
+([env reference](docs/env-reference.md#4-placement-results-written-by-the-scheduler)).
 
 At least one of an OpenRouter key or a vLLM node is required.
 
 ### Preparing a GPU node
 
 ```bash
-./scripts/install-vllm.sh          # vLLM image and GPU runtime check
-./scripts/download-vllm-models.sh  # 27B and whisper, if this card can serve them
+./scripts/install-vllm.sh          # vLLM image, GPU runtime check, gpu-exporter
+./scripts/download-vllm-models.sh  # weights this card can serve
 ./scripts/download-vllm-models.sh bge-m3 bge-reranker-v2-m3  # head node
 ./scripts/download-vllm-models.sh qwen3.8-flash-next-nvfp4   # pool node
 ./scripts/manage-vllm-omni.sh download z-image-turbo  # optional: a strict-local image model
 ```
 
-Every model a GPU node serves, transcription (`whisper-large-v3`) included, is
-a vLLM container. With `NODES_VLLM` filled in, `setup.sh all` runs the
-installer on each node over SSH; model downloads run on the node itself.
+Every model a GPU node serves, transcription included, is a vLLM container.
+With `VLLM_NODES` filled in, `setup.sh all` runs the installer on each node
+over SSH; model downloads run on the node itself.
 
 The downloader inspects the card first: weights that need more memory than the
 card has, or a card outside the supported set, are refused with the reason.
@@ -142,16 +146,17 @@ script prints its usage when run without arguments.
 | Linux arm64, GB10 | Local GPU with OpenRouter fallback |
 | Any other card, AMD / ROCm, Apple, macOS, Windows | Not supported. OpenRouter only |
 
-The local lineup is `qwen3.8-27b` (chat, vision, coding, deep research),
-`qwen3.8-flash` (quality and judging, a GB10 or RTX PRO 6000 node to
-itself), `bge-m3` and
-`bge-reranker-v2-m3` (retrieval) and `whisper-large-v3` (transcription);
-`qwen3-coder-next` (coding) is in the catalogue but not deployed by default.
-See [docs/models.md](docs/models.md). Local serving is NVIDIA-only. Supported
-cards are GB10, RTX 5090, RTX PRO 5000 and RTX PRO 6000; the download and
-manage scripts refuse anything else and the scheduler places nothing there.
-32 GiB usable is the floor. Where a model does not fit, the placement step
-says so and delegates to OpenRouter.
+The default local lineup is `qwen3.8-27b` (chat, vision, coding, deep
+research), `qwen3.8-flash` (quality and judging, a GB10 or RTX PRO 6000 node to
+itself), `bge-m3` and `bge-reranker-v2-m3` (retrieval) and `whisper-large-v3`
+(transcription); `qwen3-coder-next` (coding) is in the catalogue but not
+deployed by default. See [docs/models.md](docs/models.md). Local serving is
+NVIDIA-only. Supported cards are GB10, RTX 5090, RTX PRO 5000 and RTX PRO 6000;
+the download and manage scripts refuse anything else and the scheduler places
+nothing there. 32 GiB usable is the floor. Where a chat model does not fit, the
+placement step says so and delegates it to OpenRouter; embedding, reranking,
+transcription and self-hosted image models have no external fallback (commercial
+image models are separate, explicitly chosen OpenRouter entries).
 
 ## Documentation
 

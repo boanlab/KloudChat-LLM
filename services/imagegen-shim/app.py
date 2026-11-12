@@ -7,12 +7,13 @@ with the image in `content` and takes the size as `WIDTHxHEIGHT`, so this shim
 calls its `/v1/images/generations` instead and reshapes the reply.
 
 IMAGEGEN_BACKENDS is comma-separated `name=url` pairs, a name repeated once per
-node: `local/z-image-turbo=http://gpu-1:8091,local/z-image-turbo=http://gpu-2:8091,
-local/qwen-image-2512=http://gpu-1:8092`.
+node: `z-image-turbo=http://gpu-1:8091,z-image-turbo=http://gpu-2:8091,
+qwen-image-2512=http://gpu-1:8092`.
 A request goes to the backend with the fewest pictures in flight (pool.py).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -21,7 +22,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from pool import Pool
-from shape import chat_reply, generation_body, parse_backends
+from shape import bare, chat_reply, generation_body, parse_backends
 
 LOG = logging.getLogger("imagegen-shim")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
@@ -37,18 +38,21 @@ LOG.info("Image backends: %s",
 app = FastAPI(title="KloudChat Image Shim")
 
 
+async def _up(client: httpx.AsyncClient, url: str) -> bool:
+    try:
+        return (await client.get(f"{url}/health")).status_code < 400
+    except httpx.HTTPError:
+        return False
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
+    """Every backend probed at once, so the answer takes one probe timeout at most."""
+    pairs = [(name, url) for name, urls in BACKENDS.items() for url in urls]
     async with httpx.AsyncClient(timeout=HEALTH_PROBE_TIMEOUT_SEC) as client:
-        rows = []
-        for name, urls in BACKENDS.items():
-            for url in urls:
-                try:
-                    up = (await client.get(f"{url}/health")).status_code < 400
-                except httpx.HTTPError:
-                    up = False
-                rows.append({"model": name, "url": url, "up": up,
-                             "inFlight": POOLS[name].busy[url]})
+        ups = await asyncio.gather(*(_up(client, url) for _, url in pairs))
+    rows = [{"model": name, "url": url, "up": up, "inFlight": POOLS[name].busy[url]}
+            for (name, url), up in zip(pairs, ups, strict=True)]
     return {"status": "ok" if any(r["up"] for r in rows) else "degraded", "backends": rows}
 
 
@@ -60,7 +64,7 @@ async def models() -> dict[str, Any]:
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request) -> dict[str, Any]:
     body = await request.json()
-    model = str(body.get("model") or "")
+    model = bare(str(body.get("model") or ""))
     pool = POOLS.get(model)
     if pool is None:
         raise HTTPException(404, f"unknown image model {model!r}")

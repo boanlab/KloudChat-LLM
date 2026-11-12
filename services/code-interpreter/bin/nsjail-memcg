@@ -1,5 +1,6 @@
 #!/bin/sh
-# nsjail with a per-sandbox cgroup v2 memory limit of MAX_MEMORY_MB, no swap.
+# nsjail with per-sandbox cgroup v2 limits: MAX_MEMORY_MB memory (no swap),
+# MAX_SANDBOX_PIDS processes, MAX_SANDBOX_CPU_MS CPU milliseconds per second.
 # Set as NSJAIL_BINARY; the service's own `--rlimit_as hard` is unlimited in a
 # container. Needs cgroup-init at start.
 set -eu
@@ -7,4 +8,6 @@ exec /usr/local/bin/nsjail \
   --use_cgroupv2 --cgroupv2_mount /sys/fs/cgroup \
   --cgroup_mem_max "$(( ${MAX_MEMORY_MB:?MAX_MEMORY_MB is required} * 1024 * 1024 ))" \
   --cgroup_mem_swap_max 0 \
+  --cgroup_pids_max "${MAX_SANDBOX_PIDS:-256}" \
+  --cgroup_cpu_ms_per_sec "${MAX_SANDBOX_CPU_MS:-1000}" \
   "$@"

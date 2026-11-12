@@ -1,7 +1,7 @@
 # scheduler
 
-Places the models in `VLLM_MODELS` across the GPU nodes in `NODES_VLLM`, writes
-the result into each node's `.env` and the orchestrator's `VLLM_*_URL`, and
+Places the models in `VLLM_MODELS` across the GPU nodes in `VLLM_NODES`, writes
+the result into each node's `.env` and the orchestrator's `VLLM_PLACED`, and
 starts, stops or recreates the compose services accordingly.
 
 ```bash
@@ -11,21 +11,31 @@ python3 -m scheduler apply         # apply it, after confirmation
 python3 -m scheduler apply -y      # apply without confirmation
 ```
 
-`setup.sh all` runs `apply -y` when `NODES_VLLM` is set, unless
+`setup.sh all` runs `apply -y` when `VLLM_NODES` is set, unless
 `KLOUDCHAT_SKIP_SCHEDULER=1`; `setup.sh scheduler <subcommand>` forwards to the
 module. Every subcommand accepts `--hosts` and `--models` (CSV) to override
-`.env`, and `--replicas N` to cap instances per model (`1` disables
-replication).
+`.env`. Per model, [`models.yaml`](models.yaml) sets `replicas:` (instance cap; `1`
+disables replication), `placement:` (see Node roles) and `manual: true` (hand-run,
+never placed).
 
 ## Input
 
 ```bash
 # .env
-NODES_VLLM=ops@gpu-1,ops@gpu-2       # SSH targets, head node first
+VLLM_NODES=ops@gpu-1,ops@gpu-2       # SSH targets, head node first
 VLLM_MODELS=qwen3.8-27b,qwen3.8-flash,bge-m3
 VLLM_MODELS_ROOT=/var/lib/vllm/models
 KLOUDCHAT_REMOTE_DIR=KloudChat-LLM   # compose workdir on each node (env or .env)
+VLLM_ENDPOINTS=http://gpu-9:8001     # servers you run yourself; counted as instances
+WHISPER_URLS=http://gpu-9:9000       # hand-run transcription backends; never written
+VLLM_PLACED=...                      # written by `apply`; do not edit
 ```
+
+`VLLM_ENDPOINTS` entries (`id=url`, or a bare URL asked at `/v1/models`) count as
+instances of their model, transcription excepted (hand-run, it goes through
+`WHISPER_URLS`). A model with one is not placed for coverage and is not
+delegated, and replication and its `replicas` cap see the total. `apply` stops a
+scheduler-placed instance of such a model.
 
 Models are defined in [`models.yaml`](models.yaml). Undeclared fields come from
 the checkpoint's `config.json` and its size on disk, read over SSH from the
@@ -65,25 +75,29 @@ host processes) is foreign and charged to the card that holds it. `inventory`'s
 
 ## Node roles
 
-The first target in `NODES_VLLM` is the **head** node; every other target is the
+The first target in `VLLM_NODES` is the **head** node; every other target is the
 **pool**. `placement:` in models.yaml restricts a model to one of them before any
 packing:
 
 | `placement` | Nodes | Models |
 |---|---|---|
-| `head` | the head node only | embeddings, reranking, transcription |
+| `head` | the head node only | (none by default) |
+| `head-first` | the first instance on the head node, extra instances on any node | embeddings, reranking, transcription |
 | `pool` | every node but the head | Flash-Next, the coder |
 | unset | any | chat |
 
 A pool model with no pool seat is delegated to OpenRouter rather than placed on
 the head node. A single-node cluster has no pool, and `placement` is ignored.
+A `head-first` model's extra instances (replication, `replicas`) go to any node, the
+head included.
 
 ## Placement
 
 0. **Unsupported cards** — a node classified `unsupported` holds nothing; the
    plan notes it and the node drops out of every step below. With no node left,
    every model is delegated.
-1. **Coverage** — one instance of each model at its context floor, ordered by
+1. **Coverage** — one instance of each model without an external instance (see
+   Input) at its context floor, ordered by
    `priority` (highest first, ties largest first), onto the eligible node with
    the most free memory summed over its cards. Differences under 1 GiB do not
    decide; within that band the node already running the model (per
@@ -93,7 +107,8 @@ the head node. A single-node cluster has no pool, and `placement` is ignored.
    context toward the target, furthest-from-target first, until nothing grows.
 3. **Replication** — remaining capacity takes extra instances at the context
    floor, one per round to the model furthest below its `share:`
-   (`instances / share`, ties by priority), on a node not already running it;
+   (`instances / share`, ties by priority; external instances count), on a node
+   not already running it;
    then restoration runs again. Shares are weights among models competing for
    the same nodes.
 
@@ -158,10 +173,13 @@ confirmation unless `-y`. Per node it:
   drops, and recreates (`--force-recreate`) a running service only where one of
   its options changed. Containers outside the `vllm-*` prefix are never touched.
 
-In the orchestrator's `.env` it writes `{env_prefix}_URL` (a CSV of
-`http://host:port`) for every model in models.yaml, empty for models not
-placed, and `WHISPER_URLS` in place of the transcription model's `_URL`. Only
-changed keys are written. Re-applying an unchanged plan does nothing.
+In the orchestrator's `.env` it writes `VLLM_PLACED` (a CSV of
+`id=http://host:port`, one per instance, the transcription model included).
+`VLLM_ENDPOINTS` and `WHISPER_URLS`, the servers you run by hand, are never written. Only changed
+keys are written. Re-applying an unchanged plan does nothing.
+
+`python3 -m scheduler catalog` prints the catalogue as TSV (id, api, env prefix,
+OpenRouter slug, timeout, max in flight, presence penalty) for the shell scripts.
 
 **On failure.** Actions run node by node in order. The first failing action on a
 node skips that node's remaining actions (an env write precedes the recreate
@@ -178,6 +196,7 @@ is printed and the command exits 1.
 | `registry.py` | YAML loader; declared and derived values into `ModelSpec` |
 | `inventory.py` | SSH probing: GPU class, VRAM, architecture, running services, foreign memory per card, checkpoints; node ids |
 | `model_metadata.py` | `config.json` to layer count, KV heads, dtype, native context; weight size on disk |
+| `endpoints.py` | `VLLM_ENDPOINTS` to instance counts per model |
 | `kv_model.py` | KV bytes per token and per sequence |
 | `types.py` | `ModelMetadata`, `NodeSpec` (reserve, per-card budget and free memory) |
 | `planner.py` | Placement decision |

@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir \
     "local-deep-research[mcp]==1.6.11" \
-    "mcp-proxy"
+    "mcp-proxy==0.12.0"
 
 # Numeric MCP params accept strings (models send "2"); see the patch.
 COPY patches/patch_ldr_mcp_iterations.py /tmp/patch_ldr_mcp_iterations.py

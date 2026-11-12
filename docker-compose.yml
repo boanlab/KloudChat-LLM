@@ -10,10 +10,18 @@
 #   imagegen  shim for self-hosted image models; setup.sh adds it once IMAGEGEN_BACKENDS is set
 name: kloudchat-llm
 
+# Container logs rotated per service; the host's daemon settings do not matter
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 50m
+    max-file: "5"
+
 services:
   # ── gateway ─────────────────────────────────────────────────────────
   gateway:
     container_name: kloudchat-gateway
+    logging: *logging
     image: caddy:2-alpine
     profiles: [tools]
     restart: always
@@ -32,25 +40,23 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-    networks: [kloudchat]
+    networks: [kloudchat, fetch]
 
   # GPU-node /metrics behind the gateway's /metrics/*; targets from the endpoint settings
   metrics-shim:
     container_name: kloudchat-metrics-shim
+    logging: *logging
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-metrics-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
     build:
       context: ./services/metrics-shim
     profiles: [tools]
     restart: always
     environment:
-      VLLM_QWEN27B_URL: ${VLLM_QWEN27B_URL:-}
-      VLLM_QWENFLASH_URL: ${VLLM_QWENFLASH_URL:-}
-      VLLM_CODERNEXT_URL: ${VLLM_CODERNEXT_URL:-}
-      VLLM_BGEM3_URL: ${VLLM_BGEM3_URL:-}
-      VLLM_RERANK_URL: ${VLLM_RERANK_URL:-}
+      VLLM_ENDPOINTS: ${VLLM_ENDPOINTS:-}
+      VLLM_PLACED: ${VLLM_PLACED:-}
       WHISPER_URLS: ${WHISPER_URLS:-}
       IMAGEGEN_BACKENDS: ${IMAGEGEN_BACKENDS:-}
-      NODES_VLLM: ${NODES_VLLM:-}
+      VLLM_NODES: ${VLLM_NODES:-}
       GPU_EXPORTER_PORT: ${GPU_EXPORTER_PORT:-9835}
       LOG_LEVEL: INFO
     healthcheck:
@@ -64,6 +70,7 @@ services:
   # ── model gateway ───────────────────────────────────────────────────
   litellm-db:
     container_name: kloudchat-litellm-db
+    logging: *logging
     image: postgres:16.13
     profiles: [models]
     restart: always
@@ -83,6 +90,7 @@ services:
 
   litellm:
     container_name: kloudchat-litellm
+    logging: *logging
     image: ghcr.io/berriai/litellm:v1.83.7-stable
     profiles: [models]
     restart: always
@@ -109,7 +117,6 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?the LiteLLM master key is required}
       DATABASE_URL: "postgres://${LITELLM_DB_USER:-litellm}:${LITELLM_DB_PASSWORD}@litellm-db:5432/litellm"
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       LITELLM_LOG: ${LITELLM_LOG:-INFO}
       CONCURRENCY_GATE_CAPS: ${CONCURRENCY_GATE_CAPS:-}
       CONCURRENCY_GATE_TTL: ${CONCURRENCY_GATE_TTL:-1.5}
@@ -127,6 +134,7 @@ services:
   # ── web search ──────────────────────────────────────────────────────
   valkey:
     container_name: kloudchat-valkey
+    logging: *logging
     image: valkey/valkey:8-alpine
     profiles: [tools]
     restart: always
@@ -137,6 +145,7 @@ services:
 
   searxng:
     container_name: kloudchat-searxng
+    logging: *logging
     image: searxng/searxng:2026.4.24-a7ac696b4
     profiles: [tools]
     restart: always
@@ -152,6 +161,7 @@ services:
   # cap; the engines ban on burst from one address
   search-shim:
     container_name: kloudchat-search-shim
+    logging: *logging
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-search-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
     build:
       context: ./services/search-shim
@@ -181,6 +191,7 @@ services:
   # ── document fetch ──────────────────────────────────────────────────
   crawl4ai-shim:
     container_name: kloudchat-crawl4ai-shim
+    logging: *logging
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-crawl4ai-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
     build:
       context: ./services/crawl4ai-shim
@@ -194,6 +205,9 @@ services:
       MAX_CONCURRENT_PAGES: '8'
       QUEUE_TIMEOUT_MS: '15000'
       CACHE_TTL_S: '900'
+      # Ceiling on a caller's timeout, and the largest scrape the cache keeps
+      MAX_TIMEOUT_MS: '60000'
+      CACHE_MAX_ENTRY_BYTES: '2097152'
       LOG_LEVEL: INFO
     # /health is 503 once the browser cannot render; a shim whose restarts do
     # not help exits, and restart: always starts it again
@@ -203,11 +217,15 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    networks: [kloudchat]
+    # One Chromium with MAX_CONCURRENT_PAGES pages, plus the page cache
+    mem_limit: 4g
+    # Shared with the gateway alone: page scripts reach no other service
+    networks: [fetch]
 
   # ── code execution ──────────────────────────────────────────────────
   code-interpreter-redis:
     container_name: kloudchat-ci-redis
+    logging: *logging
     image: redis:7.4.8-alpine
     profiles: [tools]
     restart: always
@@ -224,6 +242,7 @@ services:
 
   code-interpreter-minio:
     container_name: kloudchat-ci-minio
+    logging: *logging
     image: boanlab/minio:2025-09-07
     profiles: [tools]
     restart: always
@@ -243,6 +262,7 @@ services:
 
   code-interpreter-minio-init:
     container_name: kloudchat-ci-minio-init
+    logging: *logging
     image: boanlab/mc:2025-08-13
     profiles: [tools]
     restart: 'no'
@@ -256,15 +276,18 @@ services:
     entrypoint:
       - /bin/sh
       - -c
+      # Any failed step fails the init, and code-interpreter waits on it
       - >
+        set -e;
         mc alias set myminio http://code-interpreter-minio:9000
         $${CODE_INTERPRETER_MINIO_USER} $${CODE_INTERPRETER_MINIO_PASSWORD};
         mc mb --ignore-existing myminio/$${CODE_INTERPRETER_MINIO_BUCKET};
-        exit 0;
+        mc ls myminio/$${CODE_INTERPRETER_MINIO_BUCKET} >/dev/null
     networks: [code-interpreter-data]
 
   code-interpreter:
     container_name: kloudchat-code-interpreter
+    logging: *logging
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-code-interpreter:${KLOUDCHAT_IMAGE_TAG:-latest}
     build:
       context: ./services/code-interpreter
@@ -280,10 +303,12 @@ services:
     environment:
       API_KEY: ${CODE_INTERPRETER_API_KEY:?the code execution API key is required}
       MAX_EXECUTION_TIME: '30'
-      # Per-sandbox cgroup memory.max (no swap), enforced by nsjail-memcg. It counts the whole
-      # sandbox: a warm Python REPL with pandas/numpy/matplotlib loaded is ~260 MB, so 1024
-      # leaves ~750 MB for user data. Over it the kernel kills the sandbox (the call returns an error).
+      # Per-sandbox cgroup memory.max (no swap), enforced by nsjail-memcg; a warm
+      # pandas/numpy REPL takes ~260 MB of it. Over it the sandbox is killed
       MAX_MEMORY_MB: '1024'
+      # Per sandbox: processes (fork bombs), and CPU ms per second (1000 = one core)
+      MAX_SANDBOX_PIDS: '256'
+      MAX_SANDBOX_CPU_MS: '1000'
       NSJAIL_BINARY: /usr/local/bin/nsjail-memcg
       OMP_NUM_THREADS: '1'
       OPENBLAS_NUM_THREADS: '1'
@@ -302,10 +327,13 @@ services:
     security_opt:
       - apparmor:unconfined
       - seccomp:unconfined
-    # Whole container: API (~100-300 MB) + 2 warm REPLs (SANDBOX_POOL_PY default, ~260 MB each)
-    # + a few sandboxes at MAX_MEMORY_MB at once. No swap on top.
+    # Whole container: API (~100-300 MB), 2 warm REPLs (~260 MB each), a few
+    # sandboxes at MAX_MEMORY_MB; no swap
     mem_limit: 4g
     memswap_limit: 4g
+    # Whole container: processes and cores across every sandbox
+    pids_limit: 2048
+    cpus: ${CODE_INTERPRETER_CPUS:-4}
     healthcheck:
       test: [CMD-SHELL, 'curl -fs http://localhost:8000/health || exit 1']
       interval: 30s
@@ -318,6 +346,7 @@ services:
   # MCP streamable-http; models through LiteLLM
   deep-research:
     container_name: kloudchat-deep-research
+    logging: *logging
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-deep-research:${KLOUDCHAT_IMAGE_TAG:-latest}
     build:
       context: ./services/deep-research
@@ -333,13 +362,29 @@ services:
       LDR_LLM_PROVIDER: openai_endpoint
       LDR_LLM_OPENAI_ENDPOINT_URL: ${DEEP_RESEARCH_LLM_URL:-http://litellm:8000/v1}
       LDR_LLM_OPENAI_ENDPOINT_API_KEY: ${LITELLM_MASTER_KEY:-}
-      LDR_LLM_MODEL: ${DEEP_RESEARCH_MODEL:-local/qwen3.8-27b}
+      # A model id runs as local/<id>; a name with a slash is used as written
+      LDR_LLM_MODEL: ${DEEP_RESEARCH_MODEL:-qwen3.8-27b}
+    command:
+      - sh
+      - -c
+      - |
+        case "$$LDR_LLM_MODEL" in */*) ;; *) LDR_LLM_MODEL="local/$$LDR_LLM_MODEL"; export LDR_LLM_MODEL ;; esac
+        exec mcp-proxy --pass-environment --port=8081 --host=0.0.0.0 --transport=streamablehttp ldr-mcp
+    mem_limit: 2g
+    # An MCP initialize answered by the research server behind mcp-proxy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import json,urllib.request; r=urllib.request.Request('http://localhost:8081/mcp', data=json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-03-26','capabilities':{},'clientInfo':{'name':'healthcheck','version':'1'}}}).encode(), headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'}); urllib.request.urlopen(r, timeout=8)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     networks: [kloudchat]
 
   # ── transcription ───────────────────────────────────────────────────
   # Front end for the vllm-whisper backends, least-busy routing
   whisper-shim:
     container_name: kloudchat-whisper-shim
+    logging: *logging
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-whisper-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
     build:
       context: ./services/whisper-shim
@@ -347,8 +392,14 @@ services:
     restart: always
     environment:
       WHISPER_URLS: ${WHISPER_URLS:-}
+      VLLM_PLACED: ${VLLM_PLACED:-}
       TRANSCRIBE_TIMEOUT_SEC: ${TRANSCRIBE_TIMEOUT_SEC:-3600}
+      # Largest upload (413 past it), and transcriptions at once (503 past it)
+      WHISPER_MAX_UPLOAD_MB: ${WHISPER_MAX_UPLOAD_MB:-100}
+      WHISPER_MAX_CONCURRENT: ${WHISPER_MAX_CONCURRENT:-8}
       LOG_LEVEL: INFO
+    # Uploads held in memory: WHISPER_MAX_CONCURRENT × WHISPER_MAX_UPLOAD_MB at most
+    mem_limit: 2g
     healthcheck:
       # "ok" while at least one backend answers
       test: ["CMD", "python3", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:9000/health')); raise SystemExit(0 if d.get('status')=='ok' else 1)"]
@@ -362,6 +413,7 @@ services:
 
   imagegen-shim:
     container_name: kloudchat-imagegen-shim
+    logging: *logging
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-imagegen-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
     build:
       context: ./services/imagegen-shim
@@ -383,6 +435,7 @@ services:
   # Vectors for RAG; derived data, rebuildable
   index-db:
     container_name: kloudchat-index-db
+    logging: *logging
     image: pgvector/pgvector:pg16
     profiles: [index]
     restart: always
@@ -402,6 +455,7 @@ services:
 
   index-shim:
     container_name: kloudchat-index-shim
+    logging: *logging
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-index-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
     build:
       context: ./services/index-shim
@@ -414,14 +468,15 @@ services:
       INDEX_DATABASE_URL: postgresql://${INDEX_DB_USER:-index}:${INDEX_DB_PASSWORD}@index-db:5432/index
       LITELLM_URL: ${INDEX_LITELLM_URL:-http://litellm:8000}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
-      # Preference order; with none available KloudChat falls back to lexical search
-      EMBED_MODELS: ${INDEX_EMBED_MODELS:-local/bge-m3,text-embedding-3-small}
+      # Local only; with none available KloudChat falls back to lexical search
+      EMBED_MODELS: ${INDEX_EMBED_MODELS:-strict-local/bge-m3}
       # Second retrieval stage; empty skips it
-      RERANK_MODEL: ${INDEX_RERANK_MODEL-local/bge-reranker-v2-m3}
+      RERANK_MODEL: ${INDEX_RERANK_MODEL-strict-local/bge-reranker-v2-m3}
       RERANK_CANDIDATES: ${INDEX_RERANK_CANDIDATES:-5}
       RERANK_MIN_SCORE: ${INDEX_RERANK_MIN_SCORE:-0.1}
       RERANK_RECALL_DISTANCE: ${INDEX_RERANK_RECALL_DISTANCE:-0.85}
       LOG_LEVEL: INFO
+    mem_limit: 2g
     healthcheck:
       # "ok" = database answers; embeddings reported separately
       test: ["CMD", "python3", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8080/health')); raise SystemExit(0 if d.get('status')=='ok' else 1)"]
@@ -435,6 +490,7 @@ services:
   # PaddleOCR PP-OCRv5 (Korean) on CPU; models baked into the image, no egress
   ocr-shim:
     container_name: kloudchat-ocr-shim
+    logging: *logging
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-ocr-shim:${KLOUDCHAT_IMAGE_TAG:-latest}
     build:
       context: ./services/ocr-shim
@@ -460,6 +516,9 @@ services:
 networks:
   # Service plane behind the gateway
   kloudchat:
+    driver: bridge
+  # Gateway and the document fetch shim only; the shim's browser runs untrusted pages
+  fetch:
     driver: bridge
 
   # Backing stores, reachable only by their owning service; no outbound traffic

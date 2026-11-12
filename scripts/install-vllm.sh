@@ -2,7 +2,8 @@
 # Usage: install-vllm.sh [--reinstall] [--image <tag>]
 #
 # Prepares a GPU node: GPU runtime check, vLLM image (pull + this repo's layer),
-# model directory. Weights: download-vllm-models.sh; services: manage-vllm.sh.
+# model directory, gpu-exporter. Weights: download-vllm-models.sh; services:
+# manage-vllm.sh.
 #
 # Environment (shell, then .env):
 #   VLLM_BASE_IMAGE   upstream image; the recorded one, else lib.sh's default
@@ -28,6 +29,9 @@ while [[ $# -gt 0 ]]; do
     *)            err "unknown option: $1"; exit 1 ;;
   esac
 done
+
+# env_set needs a file; a node without one starts from the node example
+[[ -f "$ENV_FILE" ]] || { cp "${PROJECT_DIR}/.env.node.example" "$ENV_FILE" && chmod 600 "$ENV_FILE"; }
 
 hdr "0. Environment"
 require_supported_platform
@@ -111,13 +115,25 @@ if [[ ! -d "$VLLM_MODELS_ROOT" ]]; then
 fi
 ok "directory ready: $VLLM_MODELS_ROOT ($(df -h "$VLLM_MODELS_ROOT" 2>/dev/null | awk 'NR==2 {print $4}' || echo '?') free)"
 
-hdr "4. Next steps"
+# Hardware metrics for KloudChat's performance page; a failure leaves vLLM as is
+hdr "4. GPU exporter"
+COMPOSE_FILE="${PROJECT_DIR}/docker-compose.vllm.yml"
+docker compose -f "$COMPOSE_FILE" pull --quiet gpu-exporter \
+  || warn "gpu-exporter pull failed — using the local image or building it"
+if docker compose -f "$COMPOSE_FILE" up -d gpu-exporter; then
+  port="$(env_get GPU_EXPORTER_PORT)"
+  ok "gpu-exporter on :${port:-9835}"
+else
+  warn "gpu-exporter did not start — the performance page shows no hardware metrics for this node"
+fi
+
+hdr "5. Next steps"
 cat <<EOF
 
   ./scripts/download-vllm-models.sh                # only weights this card can serve
   ./scripts/manage-vllm.sh up                      # placement is the scheduler's job: python3 -m scheduler apply
 
-  # The scheduler writes VLLM_*_URL and WHISPER_URLS into the orchestrator's .env;
-  # gen-litellm-config.sh registers from them.
+  # The scheduler writes VLLM_PLACED into the orchestrator's .env;
+  # gen-litellm-config.sh registers from it.
 
 EOF

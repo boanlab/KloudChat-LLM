@@ -42,8 +42,12 @@ def _fake_curl(bin_dir: Path) -> None:
             case "$url" in
               *qwen.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/qwen3.8-27b","max_model_len":65536}]}' ;;
+              *other.test*/v1/models)
+                printf '%s\n' '{"data":[{"id":"Org/Other-7B","max_model_len":32768}]}' ;;
               *bge.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/bge-m3","max_model_len":8192}]}' ;;
+              *bge2.test*/v1/models)
+                printf '%s\n' '{"data":[{"id":"BAAI/bge-m3","max_model_len":8192}]}' ;;
               *whisper.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/whisper-large-v3","max_model_len":448}]}' ;;
               *openrouter.ai*)
@@ -101,9 +105,10 @@ def _run_generator(
 
     values = {
         "OPENROUTER_API_KEY": "test-openrouter-key" if with_openrouter else "",
-        "OPENAI_API_KEY": "test-openai-key" if include_all_classes else "",
-        "VLLM_QWEN27B_URL": "http://qwen.test:8000" if with_vllm else "",
-        "VLLM_BGEM3_URL": "http://bge.test:8000" if include_all_classes else "",
+        "VLLM_ENDPOINTS": ",".join(
+            (["qwen3.8-27b=http://qwen.test:8000"] if with_vllm else [])
+            + (["bge-m3=http://bge.test:8000"] if include_all_classes else [])
+        ),
         "WHISPER_URLS": (
             whisper_urls if whisper_urls is not None
             else ("" if include_all_classes else "http://whisper.test:9000")
@@ -270,8 +275,8 @@ def test_every_generated_model_class_declares_its_boundary(tmp_path: Path) -> No
         assert isinstance(info.get("kchat_privacy_only"), bool)
 
     by_name = {model["model_name"]: model for model in models}
-    assert by_name["local/bge-m3"]["model_info"]["kchat_data_boundary"] == "self_hosted"
-    assert by_name["text-embedding-3-small"]["model_info"]["kchat_data_boundary"] == "external"
+    assert by_name["strict-local/bge-m3"]["model_info"]["kchat_data_boundary"] == "self_hosted"
+    assert "text-embedding-3-small" not in by_name and "local/bge-m3" not in by_name
     assert by_name["strict-local/qwen3.8-27b"]["model_info"]["kchat_strict_local"] is True
 
 
@@ -313,37 +318,42 @@ def test_config_example_disables_prompt_and_response_storage() -> None:
     assert config["general_settings"]["store_prompts_in_spend_logs"] is False
 
 
-STT_OR_MODEL = "mistralai/voxtral-small-24b-2507"
-
-
-def _stt_registered(output: str) -> bool:
-    models, _ = _parse_dry_run(output)
-    return any(m.get("model_name") == STT_OR_MODEL for m in models)
-
-
-def test_a_placed_transcription_backend_keeps_stt_local(tmp_path: Path) -> None:
-    """A live transcription backend suppresses the OpenRouter STT route."""
+def test_a_transcription_backend_registers_strict_local_only(tmp_path: Path) -> None:
+    """WHISPER_URLS set: strict-local/<id> behind whisper-shim, no local/ alias, no OpenRouter route."""
     result, _ = _run_generator(
         tmp_path, with_vllm=True, with_openrouter=True,
         whisper_urls="http://whisper.test:9000",
     )
-    assert not _stt_registered(result.stdout)
+    models, fallbacks = _parse_dry_run(result.stdout)
+    stt = [
+        m for m in models
+        if (m.get("model_info") or {}).get("mode") == "audio_transcription"
+        or "whisper" in m["model_name"] or "voxtral" in m["model_name"]
+    ]
+    assert [m["model_name"] for m in stt] == ["strict-local/whisper-large-v3"]
+    entry = stt[0]
+    assert entry["litellm_params"]["api_base"] == "http://whisper-shim:9000/v1"
+    assert entry["litellm_params"]["model"] == "openai/whisper-large-v3"
+    info = entry["model_info"]
+    assert info["kchat_data_boundary"] == "self_hosted"
+    assert info["kchat_strict_local"] is True and info["kchat_privacy_only"] is True
+    assert not any("whisper" in k for mapping in fallbacks for k in mapping)
 
 
-def test_a_placed_but_dead_transcription_backend_still_delegates(tmp_path: Path) -> None:
-    """A placed but unreachable transcription backend still registers OpenRouter STT."""
+@pytest.mark.parametrize("whisper_urls", ["", " , "])
+def test_no_transcription_backend_registers_no_audio_route_at_all(
+    tmp_path: Path, whisper_urls: str
+) -> None:
+    """Nothing routes a recording anywhere, OpenRouter included."""
     result, _ = _run_generator(
-        tmp_path, with_vllm=True, with_openrouter=True,
-        whisper_urls="http://whisper-down.test:9000",
+        tmp_path, with_vllm=True, with_openrouter=True, whisper_urls=whisper_urls,
     )
-    assert _stt_registered(result.stdout)
-
-
-def test_no_transcription_backend_at_all_delegates(tmp_path: Path) -> None:
-    result, _ = _run_generator(
-        tmp_path, with_vllm=True, with_openrouter=True, whisper_urls="",
-    )
-    assert _stt_registered(result.stdout)
+    models, _ = _parse_dry_run(result.stdout)
+    assert not [
+        m["model_name"] for m in models
+        if "voxtral" in m["model_name"] or "whisper" in m["model_name"]
+        or (m.get("model_info") or {}).get("mode") == "audio_transcription"
+    ]
 
 
 def test_an_openrouter_model_that_takes_an_effort_says_so(tmp_path: Path) -> None:
@@ -378,7 +388,7 @@ def test_each_self_hosted_image_backend_is_registered_inside_the_boundary(tmp_pa
     """Every name in IMAGEGEN_BACKENDS becomes a strict-local image model behind the shim only."""
     result, _ = _run_generator(
         tmp_path, with_vllm=True, with_openrouter=True,
-        env_values={"IMAGEGEN_BACKENDS": "local/z-image-turbo=http://gpu-2:8092, local/flux2-klein-4b=http://gpu-2:8093"},
+        env_values={"IMAGEGEN_BACKENDS": "z-image-turbo=http://gpu-2:8092, local/flux2-klein-4b=http://gpu-2:8093"},
     )
     models, _ = _parse_dry_run(result.stdout)
     shim = [m for m in models if "imagegen-shim" in str(m["litellm_params"].get("api_base"))]
@@ -387,8 +397,8 @@ def test_each_self_hosted_image_backend_is_registered_inside_the_boundary(tmp_pa
     # No local/ alias: nothing could route such a picture to OpenRouter
     assert not [m for m in models if m["model_name"] in {"local/z-image-turbo", "local/flux2-klein-4b"}]
     for name, entry in images.items():
-        # The shim is addressed by the backend name it was given
-        assert entry["litellm_params"]["model"] == f"openai/local/{name.split('/', 1)[1]}"
+        # The shim is addressed by the bare model name
+        assert entry["litellm_params"]["model"] == f"openai/{name.split('/', 1)[1]}"
         assert entry["litellm_params"]["api_base"] == "http://imagegen-shim:9100/v1"
         info = entry["model_info"]
         assert info["mode"] == "image_generation"
@@ -400,8 +410,8 @@ def test_an_image_model_on_several_nodes_is_registered_once(tmp_path: Path) -> N
     result, _ = _run_generator(
         tmp_path, with_vllm=True, with_openrouter=True,
         env_values={"IMAGEGEN_BACKENDS": (
-            "local/z-image-turbo=http://gpu-1:8091,local/z-image-turbo=http://gpu-2:8091,"
-            "local/qwen-image-2512=http://gpu-1:8092,local/z-image-turbo=http://gpu-3:8091"
+            "z-image-turbo=http://gpu-1:8091,local/z-image-turbo=http://gpu-2:8091,"
+            "qwen-image-2512=http://gpu-1:8092,z-image-turbo=http://gpu-3:8091"
         )},
     )
     models, _ = _parse_dry_run(result.stdout)
@@ -415,25 +425,77 @@ def test_no_image_backend_registers_no_local_image_model(tmp_path: Path) -> None
     assert not [m for m in models if "imagegen-shim" in str(m["litellm_params"].get("api_base"))]
 
 
-def test_every_chat_model_in_the_catalogue_is_registered() -> None:
-    """Every generate-runner model in models.yaml has an emit_brain line and its twin named."""
-    catalogue = yaml.safe_load((ROOT / "scheduler" / "models.yaml").read_text())
-    generator = GENERATOR.read_text()
+def _catalogue() -> list[dict]:
+    return yaml.safe_load((ROOT / "scheduler" / "models.yaml").read_text())["models"]
 
-    for entry in catalogue["models"]:
-        if (entry.get("runner") or "generate") != "generate":
-            continue
-        model_id = entry["id"]
-        assert f'emit_brain "{model_id}"' in generator, (
-            f"{model_id} is in the catalogue but gen-litellm-config.sh never "
-            "registers it — it would deploy and be unreachable"
-        )
-        twin = entry.get("openrouter")
-        if twin:
-            assert twin in generator, (
-                f"{model_id} declares the OpenRouter twin {twin}, which the "
-                "generator does not name — its fallback would be wrong"
-            )
+
+def _chat_entries() -> list[dict]:
+    return [
+        e for e in _catalogue()
+        if (e.get("api") or {"generate": "chat"}.get(e.get("runner") or "generate")) == "chat"
+    ]
+
+
+def test_every_chat_model_in_the_catalogue_registers_from_its_endpoint(tmp_path: Path) -> None:
+    """A catalogue chat model named in VLLM_ENDPOINTS gets both aliases, its cap and its twin."""
+    entries = _chat_entries()
+    endpoints = ",".join(f"{e['id']}=http://down-{i}.test:8000" for i, e in enumerate(entries))
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True,
+        env_values={"VLLM_ENDPOINTS": endpoints},
+    )
+    models, fallbacks = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m for m in models}
+    sources = {k: v for mapping in fallbacks for k, v in mapping.items()}
+    for e in entries:
+        for alias in (f"local/{e['id']}", f"strict-local/{e['id']}"):
+            entry = by_name[alias]
+            assert entry["litellm_params"]["model"] == f"hosted_vllm/local/{e['id']}"
+            assert entry["model_info"]["kchat_max_inflight"] == e.get("max_inflight", 256)
+        if e.get("openrouter"):
+            assert sources[f"local/{e['id']}"] == [e["openrouter"]]
+
+
+def test_an_unlisted_model_found_at_a_bare_endpoint_registers_as_chat(tmp_path: Path) -> None:
+    """A bare URL is asked what it serves; a name outside the catalogue keeps its served id."""
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True,
+        env_values={"VLLM_ENDPOINTS": "http://other.test:8000, http://qwen.test:8000"},
+    )
+    models, fallbacks = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m for m in models}
+
+    other = by_name["local/Other-7B"]
+    assert other["litellm_params"]["model"] == "hosted_vllm/Org/Other-7B"
+    assert other["model_info"]["max_input_tokens"] == 32768 - 4096
+    assert other["model_info"]["kchat_max_inflight"] == 256
+    assert by_name["strict-local/Other-7B"]["model_info"]["kchat_strict_local"] is True
+    assert "local/Other-7B" not in {k for mapping in fallbacks for k in mapping}
+    # The catalogue model behind the other URL keeps its twin as fallback only
+    assert by_name["local/qwen3.8-27b"]["litellm_params"]["presence_penalty"] == 1.0
+    assert by_name["qwen/qwen3.8-27b"]["model_info"]["kchat_hidden"] is True
+
+
+def test_an_unreachable_bare_endpoint_is_skipped_and_a_named_one_kept(tmp_path: Path) -> None:
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=False,
+        env_values={"VLLM_ENDPOINTS": "http://gone.test:8000,qwen3.8-flash=http://gone.test:8004"},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    names = {m["model_name"] for m in models}
+    assert "local/qwen3.8-flash" in names
+    assert "gone.test:8000" in result.stderr
+
+
+def test_the_schedulers_placements_register(tmp_path: Path) -> None:
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=False,
+        env_values={"VLLM_PLACED": "qwen3.8-27b=http://qwen.test:8000,bge-m3=http://bge.test:8000"},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m for m in models}
+    assert by_name["local/qwen3.8-27b"]["model_info"]["max_input_tokens"] == 65536 - 4096
+    assert by_name["strict-local/bge-m3"]["model_info"]["mode"] == "embedding"
 
 
 def test_every_env_the_generator_references_reaches_the_container() -> None:
@@ -445,13 +507,16 @@ def test_every_env_the_generator_references_reaches_the_container() -> None:
     assert not missing, f"docker-compose.yml does not pass {sorted(missing)} to litellm"
 
 
-def test_every_chat_model_has_a_concurrency_gate_cap() -> None:
-    """Each generate-runner model gets local/ and strict-local/ caps, or strict requests are refused."""
-    catalogue = yaml.safe_load((ROOT / "scheduler" / "models.yaml").read_text())
-    gate = (ROOT / "services" / "litellm" / "callbacks" / "concurrency_gate.py").read_text()
-    caps = set(re.findall(r'"((?:strict-)?local/[^"]+)":\s*\d+', gate))
-    for entry in catalogue["models"]:
-        if (entry.get("runner") or "generate") != "generate":
-            continue
-        for alias in (f"local/{entry['id']}", f"strict-local/{entry['id']}"):
-            assert alias in caps, f"{alias} has no DEFAULT_CAPS entry"
+def test_one_model_served_under_two_names_keeps_every_replica(tmp_path: Path) -> None:
+    """Each server registers under its own served name, so no replica is dropped."""
+    result, _ = _run_generator(
+        tmp_path,
+        with_vllm=False,
+        with_openrouter=False,
+        env_values={"VLLM_ENDPOINTS": "http://bge.test:8000,http://bge2.test:8000"},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    served = sorted(
+        m["litellm_params"]["model"] for m in models if m["model_name"] == "strict-local/bge-m3"
+    )
+    assert served == ["hosted_vllm/BAAI/bge-m3", "hosted_vllm/local/bge-m3"]

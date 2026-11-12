@@ -1,13 +1,23 @@
 # Environment variables
 
-`./scripts/gen-env.sh` creates `.env` from `.env.example` and replaces every
-`change-me-*` value with a generated secret; what is left to fill in is
-external keys and node addresses.
+`./scripts/gen-env.sh` creates `.env` (mode 600) from `.env.example` and
+replaces every `change-me-*` value with a generated secret; what is left to
+fill in is external keys and node addresses. Secret values are not printed.
 
 ```bash
 ./scripts/gen-env.sh          # create (skipped if .env exists)
-./scripts/gen-env.sh --force  # recreate; every existing secret changes
+./scripts/gen-env.sh --fill   # fill only empty or change-me-* secrets; the rest stays
+./scripts/gen-env.sh --force  # recreate; every secret changes, the old file kept as .env.bak.<time>
 ```
+
+An existing database keeps the password it was created with: after `--force`,
+or a `--fill` of `LITELLM_DB_PASSWORD` / `INDEX_DB_PASSWORD`, restore the old
+value or reset that database.
+
+`.env.example` runs in this order: keys you provide, where the models run
+(`VLLM_NODES`, `VLLM_MODELS`, the servers you run by hand, then what the
+scheduler writes), exposure and sizing, the optional features, and the generated
+secrets last. The sections below group the same variables by who sets them.
 
 ## 1. Filled in by a human
 
@@ -15,10 +25,10 @@ external keys and node addresses.
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | token | Hugging Face gated repositories. Weight downloads only |
-| `NODES_VLLM` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (retrieval, transcription); the rest are the pool (Flash-Next, the coder); chat replicas land on any node with room. See [models.md](models.md#where-models-are-defined) |
+| `VLLM_NODES` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (retrieval, transcription); the rest are the pool (Flash-Next, the coder); chat replicas land on any node with room. See [models.md](models.md#where-models-are-defined) |
 | `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml`. Default `qwen3.8-27b,qwen3.8-flash,bge-m3,bge-reranker-v2-m3,whisper-large-v3`; `qwen3.8-flash` needs a GB10 or RTX PRO 6000 pool node to itself (drop it on a single node); `qwen3-coder-next` is in the catalogue but not in the default |
+| `VLLM_ENDPOINTS` | `http://host:port,id=http://host:port` | vLLM servers you run yourself: a bare URL is asked what it serves, `id=URL` is registered even while down. Never written by the scheduler, which counts each entry as an instance of its model: a model served here is not placed again for coverage, and the model's `replicas` in `models.yaml` caps the total. See [models.md](models.md#vllm-local) |
 | `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | optional | NAVER API HUB credentials; both set enables the `naver web` and `naver news` engines |
-| `OPENAI_API_KEY` | optional | Registers `text-embedding-3-small` as the embedding fallback; passed to the LiteLLM container. Not in `.env.example`; add it by hand |
 
 `setup.sh` refuses to continue unless at least one of `OPENROUTER_API_KEY` or a
 vLLM node is present.
@@ -30,6 +40,7 @@ vLLM node is present.
 | `GATEWAY_PORT` | `8080` | The only published port |
 | `COMPOSE_PROFILES` | `tools,models` | What to run. `setup.sh` appends `whisper` once the transcription model is placed and `imagegen` once `IMAGEGEN_BACKENDS` is set. Add `index` for the retrieval index, `ocr` for text from scanned pages |
 | `LITELLM_NUM_WORKERS` | `4` | LiteLLM workers, ~600 MB of RAM each |
+| `CODE_INTERPRETER_CPUS` | `4` | Cores the code-execution container may use across every sandbox |
 
 ## 3. Generated secrets
 
@@ -61,8 +72,7 @@ Do not set these by hand. The placement step of `setup.sh all` writes them; set
 
 | Variable | Where | Contents |
 |---|---|---|
-| `VLLM_<PREFIX>_URL` | compose host | CSV of node addresses serving that model. Empty for a model that is not placed |
-| `WHISPER_URLS` | compose host | CSV of the nodes the transcription model was placed on. Empty sends STT to OpenRouter |
+| `VLLM_PLACED` | compose host | CSV of `id=http://host:port`, one per placed instance. Empty when nothing is placed |
 | `VLLM_<PREFIX>_MAX_LEN` | node (`.env` under `KLOUDCHAT_REMOTE_DIR`) | Context decided for it |
 | `VLLM_<PREFIX>_GPU_UTIL` | node | `--gpu-memory-utilization` decided for it |
 | `VLLM_<PREFIX>_TP` | node | Cards to shard across, from `tensor_parallel` in models.yaml. Written only when it is not 1 |
@@ -72,8 +82,9 @@ Set by hand on the compose host; the scheduler does not write these:
 
 | Variable | Contents |
 |---|---|
+| `WHISPER_URLS` | Transcription servers (`vllm-whisper`) you run by hand, CSV of URLs. The scheduler lists its own as `whisper-large-v3` in `VLLM_PLACED`. With neither, dictation is off; audio is never sent to OpenRouter |
 | `IMAGEGEN_BACKENDS` | Self-hosted image models as `name=URL` pairs without `/v1`, one per node serving the name. Set: `setup.sh` enables the `imagegen` profile and `gen-litellm-config.sh` registers each name as `strict-local/<name>` only. See [models.md](models.md#self-hosted-image-models) |
-| `GPU_EXPORTER_PORT` | gpu-exporter port on every GPU node, default `9835`. metrics-shim finds the nodes from the `VLLM_*_URL` values, `WHISPER_URLS`, `IMAGEGEN_BACKENDS` and `NODES_VLLM`. See [tools.md](tools.md#metrics-vllm-and-gpu-exporter) |
+| `GPU_EXPORTER_PORT` | gpu-exporter port on every GPU node, default `9835`. metrics-shim finds the nodes from `VLLM_ENDPOINTS`, `VLLM_PLACED`, `WHISPER_URLS`, `IMAGEGEN_BACKENDS` and `VLLM_NODES`. See [tools.md](tools.md#metrics-vllm-and-gpu-exporter) |
 
 ## 5. Images
 
@@ -89,8 +100,10 @@ change the namespace and use `./scripts/build-push-images.sh`.
 
 ## 6. GPU node startup options
 
-Read by `docker-compose.vllm.yml` (and, for `VLLM_OMNI_*`, `docker-compose.vllm-omni.yml`) on the node. `MAX_LEN` and `GPU_UTIL` are
-overwritten by the placement step; the `.env.example` values apply when
+Read by `docker-compose.vllm.yml` (and, for `VLLM_OMNI_*`, `docker-compose.vllm-omni.yml`) on the node. They are listed in
+`.env.node.example`, not `.env.example`: `install-vllm.sh` creates a node's `.env` from
+it when absent, and every value is also the compose default. `MAX_LEN` and
+`GPU_UTIL` are overwritten by the placement step; the defaults apply when
 placement is skipped.
 
 | Variable | Default | Notes |
@@ -104,7 +117,8 @@ placement is skipped.
 | `VLLM_OMNI_IMAGE` | `vllm/vllm-omni:v0.30.0` | Image for `docker-compose.vllm-omni.yml` |
 | `VLLM_OMNI_ZIMAGE_DIR` / `VLLM_OMNI_QWENIMAGE_DIR` | `z-image-turbo` / `qwen-image-2512` | Image-model checkpoint directories under `VLLM_MODELS_ROOT` |
 | `VLLM_OMNI_DEVICES` | `all` | `NVIDIA_VISIBLE_DEVICES` for the image models |
-| `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling for `vllm-whisper` (`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`) |
+| `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling for `vllm-whisper` (`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`) and for whisper-shim on the compose host |
+| `WHISPER_MAX_CONCURRENT` | `8` | Transcriptions whisper-shim runs at once; past it, 503 |
 
 Per-model `GPU_UTIL`, `MAX_LEN`, `MAX_BATCHED_TOKENS`, `MAX_NUM_SEQS` and `SPEC_TOKENS` defaults are in [GPU memory](gpu-memory.md#tuning-knobs).
 
@@ -112,15 +126,15 @@ Per-model `GPU_UTIL`, `MAX_LEN`, `MAX_BATCHED_TOKENS`, `MAX_NUM_SEQS` and `SPEC_
 
 | Variable | Default | Notes |
 |---|---|---|
-| `DEEP_RESEARCH_MODEL` | `local/qwen3.8-27b` | Model for iterative search, served at its native 262144 context |
+| `DEEP_RESEARCH_MODEL` | `qwen3.8-27b` | Model for iterative search, served at its native 262144 context. A model id runs as `local/<id>`; a name with a slash (`qwen/qwen3.8-27b`) is used as written |
 | `DEEP_RESEARCH_LLM_URL` | `http://litellm:8000/v1` | LiteLLM on the same network |
 
 ## 8. Retrieval index (profile `index`)
 
 | Variable | Default | Notes |
 |---|---|---|
-| `INDEX_EMBED_MODELS` | `local/bge-m3,text-embedding-3-small` | Embedding preference order, tried through LiteLLM by name |
-| `INDEX_RERANK_MODEL` | `local/bge-reranker-v2-m3` | Reranker. Empty turns reranking off |
+| `INDEX_EMBED_MODELS` | `strict-local/bge-m3` | Embedding models, tried in order through LiteLLM by name. Local only |
+| `INDEX_RERANK_MODEL` | `strict-local/bge-reranker-v2-m3` | Reranker. Empty turns reranking off |
 | `INDEX_RERANK_CANDIDATES` | `5` | Over-fetch factor: `limit × candidates` passages go to the reranker |
 | `INDEX_RERANK_MIN_SCORE` | `0.1` | Reranker score floor |
 | `INDEX_RERANK_RECALL_DISTANCE` | `0.85` | Cosine distance bound applied before reranking |
@@ -141,7 +155,7 @@ Per-model `GPU_UTIL`, `MAX_LEN`, `MAX_BATCHED_TOKENS`, `MAX_NUM_SEQS` and `SPEC_
 |---|---|---|
 | `LITELLM_LOG` | `INFO` | |
 | `LITELLM_URL` | `http://localhost:<GATEWAY_PORT>/litellm` | Where `manage.sh` reaches LiteLLM. Read from the shell first, then `.env` |
-| `CONCURRENCY_GATE_CAPS` | built-in caps: 128 for `qwen3.8-27b`, 16 for `qwen3.8-flash`, 32 for `qwen3-coder-next`, on both the `local/` and `strict-local/` alias | JSON map of model aliases to positive concurrency caps, overriding the built-in ones |
+| `CONCURRENCY_GATE_CAPS` | each model's `max_inflight` in `scheduler/models.yaml` (256 when unset), on both the `local/` and `strict-local/` alias | JSON map of model aliases to positive concurrency caps, overriding those |
 | `CONCURRENCY_GATE_TTL` | `1.5` | Seconds between vLLM capacity polls |
 | `CONCURRENCY_GATE_SCRAPE_TIMEOUT` | `1.0` | Timeout in seconds for one vLLM metrics request |
 | `CONCURRENCY_GATE_DEBUG` | (empty) | `1` logs the overload gate's decisions |
@@ -153,7 +167,6 @@ Read by `gen-litellm-config.sh` from the shell, not from `.env`:
 |---|---|---|
 | `KC_OR_VARIANT` | `:floor` | OpenRouter provider routing suffix on chat routes. `:nitro` for throughput, empty for the OpenRouter default |
 | `KC_PRE_CALL_HEADROOM` | `4096` | Tokens subtracted from each local model's context when declaring `max_input_tokens` |
-| `STT_OR_MODEL` | `mistralai/voxtral-small-24b-2507` | OpenRouter STT route, registered when no local whisper answers |
 | `KLOUDCHAT_ENV_FILE`, `KLOUDCHAT_LITELLM_CONFIG_FILE`, `KLOUDCHAT_LITELLM_CONFIG_EXAMPLE` | repository paths | Overrides used by the tests |
 
 ## 11. Container-level defaults
@@ -166,21 +179,24 @@ Changing the others means editing `docker-compose.yml`.
 | whisper-shim | `WHISPER_MODEL_NAME` | `local/whisper-large-v3` | Name set on every forwarded request. Must be one of `vllm-whisper`'s `--served-model-name` values |
 | whisper-shim | `HEALTH_PROBE_TIMEOUT_SEC` | `2.0` | Per-backend health probe |
 | whisper-shim | `HEALTH_CACHE_TTL_SEC` | `10` | Health cache lifetime |
+| whisper-shim | `WHISPER_MAX_UPLOAD_MB` / `WHISPER_MAX_CONCURRENT` | `100` / `8`; compose passes them from `.env` | Largest upload (413 past it, all files together), and transcriptions at once (503 with `Retry-After` past it) |
 | whisper-shim | `TRANSCRIBE_TIMEOUT_SEC` | `900`; compose passes `${TRANSCRIBE_TIMEOUT_SEC:-3600}` from `.env` | Per-request timeout, sized for long recordings |
 | imagegen-shim | `GENERATE_TIMEOUT_SEC` / `HEALTH_PROBE_TIMEOUT_SEC` | `600` / `2.0` | Per-picture timeout towards vllm-omni, and the per-backend health probe |
 | imagegen-shim | `QWEN_IMAGE_STEPS` | `30` | Sampling steps for the Qwen-Image family |
-| index-shim | `EMBED_DIM` | `1536` | Vector column width: the widest model in `EMBED_MODELS` (`text-embedding-3-small` is 1536; `bge-m3` is 1024, zero-padded). Changing it after indexing is a migration; a mismatch makes `/health` report `degraded` |
+| index-shim | `EMBED_DIM` | `1536` | Vector column width (`bge-m3` is 1024, zero-padded to it). Changing it after indexing is a migration; a mismatch makes `/health` report `degraded` |
 | index-shim | `INDEX_CHUNK_CHARS` | `900` | Chunk window |
 | index-shim | `INDEX_CHUNK_OVERLAP` | `150` | Chunk overlap |
 | index-shim | `INDEX_MAX_DOC_CHARS` | `2000000` | Documents are truncated beyond this |
+| index-shim | `INDEX_HEALTH_EMBED_TTL_SEC` / `INDEX_HEALTH_EMBED_TIMEOUT_SEC` | `300` / `3` | How often `/health` re-checks embeddings, and how long it waits for that check |
 | index-shim | `EMBED_MODELS`, `RERANK_*`, `LITELLM_URL` | see section 8 | Compose maps them from the `INDEX_*` keys |
 | ocr-shim | `OCR_CONCURRENCY` / `OCR_THREADS` | `1` / `4`; compose passes them from `.env` | Pages read at once, and ONNX Runtime threads per page |
 | ocr-shim | `OCR_MAX_BODY_MB` / `OCR_MAX_PIXELS` / `OCR_MAX_PAGES` | `64` / `40000000` / `2000` | Largest document, largest decoded page, most pages the service opens |
 | ocr-shim | `OCR_DPI` / `OCR_IMAGE_SIDE` | `200` / `1600` | Render resolution of a PDF page, and the longest side of the picture returned for a vision model |
-| ocr-shim | `OCR_TIMEOUT_SEC` / `OCR_MIN_SCORE` | `120` / `0.5` | Per-page time limit (a page past it answers 504 but keeps its slot until the work ends), and the recogniser score below which a line is dropped |
+| ocr-shim | `OCR_TIMEOUT_SEC` / `OCR_MIN_SCORE` | `120` / `0.5` | Per-page time limit (a page past it answers 504 but keeps its slot until the work ends; a request waits this long for a slot, then 503; a page running 3× this makes `/health` 503 `stuck`, 5× ends the process for a restart), and the recogniser score below which a line is dropped |
 | ocr-shim | `OCR_QUEUE` | `4` | Requests that may wait for a slot; past that a request gets 503 before its body is read |
 | crawl4ai-shim | `DEFAULT_TIMEOUT_MS` | `30000` | Page load timeout |
 | crawl4ai-shim | `MAX_CONCURRENT_PAGES` / `QUEUE_TIMEOUT_MS` / `CACHE_TTL_S` / `CACHE_MAX_ENTRIES` | `8` / `15000` / `900` / `512` | Pages rendering at once, the wait for a slot, how long a good scrape is reused, and how many are kept |
+| crawl4ai-shim | `MAX_TIMEOUT_MS` / `CACHE_MAX_ENTRY_BYTES` | `60000` / `2097152` | Ceiling on a caller's `timeout` (floor 1000 ms; `waitFor` at most the timeout), and the largest scrape the cache keeps (larger ones are served, not cached) |
 | crawl4ai-shim | `ADULT_HOSTS_FILE` | `/app/adult-hosts.txt` | Hosts file of adult sites a scrape refuses; baked into the image |
 | crawl4ai-shim | `USER_AGENT` | browser-like string | Sent by Chromium |
 | crawl4ai-shim | `BROWSER_PROBE_INTERVAL_S` / `BROWSER_DEAD_LIMIT` / `BROWSER_EXIT_LIMIT` | `30` / `3` / `6` | How often a local page is rendered while no scrape has shown the browser working; failures in a row before `/health` answers 503, and before the process exits for Docker to restart it |
@@ -190,7 +206,8 @@ Changing the others means editing `docker-compose.yml`.
 | search-shim | `UPSTREAM_TIMEOUT_S` / `CONNECT_TIMEOUT_S` | `20` / `3` | Whole-call and connect timeouts towards SearXNG |
 | search-shim | `SAFESEARCH` | `2` | Forced on every search: 0 off, 1 moderate, 2 strict |
 | code-interpreter | `MAX_EXECUTION_TIME` / `MAX_MEMORY_MB` | `30` / `1024` | Sandbox limits, set in compose; memory is a per-sandbox cgroup `memory.max` |
-| code-interpreter | `NSJAIL_BINARY` | `/usr/local/bin/nsjail-memcg` | nsjail wrapper that applies `MAX_MEMORY_MB` |
+| code-interpreter | `MAX_SANDBOX_PIDS` / `MAX_SANDBOX_CPU_MS` | `256` / `1000` | Per-sandbox cgroup process count and CPU milliseconds per second (1000 = one core), set in compose |
+| code-interpreter | `NSJAIL_BINARY` | `/usr/local/bin/nsjail-memcg` | nsjail wrapper that applies the sandbox limits |
 | all shims | `LOG_LEVEL` | `INFO` | |
 
 ## Shell-only variables
