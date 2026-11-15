@@ -256,12 +256,13 @@ def cmd_apply(args) -> int:
 
 def cmd_catalog(args) -> int:
     """One line per model: id, api, env_prefix, openrouter, timeout,
-    max_inflight, presence_penalty; "-" for an empty field."""
+    max_inflight, presence_penalty, temperature; "-" for an empty field."""
     del args
     for s in registry.load(MODELS_YAML):
         fields = (
             s.id, s.api, s.env_prefix, s.openrouter, s.timeout or "",
             s.max_inflight, "" if s.presence_penalty is None else s.presence_penalty,
+            "" if s.temperature is None else s.temperature,
         )
         print("\t".join(str(f) if f != "" else "-" for f in fields))
     return 0

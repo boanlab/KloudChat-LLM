@@ -42,6 +42,8 @@ def _fake_curl(bin_dir: Path) -> None:
             case "$url" in
               *qwen.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/qwen3.8-27b","max_model_len":65536}]}' ;;
+              *flash.test*/v1/models)
+                printf '%s\n' '{"data":[{"id":"local/qwen3.8-flash","max_model_len":131072}]}' ;;
               *other.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"Org/Other-7B","max_model_len":32768}]}' ;;
               *bge.test*/v1/models)
@@ -236,6 +238,44 @@ def test_the_27b_presence_penalty_follows_the_override(
     models, _ = _parse_dry_run(result.stdout)
     params = {m["model_name"]: m["litellm_params"] for m in models}["local/qwen3.8-27b"]
     assert params.get("presence_penalty") == expected
+
+
+_WITH_FLASH = {"VLLM_ENDPOINTS": "qwen3.8-27b=http://qwen.test:8000,qwen3.8-flash=http://flash.test:8004"}
+
+
+def test_the_flash_deployment_defaults_to_a_temperature(tmp_path: Path) -> None:
+    """Callers that send none get 0.4 on the vLLM flash; the 27B and the twin are left alone."""
+    result, _ = _run_generator(
+        tmp_path, with_vllm=True, with_openrouter=True, env_values=_WITH_FLASH
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {model["model_name"]: model for model in models}
+
+    for alias in ("local/qwen3.8-flash", "strict-local/qwen3.8-flash"):
+        assert by_name[alias]["litellm_params"]["temperature"] == 0.4
+    for name in ("local/qwen3.8-27b", "strict-local/qwen3.8-27b", "qwen/qwen3.8-flash"):
+        assert "temperature" not in by_name[name]["litellm_params"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [("", None), ("0.7", 0.7), ("0", 0), ("warm", None), ("-1", None)]
+)
+def test_the_flash_temperature_follows_the_override(
+    tmp_path: Path, value: str, expected: float | None
+) -> None:
+    result, _ = _run_generator(
+        tmp_path,
+        with_vllm=True,
+        with_openrouter=False,
+        env_values=_WITH_FLASH,
+        extra_env={"KC_QWENFLASH_TEMPERATURE": value},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m["litellm_params"] for m in models}
+    for alias in ("local/qwen3.8-flash", "strict-local/qwen3.8-flash"):
+        assert by_name[alias].get("temperature") == expected
+    if value in ("warm", "-1"):
+        assert f"temperature '{value}' for qwen3.8-flash is not a number" in result.stderr
 
 
 @pytest.mark.parametrize("with_vllm", [True, False])

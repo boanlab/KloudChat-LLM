@@ -242,9 +242,18 @@ presence_penalty_for() {
   if [[ -n "${!var+set}" ]]; then echo "${!var}"; else echo "${CATALOG_PRESENCE[$1]:-}"; fi
 }
 
+# Default temperature: KC_<env_prefix without VLLM_>_TEMPERATURE when set (empty
+# sends none), else the catalogue's. A request's own temperature still wins
+temperature_for() {
+  local prefix="${CATALOG_PREFIX[$1]:-}" var
+  [[ -n "$prefix" ]] || return 0
+  var="KC_${prefix#VLLM_}_TEMPERATURE"
+  if [[ -n "${!var+set}" ]]; then echo "${!var}"; else echo "${CATALOG_TEMPERATURE[$1]:-}"; fi
+}
+
 emit_vllm_chat_entry() {
   local m="$1" url="$2" ctx="$3" alias="$4" boundary="$5" strict="$6" privacy_only="$7"
-  local tmo pres served; served="$(local_served_at "$m" "$url")"
+  local tmo pres temp served; served="$(local_served_at "$m" "$url")"
   echo "  - model_name: ${alias}"
   echo "    litellm_params:"
   # strict-local/* aliases the same deployment under vLLM's served name
@@ -257,6 +266,12 @@ emit_vllm_chat_entry() {
     echo "      presence_penalty: ${pres}"
   elif [[ -n "$pres" ]]; then
     warn "presence_penalty '${pres}' for ${m} is not a number — left out"
+  fi
+  temp="$(temperature_for "$m")"
+  if [[ "$temp" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "      temperature: ${temp}"
+  elif [[ -n "$temp" ]]; then
+    warn "temperature '${temp}' for ${m} is not a number — left out"
   fi
   echo "    model_info:"
   # Required: without them the client falls back to ReAct text
