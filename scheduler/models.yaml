@@ -52,6 +52,11 @@ models:
     timeout: 3600
     # --max-num-seqs
     max_inflight: 16
+    # Callers that omit temperature sampled at the checkpoint's 1.0 and mixed
+    # Chinese/Japanese words into Korean answers (thinking on 35%→13%, off
+    # 50%→24% of answers at 0.4). A request's own temperature still wins.
+    # KC_QWENFLASH_TEMPERATURE overrides, empty sends none
+    temperature: 0.4
 
   # Coding. 80B-A3B, FP8, hybrid attention (12 of 48 layers hold KV), 75 GiB:
   # a pool card to itself. Not in the default VLLM_MODELS.
@@ -155,6 +160,10 @@ models:
 #                                            local/ spills and strict-local/ refuses
 #   presence_penalty none                    default on the vLLM deployment;
 #                                            KC_<env_prefix without VLLM_>_PRESENCE_PENALTY
+#                                            overrides
+#   temperature     none                     default on the vLLM deployment, used
+#                                            when a request sends none;
+#                                            KC_<env_prefix without VLLM_>_TEMPERATURE
 #                                            overrides
 #
 # A vLLM in VLLM_ENDPOINTS serving a model not listed here registers as chat

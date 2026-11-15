@@ -118,8 +118,12 @@ pool-placed with priority 30, so it seats before the 27B, which takes the
 remaining nodes. A single-node cluster cannot hold both; leave
 `qwen3.8-flash` out of `VLLM_MODELS` there (it stays reachable as
 `qwen/qwen3.8-flash`). It is registered as `local/qwen3.8-flash` and
-`strict-local/qwen3.8-flash`, with a 3600 s timeout and a concurrency-gate cap
-of 16. Titles, memory extraction, query rewriting, default chat and deep
+`strict-local/qwen3.8-flash`, with a 3600 s timeout, a concurrency-gate cap
+of 16, and a default `temperature` of 0.4 that a request's own value replaces:
+at the checkpoint's 1.0 it mixes Chinese and Japanese words into Korean answers
+(35% of answers with thinking on, 50% with it off; 13% and 24% at 0.4).
+`KC_QWENFLASH_TEMPERATURE` changes it at generation time; empty leaves it out.
+Titles, memory extraction, query rewriting, default chat and deep
 research all run on the 27B.
 
 **Coder.** `qwen3-coder-next` is in the catalogue but not in the default
@@ -187,6 +191,7 @@ defaults.
 | `timeout` | LiteLLM request timeout, seconds |
 | `max_inflight` | Requests running per node before `local/` spills and `strict-local/` refuses (default 256); `CONCURRENCY_GATE_CAPS` overrides |
 | `presence_penalty` | Default on the deployment; `KC_<PREFIX>_PRESENCE_PENALTY` overrides, empty sends none |
+| `temperature` | Default on the deployment when a request sends none; `KC_<PREFIX>_TEMPERATURE` overrides, empty sends none |
 | `replicas` | Cap on the model's instances, `VLLM_ENDPOINTS` entries included |
 | `manual` | Run by hand: never placed, `VLLM_MODELS` cannot select it |
 | `placement` | `any`, `head`, `head-first` or `pool` |

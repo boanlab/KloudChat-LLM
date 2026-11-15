@@ -94,6 +94,8 @@ class ModelSpec:
     max_inflight: int = DEFAULT_MAX_INFLIGHT
     #: Default presence_penalty on the deployment; None sends none
     presence_penalty: Optional[float] = None
+    #: Default temperature on the deployment; None sends none
+    temperature: Optional[float] = None
     #: Run by hand (VLLM_ENDPOINTS), never placed; listed for its LiteLLM routes
     manual: bool = False
     #: Filled by bind()
@@ -165,6 +167,7 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
     if max_inflight <= 0:
         raise ValueError(f"{model_id}: max_inflight must be above zero")
     raw_penalty = entry.get("presence_penalty")
+    raw_temperature = entry.get("temperature")
 
     raw_replicas = entry.get("replicas")
     replicas = None if raw_replicas is None else int(raw_replicas)
@@ -197,6 +200,7 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
         timeout=int(entry.get("timeout") or 0),
         max_inflight=max_inflight,
         presence_penalty=None if raw_penalty is None else float(raw_penalty),
+        temperature=None if raw_temperature is None else float(raw_temperature),
         ctx_target_override=int(entry["ctx_target"]) if entry.get("ctx_target") else None,
         weight_override=parse_size(entry["weight"]) if entry.get("weight") else None,
         activation_override=(

@@ -726,14 +726,15 @@ vllm_wait_until_ready() {
 # order, CATALOG_<field>[id] per model
 CATALOG_IDS=()
 declare -gA CATALOG_API=() CATALOG_PREFIX=() CATALOG_OR=() CATALOG_TIMEOUT=() \
-  CATALOG_MAX_INFLIGHT=() CATALOG_PRESENCE=()
+  CATALOG_MAX_INFLIGHT=() CATALOG_PRESENCE=() CATALOG_TEMPERATURE=()
 load_model_catalog() {
   (( ${#CATALOG_IDS[@]} )) && return 0
-  local rows id api prefix or tmo cap pres
+  local rows id api prefix or tmo cap pres temp
   rows="$(cd "$__PROJECT_DIR" && python3 -m scheduler catalog)" \
     || { err "scheduler/models.yaml unreadable — python3 with PyYAML required"; return 1; }
-  while IFS=$'\t' read -r id api prefix or tmo cap pres; do
+  while IFS=$'\t' read -r id api prefix or tmo cap pres temp; do
     [[ "$pres" == - ]] && pres=""
+    [[ "$temp" == - ]] && temp=""
     [[ -n "$id" ]] || continue
     CATALOG_IDS+=("$id")
     CATALOG_API[$id]="$api"
@@ -742,6 +743,7 @@ load_model_catalog() {
     CATALOG_TIMEOUT[$id]="${tmo/#-/}"
     CATALOG_MAX_INFLIGHT[$id]="$cap"
     CATALOG_PRESENCE[$id]="$pres"
+    CATALOG_TEMPERATURE[$id]="$temp"
   done <<<"$rows"
 }
 

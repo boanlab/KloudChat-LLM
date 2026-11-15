@@ -828,7 +828,7 @@ def test_the_litellm_route_follows_the_runner_unless_declared():
     path = _write_yaml(
         "models:\n  - id: chat\n    hf_repo: org/Chat\n"
         "    openrouter: org/chat\n    timeout: 60\n    max_inflight: 8\n"
-        "    presence_penalty: 0.5\n"
+        "    presence_penalty: 0.5\n    temperature: 0.4\n"
         "  - id: emb\n    hf_repo: org/Emb\n    runner: pooling\n"
         "  - id: rr\n    hf_repo: org/Rr\n    runner: pooling\n    api: rerank\n"
     )
@@ -837,6 +837,7 @@ def test_the_litellm_route_follows_the_runner_unless_declared():
         "chat", "org/chat", 60, 8, 0.5)
     assert (emb.api, emb.openrouter, emb.max_inflight, emb.presence_penalty) == (
         "embedding", "", registry.DEFAULT_MAX_INFLIGHT, None)
+    assert (chat.temperature, emb.temperature) == (0.4, None)
     assert rr.api == "rerank"
 
 
@@ -855,10 +856,11 @@ def test_the_catalogue_prints_one_tab_separated_line_per_model(capsys):
     from scheduler.__main__ import main
     assert main(["catalog"]) == 0
     rows = [line.split("\t") for line in capsys.readouterr().out.splitlines()]
-    assert all(len(row) == 7 and all(row) for row in rows)
+    assert all(len(row) == 8 and all(row) for row in rows)
     by_id = {row[0]: row for row in rows}
     assert by_id["bge-reranker-v2-m3"][1] == "rerank"
     assert by_id["qwen3.8-27b"][3] == "qwen/qwen3.8-27b"
+    assert (by_id["qwen3.8-flash"][7], by_id["qwen3.8-27b"][7]) == ("0.4", "-")
 
 
 def test_size_suffixes():
