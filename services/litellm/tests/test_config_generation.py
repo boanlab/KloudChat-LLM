@@ -538,6 +538,121 @@ def test_the_schedulers_placements_register(tmp_path: Path) -> None:
     assert by_name["strict-local/bge-m3"]["model_info"]["mode"] == "embedding"
 
 
+def _exclude_catalogue(tmp_path: Path) -> Path:
+    catalogue = tmp_path / "catalogue.json"
+    catalogue.write_text(json.dumps({"data": [
+        {"id": slug, "pricing": {"prompt": "0", "completion": "0"},
+         "architecture": {"output_modalities": ["text"]}}
+        for slug in (
+            "liquid/lfm-2.5:free", "recursive/some-model:free",
+            "thinkingmachines/tm-1:free", "other/keep-me:free",
+        )
+    ]}))
+    return catalogue
+
+
+def _registered_names(
+    tmp_path: Path, exclude: str | None, allow: str = "*"
+) -> tuple[set[str], str]:
+    env_values = {"OR_PROVIDER_ALLOW": allow}
+    if exclude is not None:
+        env_values["OR_MODEL_EXCLUDE"] = exclude
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True, env_values=env_values,
+        extra_env={"KC_FAKE_OR_CATALOGUE": str(_exclude_catalogue(tmp_path))},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    return {m["model_name"] for m in models}, result.stderr
+
+
+def test_no_model_exclusion_changes_nothing(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    base, _ = _registered_names(tmp_path / "a", None)
+    empty, err = _registered_names(tmp_path / "b", "")
+    assert base == empty
+    assert "OR_MODEL_EXCLUDE" not in err
+    assert {"tencent/hy4-preview", "liquid/lfm-2.5:free", "other/keep-me:free"} <= base
+
+
+@pytest.mark.parametrize(
+    ("spec", "gone", "kept"),
+    [
+        # provider/ prefix
+        ("tencent/", {"tencent/hy4-preview"}, {"liquid/lfm-2.5:free", "deepseek/"}),
+        ("tencent/*,openai/gpt-6-luna", {"tencent/hy4-preview", "openai/gpt-6-luna"}, {"openai/gpt-6.1-sol"}),
+        # exact provider/model, commercial and free (with and without :free)
+        ("tencent/hy4-preview", {"tencent/hy4-preview"}, {"liquid/lfm-2.5:free"}),
+        ("liquid/lfm-2.5:free", {"liquid/lfm-2.5:free"}, {"tencent/hy4-preview"}),
+        ("liquid/lfm-2.5", {"liquid/lfm-2.5:free"}, {"recursive/some-model:free"}),
+        # glob, with spaces around the commas
+        ("liquid/lfm-*:free , recursive/*", {"liquid/lfm-2.5:free", "recursive/some-model:free"},
+         {"thinkingmachines/tm-1:free", "other/keep-me:free"}),
+        (
+            "tencent/*,liquid/*,recursive/*,thinkingmachines/*",
+            {"tencent/hy4-preview", "liquid/lfm-2.5:free", "recursive/some-model:free",
+             "thinkingmachines/tm-1:free"},
+            {"other/keep-me:free"},
+        ),
+    ],
+)
+def test_excluded_openrouter_models_are_not_registered(
+    tmp_path: Path, spec: str, gone: set[str], kept: set[str]
+) -> None:
+    names, err = _registered_names(tmp_path, spec)
+    assert not (gone & names)
+    assert all(any(n.startswith(k) or n == k for n in names) for k in kept)
+    assert "OR_MODEL_EXCLUDE left out" in err
+    for slug in gone:
+        assert slug in err
+
+
+def test_only_the_allowed_providers_register_by_default(tmp_path: Path) -> None:
+    result, _ = _run_generator(
+        tmp_path, with_vllm=True, with_openrouter=True,
+        extra_env={"KC_FAKE_OR_CATALOGUE": str(_exclude_catalogue(tmp_path))},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    names = {m["model_name"] for m in models}
+    providers = {n.split("/")[0] for n in names}
+    assert providers <= {
+        "qwen", "deepseek", "anthropic", "google", "moonshotai", "nvidia", "openai",
+        "perplexity", "x-ai", "z-ai", "bytedance-seed", "local", "strict-local",
+    }
+    assert {"nvidia/nemotron-3.5-super-vl", "anthropic/claude-fable-5.2",
+            "bytedance-seed/seedream-5-0-flash", "local/qwen3.8-27b"} <= names
+    assert not any(n.startswith(("tencent/", "xiaomi/", "minimax/", "recraft/",
+                                 "liquid/", "recursive/", "thinkingmachines/"))
+                   for n in names)
+    assert "other/keep-me:free" not in names
+
+
+def test_an_empty_provider_allowlist_means_the_default_not_no_limit(tmp_path: Path) -> None:
+    names, _ = _registered_names(tmp_path, None, allow="")
+    assert "tencent/hy4-preview" not in names
+    assert "openai/gpt-6.1-sol" in names
+
+
+def test_a_provider_can_be_allowed_again(tmp_path: Path) -> None:
+    names, _ = _registered_names(
+        tmp_path, None, allow="openai,tencent,liquid")
+    assert "tencent/hy4-preview" in names and "liquid/lfm-2.5:free" in names
+    assert "deepseek/deepseek-v4.1-flash" not in names
+
+
+def test_excluded_models_leave_the_team_allowlist(tmp_path: Path) -> None:
+    env = tmp_path / ".env"
+    env.write_text("OPENROUTER_API_KEY=k\nOR_PROVIDER_ALLOW=*\nOR_MODEL_EXCLUDE=tencent/*\n")
+    out = subprocess.run(
+        [BASH, "-c", f'source "{ROOT}/scripts/lib.sh"; litellm_chat_models_csv'],
+        env={**os.environ, "KLOUDCHAT_ENV_FILE": str(env), "ENV_FILE": str(env)},
+        cwd=ROOT, text=True, capture_output=True, check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    assert "tencent/" not in out.stdout
+    assert "deepseek/" in out.stdout
+
+
 def test_every_env_the_generator_references_reaches_the_container() -> None:
     """`os.environ/X` in generated config must be passed to the LiteLLM service by compose."""
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())

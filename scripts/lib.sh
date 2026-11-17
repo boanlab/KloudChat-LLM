@@ -137,32 +137,40 @@ gpu_usable_vram_gb() {
 
 # OpenRouter commercial catalogue, one array per provider; array order is
 # picker order. Ids: https://openrouter.ai/api/v1/models
-OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6-luna gpt-5.4-nano gpt-5.3-codex)
-ANTHROPIC_MODELS=(claude-fable-5.1 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-4.5)
-GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.8-flash gemini-3.5-flash-lite)
+# Only the providers in OR_PROVIDER_ALLOW are registered (see below); the
+# TENCENT, XIAOMI and MINIMAX arrays stay so an operator can allow them again.
+OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6.1-terra gpt-6-luna gpt-5.4-nano gpt-5.3-codex)
+ANTHROPIC_MODELS=(claude-fable-5.2 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-5.5)
+GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite)
 XAI_MODELS=(grok-4.7)
 PERPLEXITY_MODELS=(sonar sonar-pro)
-# Open-weight tier
-TENCENT_MODELS=(hy4-preview)
+NVIDIA_MODELS=(nemotron-3-ultra-550b-a55b nemotron-3.5-super-vl nemotron-3.5-lightning)
 DEEPSEEK_MODELS=(deepseek-v4-pro-0813 deepseek-v4.1-flash)
 ZAI_MODELS=(glm-5.3 glm-5.3-flash)
+MOONSHOTAI_MODELS=(kimi-k3.1-pro)
+QWEN_MODELS=(qwen4-max qwen3.8-max-0902 qwen3-coder)
+BYTEDANCE_SEED_MODELS=(seed-2-1-turbo seed-2.0-lite)
+TENCENT_MODELS=(hy4-preview)
 XIAOMI_MODELS=(mimo-v2.6-flash)
-MOONSHOTAI_MODELS=(kimi-k3)
-# Qwen's hosted tier (not the local checkpoints)
-QWEN_MODELS=(qwen3.8-max-0902 qwen3-coder-plus)
 MINIMAX_MODELS=(minimax-m3)
 # "<OpenRouter provider>:<array prefix>" for each *_MODELS array above
 OR_PROVIDERS=(openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI
-              perplexity:PERPLEXITY tencent:TENCENT deepseek:DEEPSEEK z-ai:ZAI
-              xiaomi:XIAOMI moonshotai:MOONSHOTAI qwen:QWEN minimax:MINIMAX)
+              perplexity:PERPLEXITY nvidia:NVIDIA deepseek:DEEPSEEK z-ai:ZAI
+              moonshotai:MOONSHOTAI qwen:QWEN bytedance-seed:BYTEDANCE_SEED
+              tencent:TENCENT xiaomi:XIAOMI minimax:MINIMAX)
+# Providers the generator registers, commercial and free alike (comma-separated;
+# `*` = every provider). Shell environment first, then .env; an empty value
+# means this default, not "no limit".
+OR_PROVIDER_ALLOW_DEFAULT="qwen,deepseek,anthropic,google,moonshotai,nvidia,openai,perplexity,x-ai,z-ai,bytedance-seed"
 
 # Image generation, cheapest per picture first (picker default). Criteria:
 # Korean text rendered right, 16:9 ratio kept, served on chat/completions
 # (GPT Image 2.5, FLUX 3 and Qwen Image 3 serve only OpenRouter's /images).
 OR_IMAGE_MODELS=(
   bytedance-seed/seedream-5-0-flash
-  recraft/recraft-v4.1
+  bytedance-seed/seedream-5-5
   x-ai/grok-imagine-image-2.0
+  google/gemini-nano-banana-2.1
   openai/gpt-5.4-image-2
   google/gemini-3-pro-image
 )
@@ -172,8 +180,9 @@ OR_IMAGE_MODELS=(
 # GPT-5.4 Image 2: $0.127 over 3866 output tokens for one 16:9 picture
 declare -A MODEL_IMAGE_OUT_COST=(
   [bytedance-seed/seedream-5-0-flash]=0.0000043114
-  [recraft/recraft-v4.1]=0.0000083832
+  [bytedance-seed/seedream-5-5]=0.0000047904
   [x-ai/grok-imagine-image-2.0]=0.0000095808
+  [google/gemini-nano-banana-2.1]=0.00003
   [openai/gpt-5.4-image-2]=0.0000329196
   [google/gemini-3-pro-image]=0.00012
 )
@@ -202,8 +211,9 @@ declare -A MODEL_AUDIO_PER_CALL=(
 
 declare -A MODEL_IMAGE_IN_PM=(
   [bytedance-seed/seedream-5-0-flash]=0.00
-  [recraft/recraft-v4.1]=0.00
+  [bytedance-seed/seedream-5-5]=0.00
   [x-ai/grok-imagine-image-2.0]=0.00
+  [google/gemini-nano-banana-2.1]=1.50
   [openai/gpt-5.4-image-2]=0.00
   [google/gemini-3-pro-image]=2.00
 )
@@ -321,26 +331,32 @@ image_base_digest() {
 # Declared prices, USD per 1M tokens; or_refresh_prices overlays the live
 # catalogue. Local models are 0.
 declare -A MODEL_PRICE_IN_PM=(
-  [gpt-6-astra]=10       [gpt-6.1-sol]=2        [gpt-6-luna]=0.10      [gpt-5.4-nano]=0.20
-  [gpt-5.3-codex]=1.75
-  [claude-fable-5.1]=10  [claude-opus-5.5]=4    [claude-sonnet-5.5]=2  [claude-haiku-4.5]=1
-  [gemini-3.1-pro-preview]=2   [gemini-3.8-flash]=0.75   [gemini-3.5-flash-lite]=0.30
-  [grok-4.7]=2           [sonar]=1.00              [sonar-pro]=3.00
-  [hy4-preview]=0.751    [deepseek-v4-pro-0813]=0.22  [deepseek-v4.1-flash]=0.30
-  [glm-5.3]=1.40         [glm-5.3-flash]=0.15      [mimo-v2.6-flash]=0.14    [kimi-k3]=0.99
-  [qwen3.8-max-0902]=2.00  [qwen3-coder-plus]=0.65
-  [minimax-m3]=0.30
+  [gpt-6-astra]=10  [gpt-6.1-sol]=2  [gpt-6.1-terra]=1
+  [gpt-6-luna]=0.1  [gpt-5.4-nano]=0.2  [gpt-5.3-codex]=1.75
+  [claude-fable-5.2]=8  [claude-opus-5.5]=4  [claude-sonnet-5.5]=2
+  [claude-haiku-5.5]=0.1  [gemini-4-argon]=2  [gemini-4-carbon]=2
+  [gemini-4-hydrogen]=1.5  [gemini-3.8-flash]=0.825  [gemini-3.5-flash-lite]=0.3
+  [grok-4.7]=2  [sonar]=1  [sonar-pro]=3
+  [nemotron-3-ultra-550b-a55b]=0.5  [nemotron-3.5-super-vl]=0.15  [nemotron-3.5-lightning]=0.07
+  [deepseek-v4-pro-0813]=0.111  [deepseek-v4.1-flash]=0.3  [glm-5.3]=0.0699
+  [glm-5.3-flash]=0.15  [kimi-k3.1-pro]=0.2403  [qwen4-max]=1.425
+  [qwen3.8-max-0902]=2  [qwen3-coder]=0.3  [seed-2-1-turbo]=0.5
+  [seed-2.0-lite]=0.25  [hy4-preview]=0.834  [mimo-v2.6-flash]=0.14
+  [minimax-m3]=0.3
 )
 declare -A MODEL_PRICE_OUT_PM=(
-  [gpt-6-astra]=50       [gpt-6.1-sol]=10       [gpt-6-luna]=0.50      [gpt-5.4-nano]=1.25
-  [gpt-5.3-codex]=14.00
-  [claude-fable-5.1]=50  [claude-opus-5.5]=20   [claude-sonnet-5.5]=10 [claude-haiku-4.5]=5
-  [gemini-3.1-pro-preview]=12  [gemini-3.8-flash]=3.75   [gemini-3.5-flash-lite]=2.50
-  [grok-4.7]=6           [sonar]=1.00              [sonar-pro]=15.00
-  [hy4-preview]=2.25     [deepseek-v4-pro-0813]=4.20  [deepseek-v4.1-flash]=1.20
-  [glm-5.3]=4.40         [glm-5.3-flash]=0.50      [mimo-v2.6-flash]=0.28    [kimi-k3]=13.00
-  [qwen3.8-max-0902]=6.00  [qwen3-coder-plus]=3.25
-  [minimax-m3]=1.20
+  [gpt-6-astra]=50  [gpt-6.1-sol]=10  [gpt-6.1-terra]=5
+  [gpt-6-luna]=0.5  [gpt-5.4-nano]=1.25  [gpt-5.3-codex]=14
+  [claude-fable-5.2]=40  [claude-opus-5.5]=20  [claude-sonnet-5.5]=10
+  [claude-haiku-5.5]=0.5  [gemini-4-argon]=10  [gemini-4-carbon]=10
+  [gemini-4-hydrogen]=7.5  [gemini-3.8-flash]=4.125  [gemini-3.5-flash-lite]=2.5
+  [grok-4.7]=6  [sonar]=1  [sonar-pro]=15
+  [nemotron-3-ultra-550b-a55b]=2.2  [nemotron-3.5-super-vl]=0.5  [nemotron-3.5-lightning]=0.2
+  [deepseek-v4-pro-0813]=4.44  [deepseek-v4.1-flash]=1.2  [glm-5.3]=1.4
+  [glm-5.3-flash]=0.5  [kimi-k3.1-pro]=8.4023  [qwen4-max]=4.275
+  [qwen3.8-max-0902]=6  [qwen3-coder]=1  [seed-2-1-turbo]=2.5
+  [seed-2.0-lite]=2  [hy4-preview]=2.501  [mimo-v2.6-flash]=0.28
+  [minimax-m3]=1.2
 )
 
 # OpenRouter twins of local models, USD per 1M tokens,
@@ -447,6 +463,15 @@ or_refresh_prices() {
 # OpenRouter's free chat models, one slug per line: zero price both ways, text
 # output, `:free` suffix, guardrail models excluded
 or_free_models() {
+  local m
+  while IFS= read -r m; do
+    [[ -n "$m" ]] && ! or_model_excluded "$m" && echo "$m"
+  done < <(or_free_models_all)
+  return 0
+}
+
+# The same before the provider and exclusion filters
+or_free_models_all() {
   has_openrouter || return 0
   command -v jq &>/dev/null || return 0
   or_catalogue 2>/dev/null \
@@ -457,6 +482,58 @@ or_free_models() {
         | select(.id | endswith(":free"))
         | select(.id | test("guard|safety|safeguard|moderation") | not)
         | .id' 2>/dev/null | sort
+}
+
+# Which OpenRouter models the generator leaves out. Two filters, both read from
+# the shell environment first and then .env:
+#   OR_PROVIDER_ALLOW  providers to register (empty = the built-in default list,
+#                      `*` = every provider); applies to commercial, image,
+#                      audio and free models alike. Local routes are not touched.
+#   OR_MODEL_EXCLUDE   comma-separated items taken out of what is allowed: a
+#                      `provider/` prefix, a `provider/model`, or a glob such as
+#                      `liquid/lfm-*:free`. Empty = nothing excluded.
+or_provider_allowed() {  # $1=provider
+  local spec="${OR_PROVIDER_ALLOW-$(env_get OR_PROVIDER_ALLOW)}" p
+  spec="${spec//[[:space:]]/}"
+  spec="${spec:-$OR_PROVIDER_ALLOW_DEFAULT}"
+  [[ "$spec" == '*' ]] && return 0
+  local IFS=','
+  for p in $spec; do [[ "$p" == "$1" ]] && return 0; done
+  return 1
+}
+
+or_model_excluded() {  # $1=provider/model slug (free slugs keep their :free suffix)
+  local slug="$1" spec="${OR_MODEL_EXCLUDE-$(env_get OR_MODEL_EXCLUDE)}" pat
+  or_provider_allowed "${slug%%/*}" || return 0
+  [[ -n "$spec" ]] || return 1
+  local IFS=','
+  for pat in $spec; do
+    pat="${pat//[[:space:]]/}"
+    [[ -n "$pat" ]] || continue
+    [[ "$pat" == */ ]] && pat="${pat}*"
+    # shellcheck disable=SC2053
+    if [[ "$slug" == $pat || "${slug%:free}" == $pat ]]; then return 0; fi
+  done
+  return 1
+}
+
+# Every OpenRouter model the two filters remove, one slug per line
+or_excluded_list() {
+  local m prov var
+  has_openrouter || return 0
+  for prov in "${OR_PROVIDERS[@]}"; do
+    var="${prov##*:}_MODELS[@]"
+    for m in "${!var}"; do
+      or_model_excluded "${prov%%:*}/$m" && echo "${prov%%:*}/$m"
+    done
+  done
+  for m in "${OR_IMAGE_MODELS[@]}" "${OR_AUDIO_MODELS[@]}"; do
+    or_model_excluded "$m" && echo "$m"
+  done
+  while IFS= read -r m; do
+    [[ -n "$m" ]] && or_model_excluded "$m" && echo "$m"
+  done < <(or_free_models_all)
+  return 0
 }
 
 # Declared prices against the live catalogue; one line per mismatch, rc 1 if any
@@ -812,18 +889,13 @@ litellm_chat_models_csv() {
   resolve_local_models >/dev/null || return 1
   local out=() m
   if has_openrouter; then
-    for m in "${OPENAI_MODELS[@]}";     do out+=("openai/$m");     done
-    for m in "${ANTHROPIC_MODELS[@]}";  do out+=("anthropic/$m");  done
-    for m in "${GOOGLE_MODELS[@]}";     do out+=("google/$m");     done
-    for m in "${DEEPSEEK_MODELS[@]}";   do out+=("deepseek/$m");   done
-    for m in "${XAI_MODELS[@]}";        do out+=("x-ai/$m");       done
-    for m in "${PERPLEXITY_MODELS[@]}"; do out+=("perplexity/$m"); done
-    for m in "${TENCENT_MODELS[@]}";    do out+=("tencent/$m");    done
-    for m in "${ZAI_MODELS[@]}";        do out+=("z-ai/$m");       done
-    for m in "${XIAOMI_MODELS[@]}";     do out+=("xiaomi/$m");     done
-    for m in "${MOONSHOTAI_MODELS[@]}"; do out+=("moonshotai/$m"); done
-    for m in "${QWEN_MODELS[@]}";       do out+=("qwen/$m");       done
-    for m in "${MINIMAX_MODELS[@]}";    do out+=("minimax/$m");    done
+    local prov var
+    for prov in "${OR_PROVIDERS[@]}"; do
+      var="${prov##*:}_MODELS[@]"
+      for m in "${!var}"; do
+        or_model_excluded "${prov%%:*}/$m" || out+=("${prov%%:*}/$m")
+      done
+    done
   fi
   # Same routes as gen-litellm-config.sh emit_brain
   for m in "${CATALOG_IDS[@]}"; do

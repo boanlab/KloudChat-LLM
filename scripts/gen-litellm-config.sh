@@ -74,6 +74,7 @@ emit_or_free() {
 emit_commercial_or() {
   local prov="$1" id="$2" in_pm="$3" out_pm="$4" route_prov="${5:-$1}"
   has_openrouter || return 0
+  or_model_excluded "${prov}/${id}" && return 0
   echo "  - model_name: ${prov}/${id}"
   echo "    litellm_params:"
   echo "      model: openrouter/${route_prov}/${id}${OR_VARIANT}"
@@ -347,6 +348,12 @@ else
   warn "prices: could not reach the catalogue — using the declared fallbacks"
 fi
 
+# OR_MODEL_EXCLUDE: one summary line (the emit functions skip the models)
+excluded="$(or_excluded_list | paste -sd, -)"
+if [[ -n "$excluded" ]]; then
+  info "OR_PROVIDER_ALLOW / OR_MODEL_EXCLUDE left out $(tr -cd , <<<"$excluded" | wc -c | awk '{print $1+1}') models: ${excluded//,/, }"
+fi
+
 SECTION=$(
   echo "  ${MARKER_START}"
   # --- local (vLLM), or the OpenRouter slug where nothing is deployed ---
@@ -367,19 +374,12 @@ SECTION=$(
     esac
   done
   # --- commercial (OpenRouter) ---
-  for m in "${OPENAI_MODELS[@]}";        do emit_commercial_or openai "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  for m in "${ANTHROPIC_MODELS[@]}"; do emit_commercial_or anthropic "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  for m in "${GOOGLE_MODELS[@]}";    do emit_commercial_or google    "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  for m in "${XAI_MODELS[@]}";        do emit_commercial_or x-ai       "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  for m in "${PERPLEXITY_MODELS[@]}"; do emit_commercial_or perplexity "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  # --- open-weight tier ---
-  for m in "${TENCENT_MODELS[@]}";    do emit_commercial_or tencent    "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  for m in "${DEEPSEEK_MODELS[@]}";   do emit_commercial_or deepseek   "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  for m in "${ZAI_MODELS[@]}";        do emit_commercial_or z-ai       "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  for m in "${XIAOMI_MODELS[@]}";     do emit_commercial_or xiaomi     "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  for m in "${MOONSHOTAI_MODELS[@]}"; do emit_commercial_or moonshotai "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  for m in "${QWEN_MODELS[@]}";       do emit_commercial_or qwen       "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
-  for m in "${MINIMAX_MODELS[@]}";    do emit_commercial_or minimax    "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"; done
+  for prov in "${OR_PROVIDERS[@]}"; do
+    var="${prov##*:}_MODELS[@]"
+    for m in "${!var}"; do
+      emit_commercial_or "${prov%%:*}" "$m" "${MODEL_PRICE_IN_PM[$m]}" "${MODEL_PRICE_OUT_PM[$m]}"
+    done
+  done
   # --- free tier, from the live catalogue ---
   free_count=0
   while IFS= read -r free_slug; do
@@ -390,12 +390,14 @@ SECTION=$(
   if (( free_count > 0 )); then info "registered ${free_count} free models"; fi
   # --- image generation (chat/completions; image-only models take modalities ["image"]) ---
   for m in "${OR_IMAGE_MODELS[@]}"; do
+    or_model_excluded "$m" && continue
     emit_or_image "$m" "${MODEL_IMAGE_OUT_COST[$m]}" "${MODEL_IMAGE_IN_PM[$m]}"
   done
   emit_local_images "$(env_get IMAGEGEN_BACKENDS)"
   emit_local_stt "$(env_get WHISPER_URLS)"
   # --- audio generation (speech + music), same transport ---
   for m in "${OR_AUDIO_MODELS[@]}"; do
+    or_model_excluded "$m" && continue
     emit_or_audio "$m" "${MODEL_AUDIO_IN_PM[$m]}" "${MODEL_AUDIO_OUT_PM[$m]}" "${MODEL_AUDIO_PER_CALL[$m]:-}"
   done
   # --- OpenRouter twins of the deployed local models (fallback targets, hidden) ---
