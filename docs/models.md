@@ -336,7 +336,7 @@ retrieval.
 ```bash
 OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6.1-terra gpt-6-luna gpt-5.4-nano gpt-5.3-codex)
 ANTHROPIC_MODELS=(claude-fable-5.2 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-5.5)
-GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite)
+GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite gemma-4-31b-it)
 XAI_MODELS=(grok-4.7)
 PERPLEXITY_MODELS=(sonar sonar-pro)
 NVIDIA_MODELS=(nemotron-3-ultra-550b-a55b nemotron-3.5-super-vl nemotron-3.5-lightning)

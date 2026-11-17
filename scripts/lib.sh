@@ -141,7 +141,7 @@ gpu_usable_vram_gb() {
 # TENCENT, XIAOMI and MINIMAX arrays stay so an operator can allow them again.
 OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6.1-terra gpt-6-luna gpt-5.4-nano gpt-5.3-codex)
 ANTHROPIC_MODELS=(claude-fable-5.2 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-5.5)
-GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite)
+GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite gemma-4-31b-it)
 XAI_MODELS=(grok-4.7)
 PERPLEXITY_MODELS=(sonar sonar-pro)
 NVIDIA_MODELS=(nemotron-3-ultra-550b-a55b nemotron-3.5-super-vl nemotron-3.5-lightning)
@@ -335,7 +335,7 @@ declare -A MODEL_PRICE_IN_PM=(
   [gpt-6-luna]=0.1  [gpt-5.4-nano]=0.2  [gpt-5.3-codex]=1.75
   [claude-fable-5.2]=8  [claude-opus-5.5]=4  [claude-sonnet-5.5]=2
   [claude-haiku-5.5]=0.1  [gemini-4-argon]=2  [gemini-4-carbon]=2
-  [gemini-4-hydrogen]=1.5  [gemini-3.8-flash]=0.825  [gemini-3.5-flash-lite]=0.3
+  [gemini-4-hydrogen]=1.5  [gemini-3.8-flash]=0.825  [gemini-3.5-flash-lite]=0.3  [gemma-4-31b-it]=0.2
   [grok-4.7]=2  [sonar]=1  [sonar-pro]=3
   [nemotron-3-ultra-550b-a55b]=0.5  [nemotron-3.5-super-vl]=0.15  [nemotron-3.5-lightning]=0.07
   [deepseek-v4-pro-0813]=0.111  [deepseek-v4.1-flash]=0.3  [glm-5.3]=0.0699
@@ -349,7 +349,7 @@ declare -A MODEL_PRICE_OUT_PM=(
   [gpt-6-luna]=0.5  [gpt-5.4-nano]=1.25  [gpt-5.3-codex]=14
   [claude-fable-5.2]=40  [claude-opus-5.5]=20  [claude-sonnet-5.5]=10
   [claude-haiku-5.5]=0.5  [gemini-4-argon]=10  [gemini-4-carbon]=10
-  [gemini-4-hydrogen]=7.5  [gemini-3.8-flash]=4.125  [gemini-3.5-flash-lite]=2.5
+  [gemini-4-hydrogen]=7.5  [gemini-3.8-flash]=4.125  [gemini-3.5-flash-lite]=2.5  [gemma-4-31b-it]=0.4
   [grok-4.7]=6  [sonar]=1  [sonar-pro]=15
   [nemotron-3-ultra-550b-a55b]=2.2  [nemotron-3.5-super-vl]=0.5  [nemotron-3.5-lightning]=0.2
   [deepseek-v4-pro-0813]=4.44  [deepseek-v4.1-flash]=1.2  [glm-5.3]=1.4
