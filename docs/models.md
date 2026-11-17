@@ -199,6 +199,58 @@ filtered.
 `KC_OR_VARIANT` changes the suffix: `:nitro` for throughput, empty for the
 OpenRouter default. Embeddings are unaffected.
 
+#### Run policy
+
+Off by default; turning an option on changes only the requests and the registry it names.
+Set in `.env` (or the shell) and regenerate with `scripts/gen-litellm-config.sh`.
+
+- `OR_OPEN_WEIGHT_POLICY=strict` limits open-weight models (`OR_OPEN_WEIGHT`) to endpoints that
+  disclose their quantization **and** are ZDR (OpenRouter's `provider.zdr`). No provider is named:
+  the request carries `provider: {zdr: true, quantizations: [...], allow_fallbacks: true}`, and
+  `:floor` picks the cheapest endpoint that passes. A model with no such endpoint is left out and
+  the generator logs one line naming it. Closed models are not affected.
+- `OR_PROVIDER_PIN` chooses among the eligible endpoints (or, for a closed model, among the
+  providers that serve it): `OR_PROVIDER_PIN=moonshotai/kimi-k3=Wafer`. The request then carries
+  `provider.order` with `allow_fallbacks: false`, the `:floor` suffix is dropped, and the model
+  records `kchat_provider_pinned` and that endpoint's `kchat_quantization`. A pin that is not
+  eligible is ignored with a warning; a provider that stops serving the model falls back to the
+  filter with a warning at the next generation.
+- `OR_ZDR_ONLY=1` adds `provider.zdr: true` to every OpenRouter request and leaves out models
+  with no ZDR endpoint.
+
+Choosing a provider:
+
+```bash
+scripts/or-endpoints.sh --summary          # eligible endpoint count per open-weight model
+scripts/or-endpoints.sh 'moonshotai/*'     # provider, quantization, price, context, uptime, ZDR
+scripts/or-endpoints.sh --all 'z-ai/*'     # also the endpoints that are not eligible
+# then, in .env:
+#   OR_OPEN_WEIGHT_POLICY=strict
+#   OR_PROVIDER_PIN=moonshotai/kimi-k3=Wafer
+scripts/gen-litellm-config.sh && docker compose restart litellm
+```
+
+The helper is read-only and needs no key. It matches an endpoint to the ZDR list by provider
+tag and model name; check one result against the OpenRouter model page before relying on it.
+The model_info the picker shows (`kchat_run_policy`, `kchat_provider_pinned`,
+`kchat_quantization`, `kchat_zdr`) is written at generation time, so regenerate after the
+provider's own change of quantization.
+
+**Provider in streamed answers.** OpenRouter names the provider that answered in each response,
+but LiteLLM's streaming parser drops it. `callbacks/provider_echo.py` (listed under
+`litellm_settings.callbacks` in `config.yaml.example`; add it to an existing `config.yaml`)
+carries it through, and KloudChat shows it under 「이번 답」.
+
+### Self-hosted run information
+
+A self-hosted model declares how it runs in `model_info`: `kchat_quantization` (weights),
+`kchat_kv_cache` and `kchat_engine`. The generator reads the engine version from vLLM's
+`/version` and the KV cache dtype from `/metrics` and otherwise uses
+`KC_<PREFIX>_QUANTIZATION`, `KC_<PREFIX>_KV_CACHE` and `KC_<PREFIX>_ENGINE`
+(see `docs/env-reference.md`). Nothing is guessed. DeepSeek V4 Flash, as run today:
+`KC_DSFLASH_QUANTIZATION=NVFP4`, `KC_DSFLASH_KV_CACHE=fp8`, engine vLLM 0.33.0, tensor
+parallel 2, tool and reasoning parsers `deepseek_v4`.
+
 ### vLLM (local)
 
 Where a model runs comes from two lists, merged; no script names a model:

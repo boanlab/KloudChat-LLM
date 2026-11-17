@@ -568,7 +568,7 @@ or_provider_allowed() {  # $1=provider
   return 1
 }
 
-or_model_excluded() {  # $1=provider/model slug (free slugs keep their :free suffix)
+__or_filter_excluded() {  # $1=provider/model slug (free slugs keep their :free suffix)
   local slug="$1" spec="${OR_MODEL_EXCLUDE-$(env_get OR_MODEL_EXCLUDE)}" pat
   or_provider_allowed "${slug%%/*}" || return 0
   [[ -n "$spec" ]] || return 1
@@ -583,6 +583,158 @@ or_model_excluded() {  # $1=provider/model slug (free slugs keep their :free suf
   return 1
 }
 
+# ── Run policy: which OpenRouter endpoints a model may run on ───────────────────
+# All off by default (nothing changes). Shell environment first, then .env:
+#   OR_OPEN_WEIGHT_POLICY  strict: an open-weight model (OR_OPEN_WEIGHT) runs only on
+#                          endpoints that disclose their quantization AND are ZDR, any such
+#                          endpoint (cheapest first with :floor); none → the model is left out
+#   OR_OPEN_WEIGHT         glob list of the open-weight models (default below)
+#   OR_PROVIDER_PIN        `pattern=Provider[|Provider]`, comma-separated: run on that provider
+#                          only (no fallback); for an open-weight model it must be eligible
+#   OR_ZDR_ONLY=1          every OpenRouter request carries provider.zdr; a model with no ZDR
+#                          endpoint is left out
+# Endpoint facts come from /api/v1/models/<id>/endpoints and /api/v1/endpoints/zdr (public).
+OR_OPEN_WEIGHT_DEFAULT="openai/gpt-oss-*,google/gemma-*,meta-llama/*,nvidia/nemotron-*,deepseek/*,z-ai/*,moonshotai/*,qwen/qwen3-coder*,qwen/qwen3.5-*,qwen/qwen3.6-*,qwen/qwen3-vl-*,mistralai/mistral-nemo,mistralai/ministral-*,mistralai/mistral-small-*"
+
+__or_setting() {  # $1=NAME: shell environment first, then .env
+  local n="$1"
+  if [[ -n "${!n+set}" ]]; then echo "${!n}"; else env_get "$n"; fi
+}
+
+__or_policy_active() {
+  [[ "$(__or_setting OR_OPEN_WEIGHT_POLICY)" == strict \
+     || "$(__or_setting OR_ZDR_ONLY)" == 1 || -n "$(__or_setting OR_PROVIDER_PIN)" ]]
+}
+
+# Per-run scratch directory for fetched endpoint data and decisions
+__or_work() {
+  if [[ -z "${KC_OR_WORK:-}" || ! -d "${KC_OR_WORK}" ]]; then
+    KC_OR_WORK="$(mktemp -d -t kc-or-work.XXXXXX)"; export KC_OR_WORK
+    [[ -z "$(trap -p EXIT)" ]] && trap 'rm -rf "${KC_OR_WORK:-}"' EXIT
+  fi
+  echo "$KC_OR_WORK"
+}
+
+# Public OpenRouter GET into a file, cached per run; rc 1 when unreachable
+__or_fetch() {  # $1=api path  $2=cache file
+  [[ -s "$2" ]] && return 0
+  [[ -e "$2.fail" ]] && return 1
+  mkdir -p "$(dirname "$2")"
+  if curl -sf --max-time 20 "https://openrouter.ai/api/v1/$1" -o "$2" 2>/dev/null && [[ -s "$2" ]]; then
+    return 0
+  fi
+  rm -f "$2"; : > "$2.fail"; return 1
+}
+
+or_zdr_file() { local w; w="$(__or_work)"; __or_fetch endpoints/zdr "$w/zdr.json" && echo "$w/zdr.json"; }
+or_endpoints_file() {  # $1=slug (a :free suffix is dropped)
+  local w slug="${1%:free}"; w="$(__or_work)"
+  __or_fetch "models/${slug}/endpoints" "$w/ep/${slug//\//__}.json" && echo "$w/ep/${slug//\//__}.json"
+}
+
+# `pattern=Provider|Provider` entries of OR_PROVIDER_PIN that match $1; first match wins
+__or_pin_for() {
+  local slug="$1" spec pat val IFS=','
+  spec="$(__or_setting OR_PROVIDER_PIN)"
+  for pat in $spec; do
+    pat="${pat#"${pat%%[![:space:]]*}"}"
+    [[ "$pat" == *=* ]] || continue
+    val="${pat#*=}"; pat="${pat%%=*}"; pat="${pat//[[:space:]]/}"
+    # shellcheck disable=SC2053
+    if [[ "$slug" == $pat || "${slug%:free}" == $pat ]]; then echo "${val%"${val##*[![:space:]]}"}"; return 0; fi
+  done
+  return 0
+}
+
+__or_is_open_weight() {
+  local slug="${1%:free}" spec pat IFS=','
+  [[ "$(__or_setting OR_OPEN_WEIGHT_POLICY)" == strict ]] || return 1
+  spec="$(__or_setting OR_OPEN_WEIGHT)"; spec="${spec:-$OR_OPEN_WEIGHT_DEFAULT}"
+  for pat in $spec; do
+    pat="${pat//[[:space:]]/}"
+    # shellcheck disable=SC2053
+    [[ -n "$pat" && "$slug" == $pat ]] && return 0
+  done
+  return 1
+}
+
+# Decision JSON for one model (see scripts/or_policy.py), cached per run. Warnings print once.
+or_decision() {  # $1=provider/model slug
+  local slug="$1" w f ep zdr
+  __or_policy_active || { echo '{"policy":"none","exclude":false,"provider":null}'; return 0; }
+  w="$(__or_work)"; f="$w/dec/${slug//\//__}.json"
+  if [[ ! -s "$f" ]]; then
+    mkdir -p "$w/dec"
+    local args=(decide --slug "$slug" --pin "$(__or_pin_for "$slug")")
+    __or_is_open_weight "$slug" && args+=(--open-weight)
+    [[ "$(__or_setting OR_ZDR_ONLY)" == 1 ]] && args+=(--zdr-only)
+    local q; q="$(__or_setting OR_OPEN_WEIGHT_QUANTIZATIONS)"
+    [[ -n "$q" ]] && args+=(--quantizations "$q")
+    ep="$(or_endpoints_file "$slug" || true)"; zdr="$(or_zdr_file || true)"
+    [[ -n "$ep" && -n "$zdr" ]] && args+=(--endpoints "$ep" --zdr "$zdr")
+    python3 "${__PROJECT_DIR}/scripts/or_policy.py" "${args[@]}" > "$f.tmp" && mv "$f.tmp" "$f" \
+      || { rm -f "$f.tmp"; echo '{"policy":"none","exclude":false,"provider":null}'; return 0; }
+    jq -r '.warnings[]?' "$f" 2>/dev/null | while IFS= read -r line; do warn "$line"; done
+    if [[ "$(jq -r .exclude "$f")" == true ]]; then
+      echo "$slug ($(jq -r .reason "$f"))" >> "$w/excluded.txt"
+    fi
+  fi
+  cat "$f"
+}
+
+# True when the run policy leaves the model out of the registry
+or_policy_excluded() {
+  [[ "$(or_decision "$1" | jq -r '.exclude // false' 2>/dev/null)" == true ]]
+}
+
+# Whether the OpenRouter name carries a model the policy or the filters leave out
+or_model_excluded() {  # $1=provider/model slug (free slugs keep their :free suffix)
+  __or_filter_excluded "$1" && return 0
+  or_policy_excluded "$1"
+}
+
+# litellm_params lines for a model: `extra_body.provider` when the policy sets one
+or_provider_params() {  # $1=slug
+  local p; p="$(or_decision "$1" | jq -c '.provider // empty' 2>/dev/null)"
+  [[ -n "$p" ]] && echo "      extra_body: {\"provider\": ${p}}"
+  return 0
+}
+
+# Route suffix: a pinned model has its provider order, so no :floor sort on top
+or_route_variant() {  # $1=slug  $2=default suffix
+  if [[ -n "$(or_decision "$1" | jq -r '.pinned // empty' 2>/dev/null)" ]]; then return 0; fi
+  echo -n "$2"
+}
+
+# model_info lines for a model: what KloudChat shows in the picker
+or_policy_info() {  # $1=slug
+  or_decision "$1" | jq -r '
+    select(.policy != "none")
+    | "      kchat_run_policy: " + (.policy | tojson),
+      (if .pinned then "      kchat_provider_pinned: " + (.pinned | tojson) else empty end),
+      (if .quantization then "      kchat_quantization: " + (.quantization | tojson) else empty end),
+      (if .zdr != null then "      kchat_zdr: " + (.zdr | tostring) else empty end)' 2>/dev/null || true
+}
+
+# One slug per line: what the run policy takes out of the registered models
+or_policy_excluded_list() {
+  local m prov var
+  has_openrouter || return 0
+  __or_policy_active || return 0
+  for prov in "${OR_PROVIDERS[@]}"; do
+    var="${prov##*:}_MODELS[@]"
+    for m in "${!var}"; do
+      __or_filter_excluded "${prov%%:*}/$m" && continue
+      or_policy_excluded "${prov%%:*}/$m" && echo "${prov%%:*}/$m"
+    done
+  done
+  for m in "${OR_IMAGE_MODELS[@]}" "${OR_AUDIO_MODELS[@]}"; do
+    __or_filter_excluded "$m" && continue
+    or_policy_excluded "$m" && echo "$m"
+  done
+  return 0
+}
+
 # Every OpenRouter model the two filters remove, one slug per line
 or_excluded_list() {
   local m prov var
@@ -590,14 +742,14 @@ or_excluded_list() {
   for prov in "${OR_PROVIDERS[@]}"; do
     var="${prov##*:}_MODELS[@]"
     for m in "${!var}"; do
-      or_model_excluded "${prov%%:*}/$m" && echo "${prov%%:*}/$m"
+      __or_filter_excluded "${prov%%:*}/$m" && echo "${prov%%:*}/$m"
     done
   done
   for m in "${OR_IMAGE_MODELS[@]}" "${OR_AUDIO_MODELS[@]}"; do
-    or_model_excluded "$m" && echo "$m"
+    __or_filter_excluded "$m" && echo "$m"
   done
   while IFS= read -r m; do
-    [[ -n "$m" ]] && or_model_excluded "$m" && echo "$m"
+    [[ -n "$m" ]] && __or_filter_excluded "$m" && echo "$m"
   done < <(or_free_models_all)
   return 0
 }
@@ -772,6 +924,24 @@ vllm_discover_max_len() {
     sleep 2
   done
   return 1
+}
+
+# What a running vLLM says about itself, one probe each (empty when unreachable or unsaid)
+__vllm_probe_url() {
+  local probe; probe="$(__vllm_normalize_url "$1")"
+  echo "${probe//host.docker.internal/localhost}"
+}
+vllm_discover_engine() {  # "vLLM 0.33.0" from /version
+  local v; v="$(curl -sf --max-time 5 "$(__vllm_probe_url "$1")/version" 2>/dev/null \
+                | jq -r '.version // empty' 2>/dev/null)"
+  [[ "$v" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] && echo "vLLM ${v#v}"
+  return 0
+}
+vllm_discover_kv_cache() {  # cache_dtype label of vllm:cache_config_info on /metrics; `auto` = unsaid
+  local v; v="$(curl -sf --max-time 5 "$(__vllm_probe_url "$1")/metrics" 2>/dev/null \
+                | grep -m1 '^vllm:cache_config_info' | sed -n 's/.*cache_dtype="\([^"]*\)".*/\1/p')"
+  [[ "$v" =~ ^[0-9A-Za-z_]+$ && "$v" != auto ]] && echo "$v"
+  return 0
 }
 
 # URL host → ssh target: the matching user@host from VLLM_NODES, else the host
