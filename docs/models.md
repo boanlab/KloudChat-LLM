@@ -14,7 +14,7 @@ Which models are registered where, and how requests are routed to them.
 | Variable in `lib.sh` | Role |
 |---|---|
 | `OPENAI_MODELS` / `ANTHROPIC_MODELS` / `GOOGLE_MODELS` / `XAI_MODELS` / `PERPLEXITY_MODELS` | Frontier tier, through OpenRouter |
-| `META_LLAMA_MODELS` / `NVIDIA_MODELS` / `DEEPSEEK_MODELS` / `ZAI_MODELS` / `MOONSHOTAI_MODELS` / `QWEN_MODELS` / `BYTEDANCE_SEED_MODELS` | Open-weight and hosted tier, through OpenRouter |
+| `MISTRALAI_MODELS` / `META_LLAMA_MODELS` / `NVIDIA_MODELS` / `DEEPSEEK_MODELS` / `ZAI_MODELS` / `MOONSHOTAI_MODELS` / `QWEN_MODELS` / `BYTEDANCE_SEED_MODELS` | Open-weight and hosted tier, through OpenRouter |
 | `TENCENT_MODELS` / `XIAOMI_MODELS` / `MINIMAX_MODELS` | Declared but not registered unless `OR_PROVIDER_ALLOW` lists the provider |
 | `OR_IMAGE_MODELS` / `OR_AUDIO_MODELS` | Image and audio generation through OpenRouter |
 | `VLLM_MODELS` (shell array, not the `.env` key) | Download alias to HF repo. Resident sizes in `VLLM_MODEL_WEIGHT_GB` |
@@ -171,7 +171,7 @@ whether they are commercial, free, image or audio models. Local routes
 
 | Variable | Default | Effect |
 |---|---|---|
-| `OR_PROVIDER_ALLOW` | `qwen,deepseek,anthropic,google,moonshotai,nvidia,openai,perplexity,x-ai,z-ai,bytedance-seed,meta-llama` | Providers that are registered. An empty value means this default, not "no limit"; `*` allows all |
+| `OR_PROVIDER_ALLOW` | `qwen,deepseek,anthropic,google,moonshotai,nvidia,openai,perplexity,x-ai,z-ai,bytedance-seed,meta-llama,mistralai` | Providers that are registered. An empty value means this default, not "no limit"; `*` allows all |
 | `OR_MODEL_EXCLUDE` | (empty) | Removes items from the allowed set: `provider/` prefix, `provider/model`, or a glob |
 
 ```bash
@@ -348,12 +348,16 @@ GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash
               gemma-3-4b-it)
 XAI_MODELS=(grok-4.7)
 PERPLEXITY_MODELS=(sonar sonar-pro)
+MISTRALAI_MODELS=(mistral-large-4-0 mistral-medium-3-5 mistral-small-2603 ministral-14b-2512
+                  ministral-8b-2512 ministral-3b-2512 codestral-2508 devstral-2512 mistral-nemo
+                 )
 META_LLAMA_MODELS=(llama-4-maverick llama-4-scout llama-3.3-70b-instruct)
 NVIDIA_MODELS=(nemotron-3-ultra-550b-a55b nemotron-3.5-super-vl nemotron-3.5-lightning)
 DEEPSEEK_MODELS=(deepseek-v4-pro-0813 deepseek-v4.1-flash)
 ZAI_MODELS=(glm-5.3 glm-5.3-flash)
-MOONSHOTAI_MODELS=(kimi-k3.1-pro)
-QWEN_MODELS=(qwen4-max qwen3.8-max-0902 qwen3-coder)
+MOONSHOTAI_MODELS=(kimi-k3.1-pro kimi-k3)
+QWEN_MODELS=(qwen4-max qwen3.8-max-0902 qwen3-coder qwen3.6-35b-a3b qwen3.5-9b qwen3.5-35b-a3b
+             qwen3-vl-235b-a22b-instruct)
 BYTEDANCE_SEED_MODELS=(seed-2-1-turbo seed-2.0-lite)
 TENCENT_MODELS=(hy4-preview)
 XIAOMI_MODELS=(mimo-v2.6-flash)

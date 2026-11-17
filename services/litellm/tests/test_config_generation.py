@@ -617,7 +617,7 @@ def test_only_the_allowed_providers_register_by_default(tmp_path: Path) -> None:
     providers = {n.split("/")[0] for n in names}
     assert providers <= {
         "qwen", "deepseek", "anthropic", "google", "moonshotai", "nvidia", "openai",
-        "perplexity", "x-ai", "z-ai", "bytedance-seed", "meta-llama", "local", "strict-local",
+        "perplexity", "x-ai", "z-ai", "bytedance-seed", "meta-llama", "mistralai", "local", "strict-local",
     }
     assert {"nvidia/nemotron-3.5-super-vl", "anthropic/claude-fable-5.2",
             "bytedance-seed/seedream-5-0-flash", "local/qwen3.8-27b"} <= names
@@ -698,6 +698,43 @@ def test_open_models_register_with_catalogue_capabilities(tmp_path: Path) -> Non
     assert "supports_function_calling" not in scout
     assert by_name["google/gemma-3-4b-it"]["supports_function_calling"] is False
     assert "supports_vision" not in by_name["openai/gpt-oss-120b"]
+
+
+def test_mistral_qwen_and_kimi_models_register_without_free_variants(tmp_path: Path) -> None:
+    def entry(slug, inp, free=False):
+        price = "0" if free else "0.0000001"
+        return {"id": slug, "context_length": 262144,
+                "pricing": {"prompt": price, "completion": price},
+                "architecture": {"input_modalities": inp, "output_modalities": ["text"]},
+                "supported_parameters": ["tools"]}
+    catalogue = tmp_path / "catalogue.json"
+    catalogue.write_text(json.dumps({"data": [
+        entry("mistralai/mistral-nemo", ["text"]),
+        entry("mistralai/mistral-nemo:free", ["text"], True),
+        entry("moonshotai/kimi-k3", ["text", "image"]),
+        entry("typesafe/jev-1.14", ["text"]),
+    ]}))
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True,
+        env_values={"OR_PROVIDER_ALLOW": "", "OR_MODEL_EXCLUDE": "*:free"},
+        extra_env={"KC_FAKE_OR_CATALOGUE": str(catalogue)},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m["model_info"] for m in models}
+    for slug in (
+        "mistralai/mistral-large-4-0", "mistralai/mistral-medium-3-5",
+        "mistralai/mistral-small-2603", "mistralai/ministral-14b-2512",
+        "mistralai/ministral-8b-2512", "mistralai/ministral-3b-2512",
+        "mistralai/codestral-2508", "mistralai/devstral-2512", "mistralai/mistral-nemo",
+        "qwen/qwen3.6-35b-a3b", "qwen/qwen3.5-9b",
+        "qwen/qwen3.5-35b-a3b", "qwen/qwen3-vl-235b-a22b-instruct",
+        "moonshotai/kimi-k3", "moonshotai/kimi-k3.1-pro",
+    ):
+        assert slug in by_name, slug
+    assert "mistralai/mistral-nemo:free" not in by_name
+    assert not any(n.startswith("typesafe/") for n in by_name)
+    assert not any("voxtral" in n for n in by_name)  # recordings stay local
+    assert by_name["moonshotai/kimi-k3"]["supports_vision"] is True
 
 
 def test_excluded_models_leave_the_team_allowlist(tmp_path: Path) -> None:
