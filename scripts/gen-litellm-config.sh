@@ -83,6 +83,7 @@ emit_commercial_or() {
   echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
   echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
   emit_kchat_boundary external false false
+  or_capability_info "${route_prov}/${id}"
   or_reasoning_info "${route_prov}/${id}"
 }
 

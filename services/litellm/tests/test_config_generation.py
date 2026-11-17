@@ -617,7 +617,7 @@ def test_only_the_allowed_providers_register_by_default(tmp_path: Path) -> None:
     providers = {n.split("/")[0] for n in names}
     assert providers <= {
         "qwen", "deepseek", "anthropic", "google", "moonshotai", "nvidia", "openai",
-        "perplexity", "x-ai", "z-ai", "bytedance-seed", "local", "strict-local",
+        "perplexity", "x-ai", "z-ai", "bytedance-seed", "meta-llama", "local", "strict-local",
     }
     assert {"nvidia/nemotron-3.5-super-vl", "anthropic/claude-fable-5.2",
             "bytedance-seed/seedream-5-0-flash", "local/qwen3.8-27b"} <= names
@@ -660,6 +660,44 @@ def test_excluding_free_models_keeps_the_paid_twin(tmp_path: Path) -> None:
     info = by_name["google/gemma-4-31b-it"]["model_info"]
     assert info["input_cost_per_token"] == pytest.approx(2e-7)
     assert info["output_cost_per_token"] == pytest.approx(4e-7)
+
+
+def test_open_models_register_with_catalogue_capabilities(tmp_path: Path) -> None:
+    def entry(slug, ctx, inp, tools, free=False):
+        price = "0" if free else "0.0000001"
+        return {"id": slug, "context_length": ctx,
+                "pricing": {"prompt": price, "completion": price},
+                "architecture": {"input_modalities": inp, "output_modalities": ["text"]},
+                "supported_parameters": ["tools"] if tools else []}
+    catalogue = tmp_path / "catalogue.json"
+    catalogue.write_text(json.dumps({"data": [
+        entry("meta-llama/llama-4-scout", 1310720, ["text", "image"], True),
+        entry("meta-llama/llama-4-scout:free", 131072, ["text"], True, True),
+        entry("google/gemma-3-4b-it", 131072, ["text", "image"], False),
+        entry("google/gemma-3-4b-it:free", 131072, ["text"], False, True),
+        entry("openai/gpt-oss-120b", 131072, ["text"], True),
+        entry("openai/gpt-oss-120b:free", 131072, ["text"], True, True),
+        entry("typesafe/jev-router", 1000, ["text"], True),
+    ]}))
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True,
+        env_values={"OR_PROVIDER_ALLOW": "", "OR_MODEL_EXCLUDE": "*:free"},
+        extra_env={"KC_FAKE_OR_CATALOGUE": str(catalogue)},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m["model_info"] for m in models}
+    for slug in ("meta-llama/llama-3.3-70b-instruct", "meta-llama/llama-4-maverick",
+                 "meta-llama/llama-4-scout", "google/gemma-4-26b-a4b-it",
+                 "google/gemma-3-27b-it", "google/gemma-3-12b-it", "google/gemma-3-4b-it",
+                 "openai/gpt-oss-120b", "openai/gpt-oss-20b"):
+        assert slug in by_name, slug
+    assert not any(n.endswith(":free") for n in by_name)
+    assert not any(n.startswith("typesafe/") for n in by_name)
+    scout = by_name["meta-llama/llama-4-scout"]
+    assert scout["max_input_tokens"] == 1310720 and scout["supports_vision"] is True
+    assert "supports_function_calling" not in scout
+    assert by_name["google/gemma-3-4b-it"]["supports_function_calling"] is False
+    assert "supports_vision" not in by_name["openai/gpt-oss-120b"]
 
 
 def test_excluded_models_leave_the_team_allowlist(tmp_path: Path) -> None:
