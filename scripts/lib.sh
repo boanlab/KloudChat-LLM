@@ -139,11 +139,13 @@ gpu_usable_vram_gb() {
 # picker order. Ids: https://openrouter.ai/api/v1/models
 # Only the providers in OR_PROVIDER_ALLOW are registered (see below); the
 # TENCENT, XIAOMI and MINIMAX arrays stay so an operator can allow them again.
-OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6.1-terra gpt-6-luna gpt-5.4-nano gpt-5.3-codex)
+OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6.1-terra gpt-6-luna gpt-5.4-nano gpt-5.3-codex gpt-oss-120b gpt-oss-20b)
 ANTHROPIC_MODELS=(claude-fable-5.2 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-5.5)
-GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite gemma-4-31b-it)
+GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite gemma-4-31b-it gemma-4-26b-a4b-it gemma-3-27b-it gemma-3-12b-it
+              gemma-3-4b-it)
 XAI_MODELS=(grok-4.7)
 PERPLEXITY_MODELS=(sonar sonar-pro)
+META_LLAMA_MODELS=(llama-4-maverick llama-4-scout llama-3.3-70b-instruct)
 NVIDIA_MODELS=(nemotron-3-ultra-550b-a55b nemotron-3.5-super-vl nemotron-3.5-lightning)
 DEEPSEEK_MODELS=(deepseek-v4-pro-0813 deepseek-v4.1-flash)
 ZAI_MODELS=(glm-5.3 glm-5.3-flash)
@@ -157,11 +159,12 @@ MINIMAX_MODELS=(minimax-m3)
 OR_PROVIDERS=(openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI
               perplexity:PERPLEXITY nvidia:NVIDIA deepseek:DEEPSEEK z-ai:ZAI
               moonshotai:MOONSHOTAI qwen:QWEN bytedance-seed:BYTEDANCE_SEED
+              meta-llama:META_LLAMA
               tencent:TENCENT xiaomi:XIAOMI minimax:MINIMAX)
 # Providers the generator registers, commercial and free alike (comma-separated;
 # `*` = every provider). Shell environment first, then .env; an empty value
 # means this default, not "no limit".
-OR_PROVIDER_ALLOW_DEFAULT="qwen,deepseek,anthropic,google,moonshotai,nvidia,openai,perplexity,x-ai,z-ai,bytedance-seed"
+OR_PROVIDER_ALLOW_DEFAULT="qwen,deepseek,anthropic,google,moonshotai,nvidia,openai,perplexity,x-ai,z-ai,bytedance-seed,meta-llama"
 
 # Image generation, cheapest per picture first (picker default). Criteria:
 # Korean text rendered right, 16:9 ratio kept, served on chat/completions
@@ -343,6 +346,15 @@ declare -A MODEL_PRICE_IN_PM=(
   [qwen3.8-max-0902]=2  [qwen3-coder]=0.3  [seed-2-1-turbo]=0.5
   [seed-2.0-lite]=0.25  [hy4-preview]=0.834  [mimo-v2.6-flash]=0.14
   [minimax-m3]=0.3
+  [gemma-4-26b-a4b-it]=0.09
+  [gemma-3-27b-it]=0.08
+  [gemma-3-12b-it]=0.05
+  [gemma-3-4b-it]=0.05
+  [gpt-oss-120b]=0.15
+  [gpt-oss-20b]=0.018
+  [llama-3.3-70b-instruct]=0.71
+  [llama-4-maverick]=0.35
+  [llama-4-scout]=0.1
 )
 declare -A MODEL_PRICE_OUT_PM=(
   [gpt-6-astra]=50  [gpt-6.1-sol]=10  [gpt-6.1-terra]=5
@@ -357,6 +369,15 @@ declare -A MODEL_PRICE_OUT_PM=(
   [qwen3.8-max-0902]=6  [qwen3-coder]=1  [seed-2-1-turbo]=2.5
   [seed-2.0-lite]=2  [hy4-preview]=2.501  [mimo-v2.6-flash]=0.28
   [minimax-m3]=1.2
+  [gemma-4-26b-a4b-it]=0.3
+  [gemma-3-27b-it]=0.35
+  [gemma-3-12b-it]=0.15
+  [gemma-3-4b-it]=0.1
+  [gpt-oss-120b]=0.6
+  [gpt-oss-20b]=0.09
+  [llama-3.3-70b-instruct]=0.71
+  [llama-4-maverick]=1.0
+  [llama-4-scout]=0.3
 )
 
 # OpenRouter twins of local models, USD per 1M tokens,
@@ -409,6 +430,20 @@ or_reasoning_info() {
             | "      kchat_reasoning_efforts: [" + (map(tojson) | join(", ")) + "]"),
           ($r.default_effort // empty | "      kchat_reasoning_default: " + tojson),
           "      kchat_reasoning_mandatory: " + (($r.mandatory // false) | tostring)
+      ' 2>/dev/null || true
+}
+
+# model_info lines from the catalogue for an OpenRouter slug: context window,
+# vision input, and function calling only when the catalogue says the model
+# takes no tools. Nothing when the catalogue is unreachable or the slug unknown.
+or_capability_info() {
+  local slug="$1"
+  or_catalogue 2>/dev/null \
+    | jq -r --arg s "$slug" '
+        first(.data[] | select(.id == $s))
+        | (if .context_length then "      max_input_tokens: \(.context_length)" else empty end),
+          (if (.architecture.input_modalities // [] | index("image")) then "      supports_vision: true" else empty end),
+          (if (.supported_parameters // [] | index("tools")) then empty else "      supports_function_calling: false" end)
       ' 2>/dev/null || true
 }
 

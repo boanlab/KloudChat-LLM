@@ -14,7 +14,7 @@ Which models are registered where, and how requests are routed to them.
 | Variable in `lib.sh` | Role |
 |---|---|
 | `OPENAI_MODELS` / `ANTHROPIC_MODELS` / `GOOGLE_MODELS` / `XAI_MODELS` / `PERPLEXITY_MODELS` | Frontier tier, through OpenRouter |
-| `NVIDIA_MODELS` / `DEEPSEEK_MODELS` / `ZAI_MODELS` / `MOONSHOTAI_MODELS` / `QWEN_MODELS` / `BYTEDANCE_SEED_MODELS` | Open-weight and hosted tier, through OpenRouter |
+| `META_LLAMA_MODELS` / `NVIDIA_MODELS` / `DEEPSEEK_MODELS` / `ZAI_MODELS` / `MOONSHOTAI_MODELS` / `QWEN_MODELS` / `BYTEDANCE_SEED_MODELS` | Open-weight and hosted tier, through OpenRouter |
 | `TENCENT_MODELS` / `XIAOMI_MODELS` / `MINIMAX_MODELS` | Declared but not registered unless `OR_PROVIDER_ALLOW` lists the provider |
 | `OR_IMAGE_MODELS` / `OR_AUDIO_MODELS` | Image and audio generation through OpenRouter |
 | `VLLM_MODELS` (shell array, not the `.env` key) | Download alias to HF repo. Resident sizes in `VLLM_MODEL_WEIGHT_GB` |
@@ -155,6 +155,14 @@ registered; if the query fails, nothing is added. The filter is
 `:free` suffix, guardrail models excluded, and only providers allowed by
 `OR_PROVIDER_ALLOW`.
 
+## Catalogue capabilities
+
+For each commercial OpenRouter model the generator reads the live catalogue and
+writes `max_input_tokens` (context length), `supports_vision: true` when images
+are an input modality, and `supports_function_calling: false` when
+`supported_parameters` has no `tools` (for example `google/gemma-3-4b-it`).
+Nothing is written when the catalogue is unreachable.
+
 ## Provider allowlist and exclusions
 
 OpenRouter models are filtered twice before they reach the generated config,
@@ -163,7 +171,7 @@ whether they are commercial, free, image or audio models. Local routes
 
 | Variable | Default | Effect |
 |---|---|---|
-| `OR_PROVIDER_ALLOW` | `qwen,deepseek,anthropic,google,moonshotai,nvidia,openai,perplexity,x-ai,z-ai,bytedance-seed` | Providers that are registered. An empty value means this default, not "no limit"; `*` allows all |
+| `OR_PROVIDER_ALLOW` | `qwen,deepseek,anthropic,google,moonshotai,nvidia,openai,perplexity,x-ai,z-ai,bytedance-seed,meta-llama` | Providers that are registered. An empty value means this default, not "no limit"; `*` allows all |
 | `OR_MODEL_EXCLUDE` | (empty) | Removes items from the allowed set: `provider/` prefix, `provider/model`, or a glob |
 
 ```bash
@@ -334,11 +342,13 @@ retrieval.
 ## Commercial defaults
 
 ```bash
-OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6.1-terra gpt-6-luna gpt-5.4-nano gpt-5.3-codex)
+OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6.1-terra gpt-6-luna gpt-5.4-nano gpt-5.3-codex gpt-oss-120b gpt-oss-20b)
 ANTHROPIC_MODELS=(claude-fable-5.2 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-5.5)
-GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite gemma-4-31b-it)
+GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite gemma-4-31b-it gemma-4-26b-a4b-it gemma-3-27b-it gemma-3-12b-it
+              gemma-3-4b-it)
 XAI_MODELS=(grok-4.7)
 PERPLEXITY_MODELS=(sonar sonar-pro)
+META_LLAMA_MODELS=(llama-4-maverick llama-4-scout llama-3.3-70b-instruct)
 NVIDIA_MODELS=(nemotron-3-ultra-550b-a55b nemotron-3.5-super-vl nemotron-3.5-lightning)
 DEEPSEEK_MODELS=(deepseek-v4-pro-0813 deepseek-v4.1-flash)
 ZAI_MODELS=(glm-5.3 glm-5.3-flash)
