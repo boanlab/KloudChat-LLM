@@ -640,6 +640,28 @@ def test_a_provider_can_be_allowed_again(tmp_path: Path) -> None:
     assert "deepseek/deepseek-v4.1-flash" not in names
 
 
+def test_excluding_free_models_keeps_the_paid_twin(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.json"
+    catalogue.write_text(json.dumps({"data": [
+        {"id": "google/gemma-4-31b-it", "pricing": {"prompt": "0.0000002", "completion": "0.0000004"},
+         "architecture": {"output_modalities": ["text"]}},
+        {"id": "google/gemma-4-31b-it:free", "pricing": {"prompt": "0", "completion": "0"},
+         "architecture": {"output_modalities": ["text"]}},
+    ]}))
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True,
+        env_values={"OR_MODEL_EXCLUDE": "*:free"},
+        extra_env={"KC_FAKE_OR_CATALOGUE": str(catalogue)},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m for m in models}
+    assert "google/gemma-4-31b-it" in by_name
+    assert "google/gemma-4-31b-it:free" not in by_name
+    info = by_name["google/gemma-4-31b-it"]["model_info"]
+    assert info["input_cost_per_token"] == pytest.approx(2e-7)
+    assert info["output_cost_per_token"] == pytest.approx(4e-7)
+
+
 def test_excluded_models_leave_the_team_allowlist(tmp_path: Path) -> None:
     env = tmp_path / ".env"
     env.write_text("OPENROUTER_API_KEY=k\nOR_PROVIDER_ALLOW=*\nOR_MODEL_EXCLUDE=tencent/*\n")
