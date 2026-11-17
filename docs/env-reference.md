@@ -155,6 +155,8 @@ Per-model `GPU_UTIL`, `MAX_LEN`, `MAX_BATCHED_TOKENS`, `MAX_NUM_SEQS` and `SPEC_
 |---|---|---|
 | `LITELLM_LOG` | `INFO` | |
 | `LITELLM_URL` | `http://localhost:<GATEWAY_PORT>/litellm` | Where `manage.sh` reaches LiteLLM. Read from the shell first, then `.env` |
+| `OR_PROVIDER_ALLOW` | `qwen,deepseek,anthropic,google,moonshotai,nvidia,openai,perplexity,x-ai,z-ai,bytedance-seed` | OpenRouter providers `gen-litellm-config.sh` registers, for commercial, image, audio and free models. An empty value means this default, not "no limit"; `*` allows every provider. Providers outside the list (tencent, xiaomi, minimax, recraft, liquid, ...) are not emitted, and regenerating does not bring them back. `local/` and `strict-local/` routes are unaffected. Read from the shell first, then `.env` |
+| `OR_MODEL_EXCLUDE` | (empty) | Comma-separated OpenRouter models to remove from what is allowed: a `provider/` prefix, a `provider/model` id, or a glob. Free models keep their `:free` suffix in the id, and `provider/model` also matches `provider/model:free`. Example: `OR_MODEL_EXCLUDE=tencent/*,liquid/*,recursive/*,thinkingmachines/*`. The generator logs one line naming everything left out, and the team allowlist (`litellm_chat_models_csv`) follows the same filters |
 | `CONCURRENCY_GATE_CAPS` | each model's `max_inflight` in `scheduler/models.yaml` (256 when unset), on both the `local/` and `strict-local/` alias | JSON map of model aliases to positive concurrency caps, overriding those |
 | `CONCURRENCY_GATE_TTL` | `1.5` | Seconds between vLLM capacity polls |
 | `CONCURRENCY_GATE_SCRAPE_TIMEOUT` | `1.0` | Timeout in seconds for one vLLM metrics request |

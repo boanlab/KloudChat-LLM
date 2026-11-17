@@ -14,7 +14,8 @@ Which models are registered where, and how requests are routed to them.
 | Variable in `lib.sh` | Role |
 |---|---|
 | `OPENAI_MODELS` / `ANTHROPIC_MODELS` / `GOOGLE_MODELS` / `XAI_MODELS` / `PERPLEXITY_MODELS` | Frontier tier, through OpenRouter |
-| `TENCENT_MODELS` / `DEEPSEEK_MODELS` / `ZAI_MODELS` / `XIAOMI_MODELS` / `MOONSHOTAI_MODELS` / `QWEN_MODELS` / `MINIMAX_MODELS` | Open-weight and hosted tier, through OpenRouter |
+| `NVIDIA_MODELS` / `DEEPSEEK_MODELS` / `ZAI_MODELS` / `MOONSHOTAI_MODELS` / `QWEN_MODELS` / `BYTEDANCE_SEED_MODELS` | Open-weight and hosted tier, through OpenRouter |
+| `TENCENT_MODELS` / `XIAOMI_MODELS` / `MINIMAX_MODELS` | Declared but not registered unless `OR_PROVIDER_ALLOW` lists the provider |
 | `OR_IMAGE_MODELS` / `OR_AUDIO_MODELS` | Image and audio generation through OpenRouter |
 | `VLLM_MODELS` (shell array, not the `.env` key) | Download alias to HF repo. Resident sizes in `VLLM_MODEL_WEIGHT_GB` |
 | `MODEL_PRICE_IN_PM` / `MODEL_PRICE_OUT_PM` / `OR_TWIN_PRICE_*` | Declared USD per 1M tokens, used when the live catalogue is unreachable |
@@ -151,7 +152,30 @@ name refuses below it.
 Whatever OpenRouter offers for free is read at config-generation time and
 registered; if the query fails, nothing is added. The filter is
 `or_free_models` in `scripts/lib.sh`: zero price both ways, text output,
-`:free` suffix, guardrail models excluded.
+`:free` suffix, guardrail models excluded, and only providers allowed by
+`OR_PROVIDER_ALLOW`.
+
+## Provider allowlist and exclusions
+
+OpenRouter models are filtered twice before they reach the generated config,
+whether they are commercial, free, image or audio models. Local routes
+(`local/`, `strict-local/`) are never filtered.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `OR_PROVIDER_ALLOW` | `qwen,deepseek,anthropic,google,moonshotai,nvidia,openai,perplexity,x-ai,z-ai,bytedance-seed` | Providers that are registered. An empty value means this default, not "no limit"; `*` allows all |
+| `OR_MODEL_EXCLUDE` | (empty) | Removes items from the allowed set: `provider/` prefix, `provider/model`, or a glob |
+
+```bash
+OR_MODEL_EXCLUDE=tencent/*,liquid/*,recursive/*,thinkingmachines/*
+```
+
+Free models are registered from the live catalogue, so deleting one from
+`config.yaml` by hand does not last: the next run brings it back. Exclude it
+here instead. The generator logs one line listing every model left out, and the
+team allowlist from `litellm_chat_models_csv` follows the same filters. The
+hidden OpenRouter twins of deployed local models (fallback targets) are not
+filtered.
 
 ## Routing
 
@@ -310,26 +334,26 @@ retrieval.
 ## Commercial defaults
 
 ```bash
-OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6-luna gpt-5.4-nano gpt-5.3-codex)
-ANTHROPIC_MODELS=(claude-fable-5.1 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-4.5)
-GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.8-flash gemini-3.5-flash-lite)
+OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6.1-terra gpt-6-luna gpt-5.4-nano gpt-5.3-codex)
+ANTHROPIC_MODELS=(claude-fable-5.2 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-5.5)
+GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite)
 XAI_MODELS=(grok-4.7)
 PERPLEXITY_MODELS=(sonar sonar-pro)
-# Open-weight tier
-TENCENT_MODELS=(hy4-preview)
+NVIDIA_MODELS=(nemotron-3-ultra-550b-a55b nemotron-3.5-super-vl nemotron-3.5-lightning)
 DEEPSEEK_MODELS=(deepseek-v4-pro-0813 deepseek-v4.1-flash)
 ZAI_MODELS=(glm-5.3 glm-5.3-flash)
+MOONSHOTAI_MODELS=(kimi-k3.1-pro)
+QWEN_MODELS=(qwen4-max qwen3.8-max-0902 qwen3-coder)
+BYTEDANCE_SEED_MODELS=(seed-2-1-turbo seed-2.0-lite)
+TENCENT_MODELS=(hy4-preview)
 XIAOMI_MODELS=(mimo-v2.6-flash)
-MOONSHOTAI_MODELS=(kimi-k3)
-# Qwen's hosted tier (not the local checkpoints)
-QWEN_MODELS=(qwen3.8-max-0902 qwen3-coder-plus)
 MINIMAX_MODELS=(minimax-m3)
 ```
 
 | Need | Model | Declared price /1M |
 |---|---|---|
 | Bulk work where cost dominates | `openai/gpt-6-luna` | $0.10 / $0.50 |
-| Commercial coding | `openai/gpt-5.3-codex`, `qwen/qwen3-coder-plus` | $1.75 / $14, $0.65 / $3.25 |
+| Commercial coding | `openai/gpt-5.3-codex`, `qwen/qwen3-coder` | $1.75 / $14, $0.30 / $1.00 |
 | Search that reads more than a snippet | `perplexity/sonar-pro` | $3 / $15 |
 | Speech generation | `openai/gpt-audio-mini` | $0.60 / $2.40 audio |
 
