@@ -58,14 +58,17 @@ emit_kchat_boundary() {  # $1=self_hosted|hybrid|external  $2=strict  $3=privacy
 # Free models; the :free suffix stays in the name
 emit_or_free() {
   local slug="$1"
+  or_policy_excluded "$slug" && return 0
   echo "  - model_name: ${slug}"
   echo "    litellm_params:"
   echo "      model: openrouter/${slug}"
   echo "      api_key: os.environ/OPENROUTER_API_KEY"
+  or_provider_params "$slug"
   echo "    model_info:"
   echo "      input_cost_per_token: 0.0"
   echo "      output_cost_per_token: 0.0"
   emit_kchat_boundary external false false
+  or_policy_info "$slug"
   or_reasoning_info "$slug"
 }
 
@@ -77,14 +80,16 @@ emit_commercial_or() {
   or_model_excluded "${prov}/${id}" && return 0
   echo "  - model_name: ${prov}/${id}"
   echo "    litellm_params:"
-  echo "      model: openrouter/${route_prov}/${id}${OR_VARIANT}"
+  echo "      model: openrouter/${route_prov}/${id}$(or_route_variant "${route_prov}/${id}" "$OR_VARIANT")"
   echo "      api_key: os.environ/OPENROUTER_API_KEY"
+  or_provider_params "${route_prov}/${id}"
   echo "    model_info:"
   echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
   echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
   emit_kchat_boundary external false false
   or_capability_info "${route_prov}/${id}"
   or_reasoning_info "${route_prov}/${id}"
+  or_policy_info "${route_prov}/${id}"
 }
 
 # OpenRouter twin of a deployed local model: the router_settings.fallbacks
@@ -93,16 +98,19 @@ emit_or_fallback() {
   local local_url="$1" or_slug="$2" in_pm="$3" out_pm="$4"
   has_openrouter || return 0
   [[ -n "$local_url" ]] || return 0
+  or_policy_excluded "$or_slug" && return 0
   echo "  - model_name: ${or_slug}"
   echo "    litellm_params:"
-  echo "      model: openrouter/${or_slug}${OR_VARIANT}"
+  echo "      model: openrouter/${or_slug}$(or_route_variant "$or_slug" "$OR_VARIANT")"
   echo "      api_key: os.environ/OPENROUTER_API_KEY"
+  or_provider_params "$or_slug"
   echo "    model_info:"
   echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
   echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
   emit_kchat_boundary external false false
   echo "      kchat_hidden: true"
   or_reasoning_info "$or_slug"
+  or_policy_info "$or_slug"
 }
 
 # max_input_tokens = ctx minus KC_PRE_CALL_HEADROOM for the tools schema and
@@ -118,15 +126,18 @@ __declared_max_input_tokens() {
 emit_or_image() {
   local id="$1" out_per_token="$2" in_pm="$3"
   has_openrouter || return 0
+  or_policy_excluded "$id" && return 0
   echo "  - model_name: ${id}"
   echo "    litellm_params:"
   echo "      model: openrouter/${id}"
   echo "      api_key: os.environ/OPENROUTER_API_KEY"
+  or_provider_params "$id"
   echo "    model_info:"
   echo "      mode: image_generation"
   echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
   echo "      output_cost_per_token: ${out_per_token}"
   emit_kchat_boundary external false false
+  or_policy_info "$id"
 }
 
 # Self-hosted image models behind imagegen-shim; one entry per name in
@@ -184,16 +195,19 @@ emit_local_stt() {
 emit_or_audio() {
   local id="$1" in_pm="$2" out_pm="$3" per_call="$4"
   has_openrouter || return 0
+  or_policy_excluded "$id" && return 0
   echo "  - model_name: ${id}"
   echo "    litellm_params:"
   echo "      model: openrouter/${id}"
   echo "      api_key: os.environ/OPENROUTER_API_KEY"
+  or_provider_params "$id"
   echo "    model_info:"
   echo "      mode: audio_speech"
   echo "      input_cost_per_token: $(per_token_cost "$in_pm")"
   echo "      output_cost_per_token: $(per_token_cost "$out_pm")"
   [[ -n "$per_call" ]] && echo "      output_cost_per_request: ${per_call}"
   emit_kchat_boundary external false false
+  or_policy_info "$id"
 }
 
 # Local embedding and rerank deployments, registered as strict-local/<id> only: no
@@ -253,6 +267,37 @@ temperature_for() {
   if [[ -n "${!var+set}" ]]; then echo "${!var}"; else echo "${CATALOG_TEMPERATURE[$1]:-}"; fi
 }
 
+# How a self-hosted model runs, for the model picker. Read from the server where it says
+# (engine from /version, KV cache dtype from /metrics); else declared in .env or the shell:
+#   KC_<PREFIX>_QUANTIZATION  weights, e.g. NVFP4      KC_<PREFIX>_KV_CACHE  e.g. fp8
+#   KC_<PREFIX>_ENGINE        e.g. "vLLM 0.33.0"
+# <PREFIX> is the model's env_prefix without VLLM_ (DSFLASH, QWEN27B, ...). Nothing guessed.
+run_info_for() {  # $1=model  $2=url  $3=QUANTIZATION|KV_CACHE|ENGINE
+  local prefix="${CATALOG_PREFIX[$1]:-}" var found="" value
+  [[ -n "$prefix" ]] || return 0
+  var="KC_${prefix#VLLM_}_$3"
+  case "$3" in
+    KV_CACHE) found="$(vllm_discover_kv_cache "$2")" ;;
+    ENGINE)   found="$(vllm_discover_engine "$2")" ;;
+  esac
+  if [[ -n "$found" ]]; then value="$found"
+  elif [[ -n "${!var+set}" ]]; then value="${!var}"
+  else value="$(env_get "$var")"; fi
+  [[ "$value" =~ ^[0-9A-Za-z][0-9A-Za-z._+\ -]{0,40}$ ]] && echo "$value"
+  return 0
+}
+
+emit_vllm_run_info() {  # $1=model  $2=url
+  local q kv eng
+  q="$(run_info_for "$1" "$2" QUANTIZATION)"
+  kv="$(run_info_for "$1" "$2" KV_CACHE)"
+  eng="$(run_info_for "$1" "$2" ENGINE)"
+  [[ -n "$q" ]] && echo "      kchat_quantization: \"${q}\""
+  [[ -n "$kv" ]] && echo "      kchat_kv_cache: \"${kv}\""
+  [[ -n "$eng" ]] && echo "      kchat_engine: \"${eng}\""
+  return 0
+}
+
 emit_vllm_chat_entry() {
   local m="$1" url="$2" ctx="$3" alias="$4" boundary="$5" strict="$6" privacy_only="$7"
   local tmo pres temp served; served="$(local_served_at "$m" "$url")"
@@ -285,6 +330,7 @@ emit_vllm_chat_entry() {
   emit_kchat_boundary "$boundary" "$strict" "$privacy_only"
   # In-flight cap per node for the concurrency gate
   echo "      kchat_max_inflight: ${CATALOG_MAX_INFLIGHT[$m]:-256}"
+  emit_vllm_run_info "$m" "$url"
 }
 
 emit_vllm_chat() {
@@ -310,10 +356,12 @@ emit_vllm_chat() {
 # A local model's OpenRouter route when no vLLM serves it: a commercial entry
 # under its own slug plus the tool flags LiteLLM's model map lacks for it
 emit_or_brain() {  # $1=or-slug  $2=in_pm  $3=out_pm
+  or_policy_excluded "$1" && return 0
   echo "  - model_name: $1"
   echo "    litellm_params:"
-  echo "      model: openrouter/$1${OR_VARIANT}"
+  echo "      model: openrouter/$1$(or_route_variant "$1" "$OR_VARIANT")"
   echo "      api_key: os.environ/OPENROUTER_API_KEY"
+  or_provider_params "$1"
   echo "    model_info:"
   echo "      supports_function_calling: true"
   echo "      supports_tool_choice: true"
@@ -321,6 +369,7 @@ emit_or_brain() {  # $1=or-slug  $2=in_pm  $3=out_pm
   echo "      output_cost_per_token: $(per_token_cost "$3")"
   emit_kchat_boundary external false false
   or_reasoning_info "$1"
+  or_policy_info "$1"
 }
 
 # Local model registration: local/ and strict-local/ over a vLLM URL, the
@@ -353,6 +402,16 @@ fi
 excluded="$(or_excluded_list | paste -sd, -)"
 if [[ -n "$excluded" ]]; then
   info "OR_PROVIDER_ALLOW / OR_MODEL_EXCLUDE left out $(tr -cd , <<<"$excluded" | wc -c | awk '{print $1+1}') models: ${excluded//,/, }"
+fi
+
+# Run policy (OR_OPEN_WEIGHT_POLICY, OR_PROVIDER_PIN, OR_ZDR_ONLY): decide every model's
+# endpoints once, before the emit functions read the decisions
+if has_openrouter && __or_policy_active; then
+  command -v jq &>/dev/null || { err "the run policy needs jq"; exit 1; }
+  KC_OR_WORK="$(mktemp -d -t kc-or-work.XXXXXX)"; export KC_OR_WORK
+  trap 'rm -rf "${KC_OR_WORK:-}"' EXIT
+  # Computes (and warns about) every decision up front
+  or_policy_excluded_list >/dev/null
 fi
 
 SECTION=$(
@@ -415,6 +474,7 @@ SECTION=$(
 fb_line() {  # $1=local-model  $2=url_csv  $3=or-slug
   has_openrouter || return 0
   [[ -n "$2" ]] || return 0
+  or_policy_excluded "$3" && return 0
   echo "    - {\"local/$1\": [\"$3\"]}"
 }
 FALLBACKS=$(
@@ -427,9 +487,14 @@ FALLBACKS=$(
   echo "  ${FB_END}"
 )
 
+# One line for what the run policy took out (decisions are cached in KC_OR_WORK)
+if [[ -n "${KC_OR_WORK:-}" && -s "${KC_OR_WORK}/excluded.txt" ]]; then
+  info "run policy left out $(wc -l < "${KC_OR_WORK}/excluded.txt") models: $(sort -u "${KC_OR_WORK}/excluded.txt" | paste -sd, - | sed 's/,/, /g')"
+fi
+
 if (( DRY_RUN )); then echo "$SECTION"; echo "$FALLBACKS"; exit 0; fi
 
-tmp="$(mktemp)"; trap 'rm -f "$tmp" "${__OR_CATALOGUE_CACHE:-}"' EXIT
+tmp="$(mktemp)"; trap 'rm -rf "$tmp" "${__OR_CATALOGUE_CACHE:-}" "${KC_OR_WORK:-}"' EXIT
 KC_SECTION="$SECTION" KC_FALLBACKS="$FALLBACKS" python3 - "$CONFIG_FILE" "$tmp" <<'PY'
 import os, sys, pathlib
 

@@ -35,13 +35,25 @@ def _fake_curl(bin_dir: Path) -> None:
         textwrap.dedent(
             """\
             #!/bin/sh
-            url=""
+            url=""; out=""; prev=""
             for arg in "$@"; do
               case "$arg" in http://*|https://*) url="$arg" ;; esac
+              [ "$prev" = "-o" ] && out="$arg"
+              prev="$arg"
             done
+            # Writes a fixture where curl was told to (-o), else to stdout; exit 22 when absent
+            serve() {
+              [ -n "$1" ] && [ -f "$1" ] || exit 22
+              if [ -n "$out" ]; then cat "$1" > "$out"; else cat "$1"; fi
+              exit 0
+            }
             case "$url" in
               *qwen.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/qwen3.8-27b","max_model_len":65536}]}' ;;
+              *qwen.test*/version)
+                printf '%s\n' '{"version":"0.33.0"}' ;;
+              *qwen.test*/metrics)
+                printf '%s\n' 'vllm:cache_config_info{block_size="16",cache_dtype="fp8",engine="0"} 1.0' ;;
               *flash.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/qwen3.8-flash","max_model_len":131072}]}' ;;
               *other.test*/v1/models)
@@ -52,6 +64,14 @@ def _fake_curl(bin_dir: Path) -> None:
                 printf '%s\n' '{"data":[{"id":"BAAI/bge-m3","max_model_len":8192}]}' ;;
               *whisper.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/whisper-large-v3","max_model_len":448}]}' ;;
+              *openrouter.ai/api/v1/endpoints/zdr*)
+                serve "${KC_FAKE_OR_ZDR:-}" ;;
+              *openrouter.ai/api/v1/models/*/endpoints*)
+                slug="${url#*api/v1/models/}"; slug="${slug%/endpoints*}"
+                serve "${KC_FAKE_OR_ENDPOINTS_DIR:-/nonexistent}/$(printf '%s' "$slug" | sed 's#/#__#g').json" ;;
+              *openrouter.ai/api/v1/models)
+                if [ -n "${KC_FAKE_OR_CATALOGUE:-}" ]; then serve "$KC_FAKE_OR_CATALOGUE"; fi
+                printf '%s\n' '{"data":[]}' | { if [ -n "$out" ]; then cat > "$out"; else cat; fi; } ;;
               *openrouter.ai*)
                 if [ -n "${KC_FAKE_OR_CATALOGUE:-}" ]; then cat "$KC_FAKE_OR_CATALOGUE"
                 else printf '%s\n' '{"data":[]}'; fi ;;
