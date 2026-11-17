@@ -937,9 +937,11 @@ vllm_discover_engine() {  # "vLLM 0.33.0" from /version
   [[ "$v" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] && echo "vLLM ${v#v}"
   return 0
 }
-vllm_discover_kv_cache() {  # cache_dtype label of vllm:cache_config_info on /metrics; `auto` = unsaid
+vllm_discover_kv_cache() {  # cache_dtype label of vllm:cache_config_info on /metrics; `auto` = unsaid.
+  # Only the exact label: mamba_cache_dtype and mamba_ssm_cache_dtype share the line.
   local v; v="$(curl -sf --max-time 5 "$(__vllm_probe_url "$1")/metrics" 2>/dev/null \
-                | grep -m1 '^vllm:cache_config_info' | sed -n 's/.*cache_dtype="\([^"]*\)".*/\1/p')"
+                | grep -m1 '^vllm:cache_config_info' \
+                | grep -o '[{,]cache_dtype="[^"]*"' | head -1 | sed 's/^[{,]cache_dtype="\(.*\)"$/\1/')"
   [[ "$v" =~ ^[0-9A-Za-z_]+$ && "$v" != auto ]] && echo "$v"
   return 0
 }

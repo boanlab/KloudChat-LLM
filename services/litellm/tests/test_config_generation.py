@@ -792,3 +792,33 @@ def test_one_model_served_under_two_names_keeps_every_replica(tmp_path: Path) ->
         m["litellm_params"]["model"] for m in models if m["model_name"] == "strict-local/bge-m3"
     )
     assert served == ["hosted_vllm/BAAI/bge-m3", "hosted_vllm/local/bge-m3"]
+
+
+@pytest.mark.parametrize(
+    ("labels", "expected"),
+    [
+        ('block_size="16",cache_dtype="fp8",mamba_cache_dtype="auto",mamba_ssm_cache_dtype="float32"', "fp8"),
+        ('mamba_ssm_cache_dtype="float32",mamba_cache_dtype="auto",cache_dtype="fp8",engine="0"', "fp8"),
+        ('cache_dtype="fp8",mamba_cache_dtype="auto"', "fp8"),
+        ('cache_dtype="auto",mamba_cache_dtype="auto",mamba_ssm_cache_dtype="float32"', ""),
+        ('mamba_ssm_cache_dtype="float32",cache_dtype="auto"', ""),
+        ('mamba_ssm_cache_dtype="float32"', ""),
+    ],
+)
+def test_the_kv_cache_label_is_exactly_cache_dtype(tmp_path: Path, labels: str, expected: str) -> None:
+    _require_associative_array_bash()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' "vllm:cache_config_info{$KC_LABELS} 1.0"\n'
+    )
+    curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
+    out = subprocess.run(
+        [BASH, "-c", f'source "{ROOT}/scripts/lib.sh"; vllm_discover_kv_cache http://x.test:8000'],
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "KC_LABELS": labels,
+             "KLOUDCHAT_ENV_FILE": str(tmp_path / "none")},
+        cwd=ROOT, text=True, capture_output=True, check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == expected
