@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional, Sequence
 
@@ -28,6 +29,9 @@ MANAGED_SERVICE_PREFIX = "vllm-"
 
 #: Orchestrator .env key holding the scheduler's placements
 PLACED_KEY = "VLLM_PLACED"
+
+#: Compose project of docker-compose.vllm.yml (its ``name:``)
+COMPOSE_PROJECT = "kloudchat-vllm"
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,19 @@ def _env_set(path: str, key: str, value: str) -> str:
     )
 
 
+def _adopt(service: str) -> str:
+    """Shell removing a same-named container compose does not own (one started
+    by ``docker run``), which would otherwise block ``compose up`` on the name.
+    Runs only before a start or recreate, which replace the container anyway."""
+    q = shlex.quote(service)
+    label = "'{{index .Config.Labels \"com.docker.compose.project\"}}'"
+    return (
+        f"if docker inspect {q} >/dev/null 2>&1 && "
+        f"[ \"$(docker inspect -f {label} {q})\" != {COMPOSE_PROJECT} ]; then "
+        f"docker rm -f {q} >/dev/null; fi"
+    )
+
+
 def _read_env_keys(path: str, keys: Iterable[str]) -> dict[str, str]:
     """Values of ``keys`` in the local .env; missing keys read empty."""
     out = {k: "" for k in keys}
@@ -118,6 +135,7 @@ def compute_diff(
     layout: RemoteLayout = RemoteLayout(),
     local_env_path: Optional[str] = None,
     node_env: Optional[dict[str, dict[str, str]]] = None,
+    kept: Optional[dict[str, set[str]]] = None,
 ) -> ChangePlan:
     """Changes that take ``current`` to ``target``.
 
@@ -126,6 +144,7 @@ def compute_diff(
         local_env_path: the orchestrator's .env; None skips the URL update.
         node_env: node id to its current .env values. Given, unchanged services
             are left alone; omitted, every placed service is recreated.
+        kept: node id to services a VLLM_ENDPOINTS entry points at; never stopped.
     """
     change = ChangePlan()
     by_id = {s.id: s for s in specs}
@@ -185,15 +204,18 @@ def compute_diff(
                     _env_set(env_path, key, value),
                 ))
 
-        for service in sorted(have - want):
+        for service in sorted(have - want - (kept or {}).get(node_id, set())):
+            q = shlex.quote(service)
+            # docker stop as well: compose stop skips a container it did not create
             change.actions.append(NodeAction(
                 node_id, host, "stop", f"stop {service}",
-                f"{cd} && {compose} stop {shlex.quote(service)}",
+                f"{cd} && {compose} stop {q} && "
+                f"{{ ! docker inspect {q} >/dev/null 2>&1 || docker stop {q} >/dev/null; }}",
             ))
         for service in sorted(want - have):
             change.actions.append(NodeAction(
                 node_id, host, "start", f"start {service}",
-                f"{cd} && {compose} up -d {shlex.quote(service)}",
+                f"{cd} && {_adopt(service)} && {compose} up -d {shlex.quote(service)}",
                 url=_service_url(by_service.get(service), bare_host),
             ))
         # (b) Recreate only where an option moved
@@ -202,7 +224,8 @@ def compute_diff(
                 continue
             change.actions.append(NodeAction(
                 node_id, host, "recreate", f"recreate {service}",
-                f"{cd} && {compose} up -d --force-recreate {shlex.quote(service)}",
+                f"{cd} && {_adopt(service)} && "
+                f"{compose} up -d --force-recreate {shlex.quote(service)}",
                 url=_service_url(by_service.get(service), bare_host),
             ))
 
@@ -215,18 +238,28 @@ def compute_diff(
     return change
 
 
+#: ssh's own exit status; every action is idempotent, so one is retried
+SSH_FAILED = 255
+SSH_ATTEMPTS = 3
+
+
 def _run(host: str, command: str, *, timeout: int = 300) -> tuple[int, str]:
-    try:
-        r = subprocess.run(
-            ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "LogLevel=ERROR",
-             host, command],
-            capture_output=True, text=True, timeout=timeout,
-        )
-        return r.returncode, (r.stdout + r.stderr).strip()
-    except subprocess.TimeoutExpired:
-        return 124, f"timeout after {timeout}s"
-    except OSError as exc:
-        return 1, str(exc)
+    for attempt in range(SSH_ATTEMPTS):
+        if attempt:
+            time.sleep(attempt)
+        try:
+            r = subprocess.run(
+                ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "LogLevel=ERROR",
+                 host, command],
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return 124, f"timeout after {timeout}s"
+        except OSError as exc:
+            return 1, str(exc)
+        if r.returncode != SSH_FAILED:
+            break
+    return r.returncode, (r.stdout + r.stderr).strip()
 
 
 def _service_url(spec: Optional[ModelSpec], bare_host: str) -> str:

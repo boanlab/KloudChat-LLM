@@ -22,6 +22,8 @@ from scheduler.types import GB, ModelMetadata, NodeSpec
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 MODELS_YAML = Path(__file__).resolve().parent / "models.yaml"
+#: This deployment's overrides of models.yaml (untracked; see README "Site overrides")
+SITE_YAML = Path(__file__).resolve().parent / "site.yaml"
 ENV_FILE = PROJECT_DIR / ".env"
 
 
@@ -61,6 +63,40 @@ def _resolve_hosts(arg: Optional[str]) -> dict[str, str]:
         sys.exit(str(exc))
 
 
+def _held_nodes(hosts: dict[str, str]) -> frozenset[str]:
+    """Node ids in VLLM_NODES_HOLD: probed and listed, never placed on or acted on.
+
+    An entry is an SSH target as written in VLLM_NODES, its bare host, or a node
+    id. Exits on an entry VLLM_NODES does not list, or on a held head node.
+    """
+    held: set[str] = set()
+    for entry in _csv(_env("VLLM_NODES_HOLD")):
+        bare = entry.split("@")[-1]
+        match = [nid for nid, host in hosts.items()
+                 if entry in (nid, host) or bare == host.split("@")[-1]]
+        if not match:
+            sys.exit(f"VLLM_NODES_HOLD: {entry} is not in VLLM_NODES")
+        held.update(match)
+    head = _head_node(hosts)
+    if head is not None and head in held:
+        sys.exit(f"VLLM_NODES_HOLD: {head} is the head node (the first in VLLM_NODES)")
+    return frozenset(held)
+
+
+def _kept(probes, specs) -> dict[str, set[str]]:
+    """Node id to the services a VLLM_ENDPOINTS entry points at: hand-run, never stopped."""
+    by_port = {s.port: s.service for s in specs}
+    out: dict[str, set[str]] = {}
+    for url in endpoints.urls(_env("VLLM_ENDPOINTS")):
+        host, _, port = url.split("//")[-1].partition(":")
+        port = port.split("/")[0]
+        for probe in probes:
+            if probe.spec.hostname.split("@")[-1] == host and port.isdigit() \
+                    and int(port) in by_port:
+                out.setdefault(probe.spec.node_id, set()).add(by_port[int(port)])
+    return out
+
+
 def _head_node(hosts: dict[str, str]) -> Optional[str]:
     """Head node id: the first target in VLLM_NODES. None for a single-node cluster."""
     return next(iter(hosts), None) if len(hosts) > 1 else None
@@ -68,7 +104,7 @@ def _head_node(hosts: dict[str, str]) -> Optional[str]:
 
 def _load_specs(arg: Optional[str]) -> list[registry.ModelSpec]:
     wanted = _csv(arg) if arg else _csv(_env("VLLM_MODELS"))
-    specs = registry.load(MODELS_YAML, only=wanted or None)
+    specs = registry.load(MODELS_YAML, only=wanted or None, site=SITE_YAML)
     return [s for s in specs if not s.manual]
 
 
@@ -121,14 +157,17 @@ def _probe(hosts: dict[str, str], specs) -> list:
 
 def cmd_inventory(args) -> int:
     specs = _load_specs(args.models)
-    probes = _probe(_resolve_hosts(args.hosts), specs)
+    hosts = _resolve_hosts(args.hosts)
+    held = _held_nodes(hosts)
+    probes = _probe(hosts, specs)
     if not probes:
         return 1
     print(f"{'NODE':<10} {'STATE':<9} {'GPU':<10} {'ARCH':<7} {'TOTAL':>9} {'USABLE':>9}  RUNNING")
     for p in probes:
         s: NodeSpec = p.spec
         running = ", ".join(sorted(p.running_services)) or "-"
-        print(f"{s.node_id:<10} {'alive' if p.alive else 'no answer':<9} "
+        state = "held" if s.node_id in held else "alive" if p.alive else "no answer"
+        print(f"{s.node_id:<10} {state:<9} "
               f"{s.gpu_class:<10} {s.arch or '?':<7} "
               f"{s.total_vram_bytes / GB:>7.1f}G {s.planner_vram_bytes / GB:>7.1f}G  {running}")
         for err in p.raw_errors:
@@ -151,11 +190,12 @@ def _deployed(probes, specs) -> dict[str, frozenset[str]]:
 def _build_plan(args):
     specs = _load_specs(args.models)
     hosts = _resolve_hosts(args.hosts)
+    held = _held_nodes(hosts)
     probes = _probe(hosts, specs)
     if not probes:
-        return None, None, None, None
+        return None, None, None, None, held
     bound, failed = _bind(specs, probes, _env("VLLM_MODELS_ROOT", "/var/lib/vllm/models"))
-    nodes = [p.spec for p in probes if p.alive]
+    nodes = [p.spec for p in probes if p.alive and p.spec.node_id not in held]
     head = _head_node(hosts)
     # Served elsewhere already (VLLM_ENDPOINTS); transcription is hand-run through WHISPER_URLS
     external = {
@@ -171,7 +211,13 @@ def _build_plan(args):
     for model_id, reason in failed:
         if not external.get(model_id):
             result.delegations.append(planner.Delegation(model_id, reason))
-    return result, probes, bound, head
+    for node_id in sorted(held):
+        result.notes.append(f"{node_id}: held (VLLM_NODES_HOLD) — nothing placed, nothing stopped")
+    for probe in probes:
+        if not probe.alive and probe.spec.node_id not in held:
+            why = "; ".join(probe.raw_errors) or "no answer"
+            result.notes.append(f"{probe.spec.node_id}: not answering ({why}) — left out")
+    return result, probes, bound, head, held
 
 
 def _print_plan(result, head: Optional[str] = None) -> None:
@@ -198,7 +244,7 @@ def _print_plan(result, head: Optional[str] = None) -> None:
 
 
 def cmd_plan(args) -> int:
-    result, _, _, head = _build_plan(args)
+    result, _, _, head, _ = _build_plan(args)
     if result is None:
         return 1
     _print_plan(result, head)
@@ -206,24 +252,31 @@ def cmd_plan(args) -> int:
 
 
 def cmd_apply(args) -> int:
-    result, probes, bound, head = _build_plan(args)
+    result, probes, bound, head, held = _build_plan(args)
     if result is None:
         return 1
     _print_plan(result, head)
 
-    current = {p.spec.node_id: set(p.running_containers) for p in probes}
+    # Held nodes and nodes that did not answer in full are left exactly as they are
+    acting = [p for p in probes if p.alive and p.spec.node_id not in held]
+    current = {p.spec.node_id: set(p.running_containers) for p in acting}
+    # Current node options, so an unchanged plan recreates nothing
+    node_env = {
+        p.spec.node_id: inventory.read_env(p.spec.hostname, f"{_remote_workdir()}/.env")
+        for p in acting
+    }
+    unread = sorted(nid for nid, env in node_env.items() if env is None)
+    if unread:
+        print(f"\ncould not read {_remote_workdir()}/.env on {', '.join(unread)} — "
+              "nothing applied", file=sys.stderr)
+        return 1
     change = applier.compute_diff(
         target=result, current=current, specs=bound,
-        nodes=[p.spec for p in probes if p.alive],
+        nodes=[p.spec for p in acting],
         layout=applier.RemoteLayout(workdir=_remote_workdir()),
         local_env_path=str(ENV_FILE),
-        # Current node options, so an unchanged plan recreates nothing
-        node_env={
-            p.spec.node_id: inventory.read_env(
-                p.spec.hostname, f"{_remote_workdir()}/.env"
-            )
-            for p in probes if p.alive
-        },
+        node_env=node_env,
+        kept=_kept(acting, bound),
     )
     if change.is_empty:
         print("\nNo changes — the cluster already matches the plan")

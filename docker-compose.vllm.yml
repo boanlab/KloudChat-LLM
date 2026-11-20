@@ -139,6 +139,11 @@ services:
       # MTP from the checkpoint's single draft layer
       - --speculative-config
       - '{"method":"mtp","num_speculative_tokens":${VLLM_QWENFLASH_SPEC_TOKENS:-2}}'
+      # KV blocks spilled to host RAM, in GiB, on a discrete card with RAM to
+      # spare. Empty (the default) is vLLM's None: off, as on GB10, where host
+      # RAM is the card's own memory
+      - --kv-offloading-size
+      - "${VLLM_QWENFLASH_KV_OFFLOAD_GB:-}"
       - --tensor-parallel-size
       - "${VLLM_QWENFLASH_TP:-1}"
       - --trust-remote-code

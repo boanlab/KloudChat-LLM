@@ -147,8 +147,10 @@ A container created before the reservation followed these variables shows
 `cards all` and sees every card; CUDA then puts it on GPU 0.
 
 The edit model's 58 GB estimate is the checkpoint size; the figure while
-serving is measured on the node and is not part of the scheduler's plan. Start
-the omni containers before `scheduler apply`.
+serving is measured on the node and is not part of the scheduler's plan. On a
+node that also takes scheduled models, start the omni containers before
+`scheduler apply`; a node given to the image models is listed in
+`VLLM_NODES_HOLD` and the scheduler leaves it alone.
 
 ## Tuning knobs
 
@@ -170,6 +172,7 @@ and compose defaults used when placement is skipped
 | `VLLM_QWENFLASH_MAX_BATCHED_TOKENS` / `_MAX_NUM_SEQS` | `16384` / `16` | 16 matches the concurrency-gate cap |
 | `VLLM_QWENFLASH_SPEC_TOKENS` | `2` | MTP draft tokens per step; the checkpoint has one MTP layer |
 | `VLLM_QWENFLASH_ENGRAM` | (empty) | PLE table storage; see [env reference](env-reference.md) |
+| `VLLM_QWENFLASH_KV_OFFLOAD_GB` | (empty) | KV blocks in host RAM, GiB; off when empty. Host RAM, so outside `GPU_UTIL` |
 | `VLLM_BGEM3_GPU_UTIL` / `_MAX_LEN` | `0.08` / `8192` | Compose defaults |
 | `VLLM_RERANK_GPU_UTIL` / `_MAX_LEN` | `0.06` / `8192` | Compose defaults |
 | `VLLM_WHISPER_GPU_UTIL` / `_MAX_LEN` | `0.14` / `448` | Compose defaults; 448 is the decoder window |

@@ -60,6 +60,7 @@ Print them again at any time:
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | optional | Hugging Face gated repositories, for weight downloads |
 | `VLLM_NODES` | `user@host,...` | GPU node SSH targets. The first is the head node (retrieval, transcription); the rest are the pool (Flash-Next, the coder) |
+| `VLLM_NODES_HOLD` | `user@host,...`, optional | Nodes in `VLLM_NODES` the scheduler leaves alone, such as an image-model node |
 | `VLLM_MODELS` | model id CSV | What the scheduler deploys, from `scheduler/models.yaml` |
 | `VLLM_ENDPOINTS` | CSV, optional | vLLM servers you run yourself: `http://host:port` (the generator asks what it serves) or `id=http://host:port`. Never written by the scheduler, which counts each entry as an instance of its model |
 
