@@ -269,6 +269,11 @@ defaults.
 | `replicas` | Cap on the model's instances, `VLLM_ENDPOINTS` entries included |
 | `manual` | Run by hand: never placed, `VLLM_MODELS` cannot select it |
 | `placement` | `any`, `head`, `head-first` or `pool` |
+| `gpu_util` | A fixed `--gpu-memory-utilization`: the planner charges this share of the card instead of sizing one, and the context stays at `ctx_floor` |
+
+A deployment changes placement and sizing without editing the catalogue in
+`scheduler/site.yaml` (untracked): see
+[scheduler](../scheduler/README.md#site-overrides).
 
 - **Registration**: a model with a URL registers under its `local/` name; each
   chat model also gets a `strict-local/<model>` alias over the same backend.

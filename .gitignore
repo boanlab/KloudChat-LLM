@@ -9,6 +9,8 @@
 # Runtime configuration generated per deployment; templates are the *.example files
 services/litellm/config.yaml
 services/searxng/settings.yml
+# This deployment's overrides of scheduler/models.yaml
+scheduler/site.yaml
 
 # Service runtime data (postgres, minio, redis)
 data/

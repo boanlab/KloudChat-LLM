@@ -297,15 +297,21 @@ role_urls() {
 
 dispatch_csv() {
   local role="$1"; shift
-  local var="NODES_${role^^}"
+  local var="${role^^}_NODES"
   local csv; csv="$(env_get "$var")"
   if [[ -z "$csv" ]]; then
     hdr "[${role}] localhost (${var} is empty — running on this host)"
     "${SCRIPT_DIR}/install-${role}.sh" "$@"
     return $?
   fi
-  local host n=0 fail=0
+  local host n=0 fail=0 held
+  held=",$(env_get "${role^^}_NODES_HOLD" | tr -d '[:space:]'),"
   while IFS= read -r host; do
+    # Held nodes (VLLM_NODES_HOLD) run something else; nothing is installed there
+    if [[ "$held" == *",${host},"* || "$held" == *",${host#*@},"* ]]; then
+      hdr "[${role}] ${host} — held (${role^^}_NODES_HOLD), skipped"
+      continue
+    fi
     n=$((n+1))
     hdr "[${role}] ${host}"
     if is_local_host "$host"; then

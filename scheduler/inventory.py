@@ -8,13 +8,16 @@ Independent steps, each tolerant of the others failing:
     4. nvidia-smi compute apps      GPU memory held outside this stack
     5. VLLM_MODELS_ROOT listing     checkpoints present
 
-A node where every step fails yields ``alive=False`` and zero capacity.
+A node is ``alive`` only when both ``docker ps`` and its memory were read: a
+half-answered node would be planned as empty or as full. SSH is retried while
+the connection itself fails.
 """
 
 from __future__ import annotations
 
 import shlex
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional, Sequence
@@ -39,28 +42,41 @@ class NodeProbe:
     raw_errors: tuple[str, ...] = ()
 
 
+#: ssh's own exit status (connection refused or reset, handshake failure),
+#: never the remote command's
+SSH_FAILED: int = 255
+
+#: Attempts per command while ssh itself fails; the probes are read-only
+SSH_ATTEMPTS: int = 3
+
+
 def _ssh(host: str, cmd: str, *, timeout: int = 6) -> tuple[int, str, str]:
-    """One-shot SSH: (rc, stdout, stderr). Never raises."""
-    try:
-        r = subprocess.run(
-            ["ssh", "-o", "StrictHostKeyChecking=no",
-             "-o", f"ConnectTimeout={timeout}",
-             "-o", "LogLevel=ERROR",
-             host, cmd],
-            capture_output=True, text=True, timeout=timeout + 5,
-        )
-        return r.returncode, r.stdout, r.stderr
-    except subprocess.TimeoutExpired:
-        return 124, "", f"timeout after {timeout}s"
-    except OSError as e:
-        return 1, "", str(e)
+    """SSH, retried while the connection itself fails: (rc, stdout, stderr). Never raises."""
+    for attempt in range(SSH_ATTEMPTS):
+        if attempt:
+            time.sleep(attempt)
+        try:
+            r = subprocess.run(
+                ["ssh", "-o", "StrictHostKeyChecking=no",
+                 "-o", f"ConnectTimeout={timeout}",
+                 "-o", "LogLevel=ERROR",
+                 host, cmd],
+                capture_output=True, text=True, timeout=timeout + 5,
+            )
+        except subprocess.TimeoutExpired:
+            return 124, "", f"timeout after {timeout}s"
+        except OSError as e:
+            return 1, "", str(e)
+        if r.returncode != SSH_FAILED:
+            break
+    return r.returncode, r.stdout, r.stderr
 
 
-def read_env(host: str, path: str) -> dict[str, str]:
-    """A node's .env as a mapping; unreachable or missing reads empty."""
+def read_env(host: str, path: str) -> Optional[dict[str, str]]:
+    """A node's .env as a mapping; a missing file reads empty, an unreachable node None."""
     code, out, _ = _ssh(host, f"cat {path} 2>/dev/null || true")
     if code != 0:
-        return {}
+        return None
     values: dict[str, str] = {}
     for raw in out.splitlines():
         line = raw.strip()
@@ -71,10 +87,11 @@ def read_env(host: str, path: str) -> dict[str, str]:
     return values
 
 
-def _probe_running_containers(host: str) -> set[str]:
+def _probe_running_containers(host: str) -> Optional[set[str]]:
+    """Running container names; None when ``docker ps`` could not be run."""
     rc, out, _ = _ssh(host, 'docker ps --format "{{.Names}}"')
     if rc != 0:
-        return set()
+        return None
     return {line.strip() for line in out.splitlines() if line.strip()}
 
 
@@ -178,6 +195,10 @@ def _probe_card_sizes(host: str) -> tuple[tuple[int, ...], bool]:
         )
         if sizes:
             return sizes, False
+    # Unread, not unified: a discrete node taken for unified memory would be
+    # sized by its system RAM
+    if rc in (SSH_FAILED, 124):
+        return (), False
     rc, out, _ = _ssh(host, "awk '/^MemTotal:/ {print $2}' /proc/meminfo")
     if rc == 0 and out.strip().isdigit():
         return (int(out.strip()) * 1024,), True        # kB → B
@@ -213,19 +234,28 @@ def _probe_node_once(
     models_root: Optional[str] = None,
 ) -> NodeProbe:
     errors: list[str] = []
-    running = _probe_running_containers(host)
-    if not running:
-        errors.append("docker ps returned nothing")
+    listed = _probe_running_containers(host)
+    if listed is None:
+        errors.append("docker ps failed")
+    running = listed or set()
 
     card_sizes, unified = _probe_card_sizes(host)
     gpu_class = _probe_gpu_class(host)
+    # Only GB10 shares system memory; any other card read as unified was misread
+    if unified and gpu_class not in ("gb10", "unknown"):
+        errors.append(f"{gpu_class} reported no card memory")
+        card_sizes, unified = (), False
     gpu_count = _probe_gpu_count(host)
     if card_sizes and len(card_sizes) != gpu_count and not unified:
         gpu_count = len(card_sizes)
     # Sized by the smallest card
     total_vram = min(card_sizes) if card_sizes else 0
     arch = _probe_arch(host)
-    alive = bool(running) or total_vram > 0
+    # Both answers or neither: a node whose containers or memory went unread
+    # would be planned as empty or as full, and its services restarted or stopped
+    alive = listed is not None and total_vram > 0
+    if listed is not None and not total_vram:
+        errors.append("GPU memory could not be read")
 
     # Unified memory: system RAM less the OS share
     usable = max(0, total_vram - _UNIFIED_RESERVE_BYTES) if unified and total_vram else None

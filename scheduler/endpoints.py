@@ -33,6 +33,16 @@ def served_models(url: str) -> list[str]:
         return []
 
 
+def urls(raw: str) -> list[str]:
+    """Every URL a VLLM_ENDPOINTS value names, ``id=`` dropped."""
+    out = []
+    for item in raw.split(","):
+        item = item.strip().replace(" ", "")
+        if item:
+            out.append(item.partition("=")[2] if "=" in item else item)
+    return [u.rstrip("/") for u in out if u]
+
+
 def count_instances(
     raw: str, *, serves: Callable[[str], Iterable[str]] = served_models,
 ) -> dict[str, int]:

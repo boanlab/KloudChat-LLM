@@ -126,6 +126,9 @@ models:
 #                                            it to one. Unset, spare capacity takes
 #                                            extra instances by share
 #
+#   gpu_util        sized                    fixed --gpu-memory-utilization (0.05-0.95):
+#                                            charged as is, context kept at ctx_floor
+#
 #   manual          false                    run by hand: no hf_repo needed, never
 #                                            placed, and VLLM_MODELS cannot select it
 #

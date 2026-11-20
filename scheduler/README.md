@@ -23,6 +23,7 @@ never placed).
 ```bash
 # .env
 VLLM_NODES=ops@gpu-1,ops@gpu-2       # SSH targets, head node first
+VLLM_NODES_HOLD=ops@gpu-3            # targets in VLLM_NODES left alone (see Held nodes)
 VLLM_MODELS=qwen3.8-27b,qwen3.8-flash,bge-m3
 VLLM_MODELS_ROOT=/var/lib/vllm/models
 KLOUDCHAT_REMOTE_DIR=KloudChat-LLM   # compose workdir on each node (env or .env)
@@ -35,7 +36,9 @@ VLLM_PLACED=...                      # written by `apply`; do not edit
 instances of their model, transcription excepted (hand-run, it goes through
 `WHISPER_URLS`). A model with one is not placed for coverage and is not
 delegated, and replication and its `replicas` cap see the total. `apply` stops a
-scheduler-placed instance of such a model.
+scheduler-placed instance of such a model, but never the service an entry
+points at: an entry whose host is a node in `VLLM_NODES` and whose port is a
+catalogued service's keeps that container running.
 
 Models are defined in [`models.yaml`](models.yaml). Undeclared fields come from
 the checkpoint's `config.json` and its size on disk, read over SSH from the
@@ -44,6 +47,49 @@ first answering node that has it. `config.json` is cached under
 copies excluded) is measured on every run, with an analytic estimate when the
 measurement fails. A model whose `config.json` no node can read, or that declares
 no context length, is delegated.
+
+### Site overrides
+
+`scheduler/site.yaml`, when present (untracked, one per deployment), lays
+fields over the catalogue entries by id without editing `models.yaml`. It sets
+where and how large a model runs, never what it is or where it answers:
+`placement`, `replicas`, `share`, `priority`, `ctx_floor`, `ctx_target`,
+`concurrent_sessions`, `tensor_parallel`, `activation`, `weight`, `arches` and
+`gpu_util`. Any other field, or an id the catalogue lacks, is an error.
+
+`gpu_util` fixes `--gpu-memory-utilization`: the planner charges that share of
+the card as is instead of sizing one, narrows `concurrent_sessions` to what the
+share holds, keeps the context at `ctx_floor`, and notes a share too small for
+the floor. A layout that already runs is written down this way so that
+`apply` finds nothing to change:
+
+```yaml
+# scheduler/site.yaml: 27B, retrieval and transcription on the head node,
+# Flash on each of three pool nodes
+models:
+  - id: qwen3.8-27b
+    placement: head
+    replicas: 1
+    ctx_floor: 131072
+    ctx_target: 131072
+    gpu_util: 0.66
+  - id: qwen3.8-flash
+    replicas: 3
+    gpu_util: 0.92
+  - id: bge-m3
+    replicas: 1
+    gpu_util: 0.05
+  - id: bge-reranker-v2-m3
+    replicas: 1
+    gpu_util: 0.05
+  - id: whisper-large-v3
+    replicas: 1
+    gpu_util: 0.14
+```
+
+Without the caps, the catalogue's unlimited `replicas` hand spare nodes to
+whichever model is furthest below its share, so a 27B replica can take a pool
+node Flash was meant to hold.
 
 ### Node ids
 
@@ -59,8 +105,14 @@ Per node, over SSH, each step tolerant of the others failing: `docker ps`,
 `nvidia-smi` (card name, count, memory per card; `/proc/meminfo` on
 unified-memory nodes), `uname -m`, GPU memory held per card by processes outside
 this stack, and the checkpoint directories (those with a `config.json`) under
-`VLLM_MODELS_ROOT`. A node answering nothing (no containers, no memory) is
-retried once, then reported as `no answer` and left out of placement.
+`VLLM_MODELS_ROOT`. Each SSH call is retried while the connection itself fails
+(exit 255). A node counts as answering only when both `docker ps` and its card
+memory were read: planned on half an answer it would look empty (its services
+started twice) or full (its services stopped). A node that does not answer in
+full is retried once, then reported as `no answer` and left out of placement and
+of every action. `/proc/meminfo` stands in for card memory only when
+`nvidia-smi` ran and reported none, and only on a GB10, so a discrete node whose
+`nvidia-smi` call failed is never sized by its system RAM.
 
 The card name classifies the node as `gb10`, `rtx5090`, `pro5000`, `pro6000` or
 `unsupported` (the same vocabulary as `lib.sh::detect_gpu_class`; `unknown`
@@ -90,6 +142,19 @@ A pool model with no pool seat is delegated to OpenRouter rather than placed on
 the head node. A single-node cluster has no pool, and `placement` is ignored.
 A `head-first` model's extra instances (replication, `replicas`) go to any node, the
 head included.
+
+### Held nodes
+
+A target in `VLLM_NODES_HOLD` is probed and shown by `inventory` as `held`, and
+nothing else: no placement, no start, stop or recreate, no `.env` write, and
+`setup.sh vllm` installs nothing there. It is for a node in `VLLM_NODES` that
+runs something else, such as the image models (`docker-compose.vllm-omni.yml`,
+outside the scheduler): left in the pool, the room on its second card would
+draw extra embedding and transcription instances, and while its omni
+containers are down it would look empty. An entry is the target as written in
+`VLLM_NODES`, its host, or its node id; one that `VLLM_NODES` does not list, or
+the head node, is an error. Listing the node in `VLLM_NODES` at all keeps it in
+metrics-shim's node list and in the `inventory`.
 
 ## Placement
 
@@ -173,6 +238,18 @@ confirmation unless `-y`. Per node it:
 - starts (`compose up -d`) services the plan adds, stops `vllm-*` services it
   drops, and recreates (`--force-recreate`) a running service only where one of
   its options changed. Containers outside the `vllm-*` prefix are never touched.
+
+The scheduler knows a service by its container name (`docker ps`), not by
+compose labels, so a container started by `docker run` under the service's name
+counts as that service. Acting on one takes care of the difference: before a
+start or recreate, a same-named container outside the `kloudchat-vllm` compose
+project is removed (it would block `compose up` on the name, and a recreate
+replaces it anyway), and a stop also runs `docker stop`, since `compose stop`
+skips a container it did not create. An unchanged plan leaves such a container
+running untouched; the first recreate brings it under compose.
+
+`apply` reads each node's `.env` before deciding what changed; when one cannot
+be read it applies nothing rather than take every option as changed.
 
 In the orchestrator's `.env` it writes `VLLM_PLACED` (a CSV of
 `id=http://host:port`, one per instance, the transcription model included).
