@@ -81,7 +81,6 @@ anywhere. Ports, env prefixes and priorities are in `models.yaml`; the default
 |---|---|---|---|---|
 | `local/qwen3.8-27b` | `vllm-qwen27b` | NVFP4 | any | Chat: conversation, vision, coding, deep research, titles, memory extraction. One replica per node with room |
 | `local/qwen3.8-flash` | `vllm-qwenflash` | NVFP4 | pool | Quality and judging: hard questions, review, grading. Qwen3.8-Flash-Next, MoE, context floor 131072. A GB10 or RTX PRO 6000 node to itself |
-| `local/qwen3-coder-next` | `vllm-codernext` | FP8 | pool | Coding. Qwen3-Coder-Next-80B-A3B, hybrid attention, 12 of 48 layers hold KV |
 | `strict-local/bge-m3` | `vllm-bgem3` | BF16 | head-first | Retrieval embeddings. Pooling runner |
 | `strict-local/bge-reranker-v2-m3` | `vllm-rerank` | BF16 | head-first | Retrieval reranking. Pooling runner |
 | `strict-local/whisper-large-v3` | `vllm-whisper` | FP16 | head-first | Transcription, through whisper-shim (`/tools/stt`) |
@@ -127,14 +126,7 @@ at the checkpoint's 1.0 it mixes Chinese and Japanese words into Korean answers
 Titles, memory extraction, query rewriting, default chat and deep
 research all run on the 27B.
 
-**Coder.** `qwen3-coder-next` is in the catalogue but not in the default
-`VLLM_MODELS`. Coverage seats every listed model once before any replica, so
-listing it gives a pool card to the coder instead of a second 27B. Unlisted,
-it is reachable as `qwen/qwen3-coder-next` through OpenRouter. Deployed, it
-has a hidden OpenRouter twin, a `fallbacks` line and a concurrency-gate cap of
-32.
-
-**Quantisation.** Chat is NVFP4 (Flash-Next's PLE table FP8), the coder FP8,
+**Quantisation.** Chat is NVFP4 (Flash-Next's PLE table FP8),
 retrieval BF16, transcription FP16. The supported cards (GB10, RTX 5090,
 RTX PRO 5000, RTX PRO 6000) execute all of them. 32 GiB usable is the floor; `manage-vllm.sh up` without a service
 name refuses below it.
@@ -145,7 +137,6 @@ name refuses below it.
 |---|---|---|---|
 | `qwen3.8-27b` | `qwen3_xml` | `qwen3` | Thinking off by default (`--default-chat-template-kwargs '{"enable_thinking": false}'`). `--max-num-seqs` bounds CUDA-graph capture for the hybrid conv-state cache |
 | `qwen3.8-flash` | `qwen3_xml` | `qwen3` | Thinking off by default, as for the 27B |
-| `qwen3-coder-next` | `qwen3_coder` | none | Qwen3-Coder's XML dialect |
 
 ## Free models
 
@@ -247,9 +238,8 @@ A self-hosted model declares how it runs in `model_info`: `kchat_quantization` (
 `kchat_kv_cache` and `kchat_engine`. The generator reads the engine version from vLLM's
 `/version` and the KV cache dtype from `/metrics` and otherwise uses
 `KC_<PREFIX>_QUANTIZATION`, `KC_<PREFIX>_KV_CACHE` and `KC_<PREFIX>_ENGINE`
-(see `docs/env-reference.md`). Nothing is guessed. DeepSeek V4 Flash, as run today:
-`KC_DSFLASH_QUANTIZATION=NVFP4`, `KC_DSFLASH_KV_CACHE=fp8`, engine vLLM 0.33.0, tensor
-parallel 2, tool and reasoning parsers `deepseek_v4`.
+(see `docs/env-reference.md`). Nothing is guessed. Qwen3.8-27B, as run today:
+`KC_QWEN27B_QUANTIZATION=NVFP4`, `KC_QWEN27B_KV_CACHE=fp8`.
 
 ### vLLM (local)
 
@@ -285,7 +275,7 @@ defaults.
   Other kinds register as `strict-local/<model>` only.
 - **No URL**: no `local/*` name. With an OpenRouter key and an `openrouter`
   slug a chat model is reachable under that slug (`qwen/qwen3.8-27b`,
-  `qwen/qwen3.8-flash`, `qwen/qwen3-coder-next`) at OpenRouter's price.
+  `qwen/qwen3.8-flash`) at OpenRouter's price.
 - **Discovery**: `gen-litellm-config.sh` polls `/v1/models` at each URL and
   registers the nodes that serve the model; when none answers, it registers
   every configured URL. The served name (`local/<id>`, or whatever the server
@@ -325,7 +315,6 @@ independent paths:
 |---|---|
 | `local/qwen3.8-27b` | `qwen/qwen3.8-27b` (0.42 / 3.00) |
 | `local/qwen3.8-flash` | `qwen/qwen3.8-flash` (0.15 / 0.47) |
-| `local/qwen3-coder-next` | `qwen/qwen3-coder-next` (0.12 / 0.80) |
 
 - `emit_or_fallback` emits the twin only when the local primary is deployed.
   With no local primary, `emit_brain` registers the same slug as an ordinary
@@ -442,7 +431,7 @@ Per-tool paths are in [tools.md](tools.md).
 
 ### Self-hosted image models
 
-Two diffusion models can run on GPU nodes under vllm-omni
+Three diffusion models can run on GPU nodes under vllm-omni
 (`docker-compose.vllm-omni.yml`, compose project `kloudchat-vllm-omni`). They are
 registered only as `strict-local/<name>`, with no OpenRouter twin, so a
 picture drawn with them never leaves the boundary.
@@ -451,7 +440,12 @@ picture drawn with them never leaves the boundary.
 |---|---|---|---|---|
 | `z-image-turbo` | `Tongyi-MAI/Z-Image-Turbo` | 31 GB | `omni-z-image` | 8091 |
 | `qwen-image-2512` | `Qwen/Qwen-Image-2512` | 54 GB | `omni-qwen-image` | 8092 |
+| `qwen-image-edit-2511` | `Qwen/Qwen-Image-Edit-2511` | 58 GB | `omni-qwen-image-edit` | 8093 |
 
+`qwen-image-edit-2511` (Apache-2.0, diffusers format, served through vllm-omni's
+`QwenImageEditPlusPipeline`) only edits: every request carries an input picture
+and an instruction. imagegen-shim sends it to the backend's `/v1/images/edits`;
+a request without a picture is refused.
 On the GPU node:
 
 ```bash
@@ -463,7 +457,7 @@ On the GPU node:
 On the orchestrator, name each backend in `.env` and regenerate:
 
 ```bash
-IMAGEGEN_BACKENDS=z-image-turbo=http://<node>:8091,qwen-image-2512=http://<node>:8092
+IMAGEGEN_BACKENDS=z-image-turbo=http://<node>:8091,qwen-image-2512=http://<node>:8092,qwen-image-edit-2511=http://<node>:8093
 ./scripts/gen-litellm-config.sh
 docker compose up -d imagegen-shim
 docker compose up -d --force-recreate litellm
@@ -476,8 +470,15 @@ shim sends each request to the node with the fewest pictures in flight, and a
 node that refuses the connection sits out for 30 seconds.
 
 `imagegen-shim` turns the gateway's `chat/completions` request with
-`modalities: ["image"]` into the backend's call. A test draw goes the same way,
-not through `images/generations`.
+`modalities: ["image"]` into the backend's call: `/v1/images/generations` for
+a prompt alone, `/v1/images/edits` (multipart) when the last user message also
+carries `image_url` parts as data URLs. A test draw goes the same way, not
+through `images/generations`.
+
+Each omni container pins its own cards (`VLLM_OMNI_ZIMAGE_DEVICES`,
+`VLLM_OMNI_QWENIMAGE_DEVICES`, `VLLM_OMNI_QWENIMAGEEDIT_DEVICES`; each falls back
+to `VLLM_OMNI_DEVICES`), so one two-card node can run the 2512 and Z-Image-Turbo
+on GPU 0 and the edit model on GPU 1 ([GPU memory](gpu-memory.md#image-models-vllm-omni)).
 
 The scheduler does not place or start these models. Like any process outside
 the `vllm-*` containers, the memory they hold is measured from `nvidia-smi`

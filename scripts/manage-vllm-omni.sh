@@ -9,8 +9,12 @@
 #   manage-vllm-omni.sh status                   container + healthcheck status
 #
 # Aliases (lib.sh::OMNI_MODELS):
-#   z-image-turbo     Tongyi-MAI/Z-Image-Turbo   31 GB  omni-z-image     :8091
-#   qwen-image-2512   Qwen/Qwen-Image-2512       54 GB  omni-qwen-image  :8092
+#   z-image-turbo         Tongyi-MAI/Z-Image-Turbo     31 GB  omni-z-image         :8091
+#   qwen-image-2512       Qwen/Qwen-Image-2512         54 GB  omni-qwen-image      :8092
+#   qwen-image-edit-2511  Qwen/Qwen-Image-Edit-2511    58 GB  omni-qwen-image-edit :8093
+#
+# Cards per service: VLLM_OMNI_ZIMAGE_DEVICES, VLLM_OMNI_QWENIMAGE_DEVICES,
+# VLLM_OMNI_QWENIMAGEEDIT_DEVICES in .env (default VLLM_OMNI_DEVICES, then all).
 #
 # Per-node, outside the scheduler. Compose project: kloudchat-vllm-omni.
 # On the orchestrator, list what runs where in IMAGEGEN_BACKENDS, then
@@ -26,7 +30,7 @@ source "${SCRIPT_DIR}/lib.sh"
 [[ -f "$COMPOSE_FILE" ]] || { err "$COMPOSE_FILE not found"; exit 1; }
 
 # `up` and `status` order
-OMNI_ALIASES=(z-image-turbo qwen-image-2512)
+OMNI_ALIASES=(z-image-turbo qwen-image-2512 qwen-image-edit-2511)
 
 usage() {
   sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'
@@ -45,6 +49,7 @@ weight_dir() {
   case "$1" in
     z-image-turbo)   d="$(env_get VLLM_OMNI_ZIMAGE_DIR)" ;;
     qwen-image-2512) d="$(env_get VLLM_OMNI_QWENIMAGE_DIR)" ;;
+    qwen-image-edit-2511) d="$(env_get VLLM_OMNI_QWENIMAGEEDIT_DIR)" ;;
   esac
   echo "${VLLM_MODELS_ROOT}/${d:-$1}"
 }
@@ -125,7 +130,7 @@ cmd_status() {
   for alias in "${OMNI_ALIASES[@]}"; do
     c="${OMNI_SERVICE[$alias]}"
     s="$(docker inspect "$c" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' 2>/dev/null)" || s=missing
-    printf "  %-20s %-10s :%s local/%s\n" "$c:" "$s" "${OMNI_PORT[$alias]}" "$alias"
+    printf "  %-24s %-10s :%s local/%s\n" "$c:" "$s" "${OMNI_PORT[$alias]}" "$alias"
   done
 }
 

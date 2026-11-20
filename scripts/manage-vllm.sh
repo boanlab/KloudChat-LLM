@@ -10,7 +10,6 @@
 # Services:
 #   vllm-qwen27b     Qwen3.8-27B — chat, vision, coding (dense)
 #   vllm-qwenflash   Qwen3.8-Flash-Next — quality and judging (MoE), a node to itself
-#   vllm-codernext   Qwen3-Coder-Next-80B — coding, 75 GiB, a card to itself
 #   vllm-bgem3       BAAI/bge-m3 — retrieval embeddings
 #   vllm-rerank      BAAI/bge-reranker-v2-m3 — retrieval reranking
 #   vllm-whisper     openai/whisper-large-v3 — transcription
@@ -27,7 +26,7 @@ source "${SCRIPT_DIR}/lib.sh"
 [[ -f "$COMPOSE_FILE" ]] || { err "$COMPOSE_FILE not found"; exit 1; }
 
 # Every service in docker-compose.vllm.yml, in `up` and `status` order
-VLLM_SERVICES=(vllm-qwen27b vllm-qwenflash vllm-codernext vllm-bgem3 vllm-rerank vllm-whisper)
+VLLM_SERVICES=(vllm-qwen27b vllm-qwenflash vllm-bgem3 vllm-rerank vllm-whisper)
 
 usage() {
   sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'
@@ -48,7 +47,7 @@ cmd_up() {
   if (( ${#want[@]} == 0 )); then
     warn "no service named — starting every service with local weights."
     warn "  the scheduler decides placement: python3 -m scheduler apply"
-    warn "  to drive this node by hand: manage-vllm.sh up vllm-qwen27b [vllm-codernext ...]"
+    warn "  to drive this node by hand: manage-vllm.sh up vllm-qwen27b [vllm-bgem3 ...]"
   fi
 
   local root="${VLLM_MODELS_ROOT:-/var/lib/vllm/models}"
@@ -58,7 +57,6 @@ cmd_up() {
   declare -A svc_dir
   d="$(env_get VLLM_QWEN27B_DIR)";   svc_dir[vllm-qwen27b]="${d:-qwen3.8-27b-nvfp4}"
   d="$(env_get VLLM_QWENFLASH_DIR)"; svc_dir[vllm-qwenflash]="${d:-qwen3.8-flash-next-nvfp4}"
-  d="$(env_get VLLM_CODERNEXT_DIR)"; svc_dir[vllm-codernext]="${d:-qwen3-coder-next}"
   d="$(env_get VLLM_BGEM3_DIR)";     svc_dir[vllm-bgem3]="${d:-bge-m3}"
   d="$(env_get VLLM_RERANK_DIR)";    svc_dir[vllm-rerank]="${d:-bge-reranker-v2-m3}"
   d="$(env_get VLLM_WHISPER_DIR)";   svc_dir[vllm-whisper]="${d:-whisper-large-v3}"

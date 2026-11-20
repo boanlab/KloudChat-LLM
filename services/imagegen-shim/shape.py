@@ -4,6 +4,8 @@ No third-party imports, so CI tests it without the image's dependencies.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import os
 import time
 import uuid
@@ -22,7 +24,16 @@ _MEGAPIXEL_SIZES = {
 }
 
 #: Per family: sizes and the sampling its card recommends.
+#: A family with `edit` set only edits: its server answers `/v1/images/edits` and
+#: takes the size of the first input picture. It is listed before `qwen-image`,
+#: whose key is part of its name.
 FAMILIES: dict[str, dict[str, Any]] = {
+    "qwen-image-edit": {
+        "edit": True,
+        "sizes": {},
+        "params": {"num_inference_steps": int(os.getenv("QWEN_IMAGE_EDIT_STEPS", "40")),
+                   "true_cfg_scale": 4.0, "guidance_scale": 1.0, "negative_prompt": " "},
+    },
     "qwen-image": {
         "sizes": _QWEN_SIZES,
         "params": {"num_inference_steps": int(os.getenv("QWEN_IMAGE_STEPS", "30")),
@@ -68,6 +79,11 @@ def family_of(model: str) -> dict[str, Any]:
     return FAMILIES["z-image"]
 
 
+def is_edit(model: str) -> bool:
+    """Whether the model only edits a given picture."""
+    return bool(family_of(model).get("edit"))
+
+
 def size_for(model: str, aspect: str) -> str:
     sizes = family_of(model)["sizes"]
     return sizes.get(aspect) or sizes["1:1"]
@@ -85,6 +101,51 @@ def prompt_of(messages: list[dict[str, Any]]) -> str:
             parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
             return "\n".join(t for t in parts if t).strip()
     return ""
+
+
+def images_of(messages: list[dict[str, Any]]) -> list[tuple[str, bytes]]:
+    """`(media type, bytes)` of each picture in the last user message.
+
+    Only `data:` URLs are read: the shim never fetches an address a caller names.
+    Raises ValueError for any other URL or undecodable data.
+    """
+    for message in reversed(messages or []):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            return []
+        out: list[tuple[str, bytes]] = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "image_url":
+                continue
+            url = str((part.get("image_url") or {}).get("url") or "")
+            head, sep, payload = url.partition(",")
+            if not (sep and head.startswith("data:") and head.endswith(";base64")):
+                raise ValueError("input pictures must be base64 data URLs")
+            try:
+                data = base64.b64decode(payload, validate=True)
+            except (binascii.Error, ValueError) as e:
+                raise ValueError("input picture is not valid base64") from e
+            if not data:
+                raise ValueError("input picture is empty")
+            out.append((head[len("data:"):-len(";base64")] or "image/png", data))
+        return out
+    return []
+
+
+def edit_form(model: str, body: dict[str, Any]) -> dict[str, str]:
+    """Form fields of a vllm-omni `/v1/images/edits` request; the pictures go as files."""
+    out: dict[str, str] = {
+        "prompt": prompt_of(body.get("messages") or []),
+        "n": "1",
+        "size": "auto",
+        "response_format": "b64_json",
+        **{k: str(v) for k, v in family_of(model)["params"].items()},
+    }
+    if isinstance(body.get("seed"), int):
+        out["seed"] = str(body["seed"])
+    return out
 
 
 def generation_body(model: str, body: dict[str, Any]) -> dict[str, Any]:

@@ -69,3 +69,44 @@ def test_health_is_degraded_when_no_backend_answers(monkeypatch):
 def test_health_without_backends_is_degraded(monkeypatch):
     _backends(monkeypatch, {}, _answer)
     assert asyncio.run(shim.health()) == {"status": "degraded", "backends": []}
+
+
+def _edit_request(messages):
+    class Req:
+        async def json(self):
+            return {"model": "local/qwen-image-edit-2511", "messages": messages}
+
+    return Req()
+
+
+def test_an_edit_goes_to_the_edits_route_as_multipart(monkeypatch):
+    seen = {}
+
+    async def answer(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["type"] = request.headers["content-type"]
+        seen["body"] = request.content
+        return httpx.Response(200, json={"data": [{"b64_json": "UE5H"}]})
+
+    _backends(monkeypatch, {"qwen-image-edit-2511": ["http://gpu-1:8093"]}, answer)
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": "make the sky pink"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
+    ]}]
+    reply = asyncio.run(shim.chat_completions(_edit_request(messages)))
+    assert seen["path"] == "/v1/images/edits"
+    assert seen["type"].startswith("multipart/form-data")
+    assert b'name="image"' in seen["body"] and b"ABC" in seen["body"]
+    assert b"make the sky pink" in seen["body"] and b"auto" in seen["body"]
+    assert reply["choices"][0]["message"]["images"][0]["image_url"]["url"].endswith("UE5H")
+
+
+@pytest.mark.parametrize("content", ["no picture", [{"type": "image_url", "image_url": {"url": "https://x/y.png"}}]])
+def test_an_edit_without_a_usable_picture_is_refused_before_any_call(monkeypatch, content):
+    async def answer(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no backend call expected")
+
+    _backends(monkeypatch, {"qwen-image-edit-2511": ["http://gpu-1:8093"]}, answer)
+    with pytest.raises(shim.HTTPException) as e:
+        asyncio.run(shim.chat_completions(_edit_request([{"role": "user", "content": content}])))
+    assert e.value.status_code == 400
