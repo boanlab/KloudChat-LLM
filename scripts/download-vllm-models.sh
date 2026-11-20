@@ -9,7 +9,6 @@
 # Aliases (lib.sh::VLLM_MODELS):
 #   qwen3.8-27b-nvfp4         unsloth/Qwen3.8-27B-NVFP4         22 GB  chat
 #   qwen3.8-flash-next-nvfp4  nvidia/Qwen3.8-Flash-Next-NVFP4  124 GB  quality, judging
-#   qwen3-coder-next          Qwen/Qwen3-Coder-Next-FP8         75 GB  coding
 #   bge-m3 / bge-reranker-v2-m3                                  3 GB  retrieval
 #   whisper-large-v3          openai/whisper-large-v3            4 GB  transcription
 #

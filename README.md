@@ -149,8 +149,7 @@ script prints its usage when run without arguments.
 The default local lineup is `qwen3.8-27b` (chat, vision, coding, deep
 research), `qwen3.8-flash` (quality and judging, a GB10 or RTX PRO 6000 node to
 itself), `bge-m3` and `bge-reranker-v2-m3` (retrieval) and `whisper-large-v3`
-(transcription); `qwen3-coder-next` (coding) is in the catalogue but not
-deployed by default. See [docs/models.md](docs/models.md). Local serving is
+(transcription). See [docs/models.md](docs/models.md). Local serving is
 NVIDIA-only. Supported cards are GB10, RTX 5090, RTX PRO 5000 and RTX PRO 6000;
 the download and manage scripts refuse anything else and the scheduler places
 nothing there. 32 GiB usable is the floor. Where a chat model does not fit, the

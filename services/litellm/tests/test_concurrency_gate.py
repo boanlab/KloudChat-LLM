@@ -429,7 +429,7 @@ def test_poll_cycle_scrapes_shared_multi_node_endpoints_once_and_in_parallel(
             "cap": 64,
             "mode": "reject",
         },
-        "strict-local/qwen3-coder-next": {
+        "strict-local/qwen3.8-flash": {
             "metrics": big_urls,
             "cap": 12,
             "mode": "reject",

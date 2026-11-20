@@ -271,7 +271,7 @@ temperature_for() {
 # (engine from /version, KV cache dtype from /metrics); else declared in .env or the shell:
 #   KC_<PREFIX>_QUANTIZATION  weights, e.g. NVFP4      KC_<PREFIX>_KV_CACHE  e.g. fp8
 #   KC_<PREFIX>_ENGINE        e.g. "vLLM 0.33.0"
-# <PREFIX> is the model's env_prefix without VLLM_ (DSFLASH, QWEN27B, ...). Nothing guessed.
+# <PREFIX> is the model's env_prefix without VLLM_ (QWEN27B, QWENFLASH, ...). Nothing guessed.
 run_info_for() {  # $1=model  $2=url  $3=QUANTIZATION|KV_CACHE|ENGINE
   local prefix="${CATALOG_PREFIX[$1]:-}" var found="" value
   [[ -n "$prefix" ]] || return 0

@@ -58,26 +58,6 @@ models:
     # KC_QWENFLASH_TEMPERATURE overrides, empty sends none
     temperature: 0.4
 
-  # Coding. 80B-A3B, FP8, hybrid attention (12 of 48 layers hold KV), 75 GiB:
-  # a pool card to itself. Not in the default VLLM_MODELS.
-  - id: qwen3-coder-next
-    hf_repo: Qwen/Qwen3-Coder-Next-FP8
-    dir: qwen3-coder-next
-    env_prefix: VLLM_CODERNEXT
-    port: 8008
-    priority: 10
-    placement: pool
-    openrouter: qwen/qwen3-coder-next
-    max_inflight: 32
-
-  # Run by hand (VLLM_ENDPOINTS), never deployed; listed for the OpenRouter
-  # fallback and the timeout.
-  - id: deepseek-v4-flash
-    manual: true
-    env_prefix: VLLM_DSFLASH
-    openrouter: deepseek/deepseek-v4-flash
-    timeout: 3600
-
   # Transcription, behind whisper-shim (/tools/stt). Audio stays inside the
   # network: with no backend, dictation is off, with no OpenRouter route.
   - id: whisper-large-v3

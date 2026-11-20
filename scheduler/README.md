@@ -83,7 +83,7 @@ packing:
 |---|---|---|
 | `head` | the head node only | (none by default) |
 | `head-first` | the first instance on the head node, extra instances on any node | embeddings, reranking, transcription |
-| `pool` | every node but the head | Flash-Next, the coder |
+| `pool` | every node but the head | Flash-Next |
 | unset | any | chat |
 
 A pool model with no pool seat is delegated to OpenRouter rather than placed on
