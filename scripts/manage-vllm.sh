@@ -5,7 +5,7 @@
 #   manage-vllm.sh down [-v]                    stop + remove containers
 #   manage-vllm.sh restart [svc]                restart
 #   manage-vllm.sh logs [svc]                   follow logs
-#   manage-vllm.sh status                       container + healthcheck status
+#   manage-vllm.sh status                       container + healthcheck status, reserved cards
 #
 # Services:
 #   vllm-qwen27b     Qwen3.8-27B — chat, vision, coding (dense)
@@ -112,7 +112,7 @@ cmd_status() {
   echo
   for c in "${VLLM_SERVICES[@]}" gpu-exporter; do
     s="$(docker inspect "$c" --format '{{.State.Health.Status}}' 2>/dev/null || echo missing)"
-    printf "  %-15s %s\n" "$c:" "$s"
+    printf "  %-15s %-10s cards %s\n" "$c:" "$s" "$(reserved_cards "$c")"
   done
 }
 

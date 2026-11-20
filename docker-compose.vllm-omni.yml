@@ -10,7 +10,10 @@
 #
 # Cards: each service reads its own VLLM_OMNI_<MODEL>_DEVICES (ZIMAGE, QWENIMAGE,
 # QWENIMAGEEDIT), defaulting to VLLM_OMNI_DEVICES (default all). On a two-card
-# node: ZIMAGE and QWENIMAGE on 0, QWENIMAGEEDIT on 1.
+# node: ZIMAGE and QWENIMAGE on 0, QWENIMAGEEDIT on 1. The value is the GPU
+# reservation's device_ids: Docker's nvidia driver sets NVIDIA_VISIBLE_DEVICES
+# from the reservation after the service's environment, so the reservation
+# decides the card. device_ids "all" is what count: all sends.
 #
 # The scheduler neither places nor starts these; it charges the memory they
 # hold (nvidia-smi) to their card, so start them before `scheduler apply`.
@@ -25,14 +28,7 @@ x-vllm-omni: &vllm-omni
   restart: unless-stopped
   ipc: host
   entrypoint: [vllm]
-  # environment (HF_TOKEN, NVIDIA_VISIBLE_DEVICES) is per service, below
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: all
-            capabilities: [gpu]
+  # environment and the GPU reservation are per service, below
 
 # Container logs rotated per service; the host's daemon settings do not matter
 x-logging: &logging
@@ -49,6 +45,13 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       NVIDIA_VISIBLE_DEVICES: ${VLLM_OMNI_ZIMAGE_DEVICES:-${VLLM_OMNI_DEVICES:-all}}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${VLLM_OMNI_ZIMAGE_DEVICES:-${VLLM_OMNI_DEVICES:-all}}"]
+              capabilities: [gpu]
     command:
       - serve
       - /model
@@ -77,6 +80,13 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       NVIDIA_VISIBLE_DEVICES: ${VLLM_OMNI_QWENIMAGE_DEVICES:-${VLLM_OMNI_DEVICES:-all}}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${VLLM_OMNI_QWENIMAGE_DEVICES:-${VLLM_OMNI_DEVICES:-all}}"]
+              capabilities: [gpu]
     command:
       - serve
       - /model
@@ -107,6 +117,13 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       NVIDIA_VISIBLE_DEVICES: ${VLLM_OMNI_QWENIMAGEEDIT_DEVICES:-${VLLM_OMNI_DEVICES:-all}}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${VLLM_OMNI_QWENIMAGEEDIT_DEVICES:-${VLLM_OMNI_DEVICES:-all}}"]
+              capabilities: [gpu]
     command:
       - serve
       - /model

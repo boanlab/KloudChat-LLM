@@ -95,9 +95,14 @@ Sessions are the planner's sizing assumption (`concurrent_sessions`, default
   it.
 - A node with more than one card is packed per card. `gpu_util` is a fraction
   of one device; the scheduler assigns device ordinals and writes them as
-  `VLLM_<PREFIX>_DEVICES`, which compose passes as `NVIDIA_VISIBLE_DEVICES`.
-  Not `CUDA_VISIBLE_DEVICES`: it has no value meaning "every card", and on
-  GB10 it fails engine init. An unpinned node gets `all`.
+  `VLLM_<PREFIX>_DEVICES`. Compose uses it twice: as the `device_ids` of the
+  container's GPU reservation, which decides the cards, and as
+  `NVIDIA_VISIBLE_DEVICES`. The reservation has to carry it: Docker's nvidia
+  driver sets `NVIDIA_VISIBLE_DEVICES` from the reservation after the
+  service's own environment, so a `count: all` reservation hands every card to
+  every container whatever the environment says. Not `CUDA_VISIBLE_DEVICES`:
+  it has no value meaning "every card", and on GB10 it fails engine init. An
+  unpinned node gets `all`, which as `device_ids` is what `count: all` sends.
 - `qwen3.8-flash` needs a node to itself and is a pool model: the head node
   holds retrieval, transcription and a 27B replica.
 
@@ -127,6 +132,19 @@ VLLM_OMNI_QWENIMAGE_DEVICES=0
 VLLM_OMNI_ZIMAGE_DEVICES=0
 VLLM_OMNI_QWENIMAGEEDIT_DEVICES=1
 ```
+
+Each variable is the `device_ids` of that container's GPU reservation, as for
+the scheduler's services above. After changing one, recreate the containers
+and check where they landed:
+
+```bash
+./scripts/manage-vllm-omni.sh up --recreate
+./scripts/manage-vllm-omni.sh status      # "cards 0", "cards 0", "cards 1"
+nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv
+```
+
+A container created before the reservation followed these variables shows
+`cards all` and sees every card; CUDA then puts it on GPU 0.
 
 The edit model's 58 GB estimate is the checkpoint size; the figure while
 serving is measured on the node and is not part of the scheduler's plan. Start

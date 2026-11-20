@@ -479,6 +479,9 @@ Each omni container pins its own cards (`VLLM_OMNI_ZIMAGE_DEVICES`,
 `VLLM_OMNI_QWENIMAGE_DEVICES`, `VLLM_OMNI_QWENIMAGEEDIT_DEVICES`; each falls back
 to `VLLM_OMNI_DEVICES`), so one two-card node can run the 2512 and Z-Image-Turbo
 on GPU 0 and the edit model on GPU 1 ([GPU memory](gpu-memory.md#image-models-vllm-omni)).
+The variable is the `device_ids` of the container's GPU reservation; change it,
+then `manage-vllm-omni.sh up --recreate`, and `manage-vllm-omni.sh status`
+shows the cards each container holds.
 
 The scheduler does not place or start these models. Like any process outside
 the `vllm-*` containers, the memory they hold is measured from `nvidia-smi`
