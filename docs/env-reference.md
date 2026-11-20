@@ -26,7 +26,7 @@ secrets last. The sections below group the same variables by who sets them.
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | token | Hugging Face gated repositories. Weight downloads only |
 | `VLLM_NODES` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (retrieval, transcription); the rest are the pool (Flash-Next, the coder); chat replicas land on any node with room. See [models.md](models.md#where-models-are-defined) |
-| `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml`. Default `qwen3.8-27b,qwen3.8-flash,bge-m3,bge-reranker-v2-m3,whisper-large-v3`; `qwen3.8-flash` needs a GB10 or RTX PRO 6000 pool node to itself (drop it on a single node); `qwen3-coder-next` is in the catalogue but not in the default |
+| `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml`. Default `qwen3.8-27b,qwen3.8-flash,bge-m3,bge-reranker-v2-m3,whisper-large-v3`; `qwen3.8-flash` needs a GB10 or RTX PRO 6000 pool node to itself (drop it on a single node) |
 | `VLLM_ENDPOINTS` | `http://host:port,id=http://host:port` | vLLM servers you run yourself: a bare URL is asked what it serves, `id=URL` is registered even while down. Never written by the scheduler, which counts each entry as an instance of its model: a model served here is not placed again for coverage, and the model's `replicas` in `models.yaml` caps the total. See [models.md](models.md#vllm-local) |
 | `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | optional | NAVER API HUB credentials; both set enables the `naver web` and `naver news` engines |
 
@@ -112,11 +112,11 @@ placement is skipped.
 | `VLLM_BASE_IMAGE` / `VLLM_BASE_DIGEST` | (empty) | Upstream image and the digest it resolved to, recorded by `install-vllm.sh`. A rebuild pins to the digest; later runs reuse the recorded image, and `install-vllm.sh --reinstall --image <tag>` moves to another (`vllm/vllm-openai:latest` to upgrade) |
 | `VLLM_QWENFLASH_ENGRAM` | (empty) | Flash-Next's `--engram-config`. Empty: `{"checkpoint_mapped": true}`, the PLE table mapped from the checkpoint (GB10). `install-vllm.sh` writes `{}` on discrete cards: the table in pinned host RAM |
 | `VLLM_MODELS_ROOT` | `/var/lib/vllm/models` | Checkpoint root on the node |
-| `VLLM_<PREFIX>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root (`VLLM_QWEN27B_DIR`, `VLLM_QWENFLASH_DIR`, `VLLM_CODERNEXT_DIR`, `VLLM_BGEM3_DIR`, `VLLM_RERANK_DIR`, `VLLM_WHISPER_DIR`) |
-| `VLLM_CODERNEXT_DEEP_GEMM` | `0` | `VLLM_USE_DEEP_GEMM` for `vllm-codernext`. DeepGEMM rejects this checkpoint's FP8 scale-factor layout on GB10; `1` where the kernel takes it |
+| `VLLM_<PREFIX>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root (`VLLM_QWEN27B_DIR`, `VLLM_QWENFLASH_DIR`, `VLLM_BGEM3_DIR`, `VLLM_RERANK_DIR`, `VLLM_WHISPER_DIR`) |
 | `VLLM_OMNI_IMAGE` | `vllm/vllm-omni:v0.30.0` | Image for `docker-compose.vllm-omni.yml` |
-| `VLLM_OMNI_ZIMAGE_DIR` / `VLLM_OMNI_QWENIMAGE_DIR` | `z-image-turbo` / `qwen-image-2512` | Image-model checkpoint directories under `VLLM_MODELS_ROOT` |
-| `VLLM_OMNI_DEVICES` | `all` | `NVIDIA_VISIBLE_DEVICES` for the image models |
+| `VLLM_OMNI_ZIMAGE_DIR` / `VLLM_OMNI_QWENIMAGE_DIR` / `VLLM_OMNI_QWENIMAGEEDIT_DIR` | `z-image-turbo` / `qwen-image-2512` / `qwen-image-edit-2511` | Image-model checkpoint directories under `VLLM_MODELS_ROOT` |
+| `VLLM_OMNI_DEVICES` | `all` | `NVIDIA_VISIBLE_DEVICES` for the image models; the default for the three per-service variables below |
+| `VLLM_OMNI_ZIMAGE_DEVICES` / `VLLM_OMNI_QWENIMAGE_DEVICES` / `VLLM_OMNI_QWENIMAGEEDIT_DEVICES` | `VLLM_OMNI_DEVICES` | `NVIDIA_VISIBLE_DEVICES` for `omni-z-image` / `omni-qwen-image` / `omni-qwen-image-edit`, to place each image model on its own card (`0`, `1`, `0,1`) |
 | `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling for `vllm-whisper` (`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`) and for whisper-shim on the compose host |
 | `WHISPER_MAX_CONCURRENT` | `8` | Transcriptions whisper-shim runs at once; past it, 503 |
 
@@ -173,7 +173,7 @@ Read by `gen-litellm-config.sh` from the shell, not from `.env`:
 | Variable | Default | Notes |
 |---|---|---|
 | `KC_OR_VARIANT` | `:floor` | OpenRouter provider routing suffix on chat routes. `:nitro` for throughput, empty for the OpenRouter default |
-| `KC_<PREFIX>_QUANTIZATION`, `KC_<PREFIX>_KV_CACHE`, `KC_<PREFIX>_ENGINE` | read or empty | How a self-hosted model runs, shown in the picker. `<PREFIX>` is the model's `env_prefix` without `VLLM_` (`DSFLASH`, `QWEN27B`). The generator reads the engine version (`/version`) and KV cache dtype (`/metrics`) from the server and uses these only where the server does not say; the weights' quantization is only declared. Example for DeepSeek V4 Flash: `KC_DSFLASH_QUANTIZATION=NVFP4`, `KC_DSFLASH_KV_CACHE=fp8`, `KC_DSFLASH_ENGINE="vLLM 0.33.0"` |
+| `KC_<PREFIX>_QUANTIZATION`, `KC_<PREFIX>_KV_CACHE`, `KC_<PREFIX>_ENGINE` | read or empty | How a self-hosted model runs, shown in the picker. `<PREFIX>` is the model's `env_prefix` without `VLLM_` (`QWEN27B`, `QWENFLASH`). The generator reads the engine version (`/version`) and KV cache dtype (`/metrics`) from the server and uses these only where the server does not say; the weights' quantization is only declared. Example for Qwen3.8-27B: `KC_QWEN27B_QUANTIZATION=NVFP4`, `KC_QWEN27B_KV_CACHE=fp8`, `KC_QWEN27B_ENGINE="vLLM 0.33.0"` |
 | `KC_PRE_CALL_HEADROOM` | `4096` | Tokens subtracted from each local model's context when declaring `max_input_tokens` |
 | `KLOUDCHAT_ENV_FILE`, `KLOUDCHAT_LITELLM_CONFIG_FILE`, `KLOUDCHAT_LITELLM_CONFIG_EXAMPLE` | repository paths | Overrides used by the tests |
 
@@ -191,6 +191,7 @@ Changing the others means editing `docker-compose.yml`.
 | whisper-shim | `TRANSCRIBE_TIMEOUT_SEC` | `900`; compose passes `${TRANSCRIBE_TIMEOUT_SEC:-3600}` from `.env` | Per-request timeout, sized for long recordings |
 | imagegen-shim | `GENERATE_TIMEOUT_SEC` / `HEALTH_PROBE_TIMEOUT_SEC` | `600` / `2.0` | Per-picture timeout towards vllm-omni, and the per-backend health probe |
 | imagegen-shim | `QWEN_IMAGE_STEPS` | `30` | Sampling steps for the Qwen-Image family |
+| imagegen-shim | `QWEN_IMAGE_EDIT_STEPS` | `40` | Sampling steps for Qwen-Image-Edit |
 | index-shim | `EMBED_DIM` | `1536` | Vector column width (`bge-m3` is 1024, zero-padded to it). Changing it after indexing is a migration; a mismatch makes `/health` report `degraded` |
 | index-shim | `INDEX_CHUNK_CHARS` | `900` | Chunk window |
 | index-shim | `INDEX_CHUNK_OVERLAP` | `150` | Chunk overlap |

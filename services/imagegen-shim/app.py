@@ -9,6 +9,9 @@ calls its `/v1/images/generations` instead and reshapes the reply.
 IMAGEGEN_BACKENDS is comma-separated `name=url` pairs, a name repeated once per
 node: `z-image-turbo=http://gpu-1:8091,z-image-turbo=http://gpu-2:8091,
 qwen-image-2512=http://gpu-1:8092`.
+An editing model (`qwen-image-edit-2511`) takes the picture to edit as an
+`image_url` data URL in the last user message and is called on
+`/v1/images/edits`; one without a picture is refused.
 A request goes to the backend with the fewest pictures in flight (pool.py).
 """
 from __future__ import annotations
@@ -22,7 +25,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from pool import Pool
-from shape import bare, chat_reply, generation_body, parse_backends
+from shape import bare, chat_reply, edit_form, generation_body, images_of, is_edit, parse_backends
 
 LOG = logging.getLogger("imagegen-shim")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
@@ -68,7 +71,23 @@ async def chat_completions(request: Request) -> dict[str, Any]:
     pool = POOLS.get(model)
     if pool is None:
         raise HTTPException(404, f"unknown image model {model!r}")
-    payload = generation_body(model, body)
+    messages = body.get("messages") or []
+    editing = is_edit(model)
+    if editing:
+        # Multipart: the pictures as files, the rest as form fields
+        try:
+            pictures = images_of(messages)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        if not pictures:
+            raise HTTPException(400, f"{model} edits a picture: send one as an image_url part")
+        payload = edit_form(model, body)
+        files = [("image", (f"image{i}.png", data, mime)) for i, (mime, data) in enumerate(pictures, 1)]
+        route = "/v1/images/edits"
+    else:
+        payload = generation_body(model, body)
+        files = None
+        route = "/v1/images/generations"
     if not payload["prompt"]:
         raise HTTPException(400, "no prompt in the request")
 
@@ -79,7 +98,10 @@ async def chat_completions(request: Request) -> dict[str, Any]:
         pool.busy[backend] += 1
         try:
             async with httpx.AsyncClient(timeout=GENERATE_TIMEOUT_SEC) as client:
-                r = await client.post(f"{backend}/v1/images/generations", json=payload)
+                if editing:
+                    r = await client.post(f"{backend}{route}", data=payload, files=files)
+                else:
+                    r = await client.post(f"{backend}{route}", json=payload)
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             # Never reached the backend: nothing drawn, the next one may be up
             LOG.warning("image backend %s unreachable: %s", backend, e)
@@ -102,5 +124,5 @@ async def chat_completions(request: Request) -> dict[str, Any]:
     b64 = data.get("b64_json")
     if not b64:
         raise HTTPException(502, "image backend returned no image")
-    LOG.info("%s %s on %s in %.1fs", model, payload["size"], backend, time.monotonic() - started)
+    LOG.info("%s %s %s on %s in %.1fs", model, route, payload["size"], backend, time.monotonic() - started)
     return chat_reply(model, b64)

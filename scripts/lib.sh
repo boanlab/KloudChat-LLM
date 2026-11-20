@@ -230,8 +230,6 @@ declare -A VLLM_MODELS=(
   [qwen3.8-27b-nvfp4]="unsloth/Qwen3.8-27B-NVFP4"
   # Quality and judging, MoE, NVFP4 body and FP8 PLE table
   [qwen3.8-flash-next-nvfp4]="nvidia/Qwen3.8-Flash-Next-NVFP4"
-  # Coding, FP8
-  [qwen3-coder-next]="Qwen/Qwen3-Coder-Next-FP8"
   # Retrieval embeddings and reranking, BF16
   [bge-m3]="BAAI/bge-m3"
   [bge-reranker-v2-m3]="BAAI/bge-reranker-v2-m3"
@@ -246,7 +244,6 @@ declare -A VLLM_MODELS=(
 declare -A VLLM_MODEL_WEIGHT_GB=(
   [qwen3.8-27b-nvfp4]=22
   [qwen3.8-flash-next-nvfp4]=79
-  [qwen3-coder-next]=75
   [bge-m3]=3
   [bge-reranker-v2-m3]=3
   [whisper-large-v3]=4
@@ -259,20 +256,24 @@ VLLM_RUNTIME_HEADROOM_GB=6
 declare -A OMNI_MODELS=(
   [z-image-turbo]="Tongyi-MAI/Z-Image-Turbo"
   [qwen-image-2512]="Qwen/Qwen-Image-2512"
+  [qwen-image-edit-2511]="Qwen/Qwen-Image-Edit-2511"
 )
 # Download size (GiB), for the disk check
 declare -A OMNI_MODEL_DISK_GB=(
   [z-image-turbo]=31
   [qwen-image-2512]=54
+  [qwen-image-edit-2511]=58
 )
 # Compose service and served port per alias
 declare -A OMNI_SERVICE=(
   [z-image-turbo]=omni-z-image
   [qwen-image-2512]=omni-qwen-image
+  [qwen-image-edit-2511]=omni-qwen-image-edit
 )
 declare -A OMNI_PORT=(
   [z-image-turbo]=8091
   [qwen-image-2512]=8092
+  [qwen-image-edit-2511]=8093
 )
 
 # Download set for a node without an explicit model list
@@ -415,11 +416,9 @@ declare -A MODEL_PRICE_OUT_PM=(
 # keyed by slug; or_price prefers the live figure
 declare -A OR_TWIN_PRICE_IN_PM=(
   [qwen/qwen3.8-27b]=0.42  [qwen/qwen3.8-flash]=0.15
-  [qwen/qwen3-coder-next]=0.12
 )
 declare -A OR_TWIN_PRICE_OUT_PM=(
   [qwen/qwen3.8-27b]=3.00  [qwen/qwen3.8-flash]=0.47
-  [qwen/qwen3-coder-next]=0.80
 )
 
 per_token_cost() { awk -v v="$1" 'BEGIN { printf "%.10f", v/1000000 }'; }

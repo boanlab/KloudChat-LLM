@@ -13,7 +13,6 @@ sizing a node or diagnosing an OOM.
 |---|---|---:|---|
 | `qwen3.8-27b` (Qwen3.8-27B) | NVFP4 | **21.3 GiB** (measured) | Chat. Dense, vision, 262144 context, MTP speculative decoding |
 | `qwen3.8-flash` (Qwen3.8-Flash-Next) | NVFP4 body, FP8 PLE table | **78.3 GiB** resident (measured; 124 GB on disk) | Quality and judging. MoE, 131072 here, MTP. A GB10 (util 0.81) or RTX PRO 6000 (util 0.92) node to itself |
-| `qwen3-coder-next` (Qwen3-Coder-Next-80B-A3B) | FP8 | **~75 GiB** (on disk) | Coding. Hybrid attention, 262144 context. A card to itself |
 | `bge-m3` | BF16 | **~2 GiB** | Retrieval embeddings. Pooling, shares a card |
 | `bge-reranker-v2-m3` | BF16 | **2.1 GiB** (measured) | Retrieval reranking. Pooling, shares a card |
 | `whisper-large-v3` | FP16 | **3.1 GiB** (measured) | Transcription |
@@ -35,14 +34,13 @@ sizing a node or diagnosing an OOM.
 ## KV cost
 
 Only 16 of the 64 layers in `qwen3.8-27b` carry KV; the other 48 are linear
-attention with fixed-size state. `qwen3.8-flash` and `qwen3-coder-next`
-hold KV on 12 of 48 layers.
+attention with fixed-size state. `qwen3.8-flash` holds KV on 12 of 48
+layers.
 
 | Model | KV per token (fp8) | 128K | 256K |
 |---|---:|---:|---:|
 | `qwen3.8-27b` | **32 KiB** | 4.0 GiB | 8.0 GiB |
 | `qwen3.8-flash` | **12 KiB** | 1.5 GiB | 3.0 GiB |
-| `qwen3-coder-next` | **12 KiB** | 1.5 GiB | 3.0 GiB |
 
 Measured on GB10, from vLLM's `GPU KV cache size` line:
 
@@ -77,12 +75,12 @@ activation + 8.8 GiB of KV per concurrent 256K session (admission margin
 1.10), against the card minus its reserve (8%, clamped to 1–8 GiB; 12 GiB on
 unified memory).
 
-| Node | VRAM | `qwen3.8-27b` | `qwen3.8-flash` | `qwen3-coder-next` | Notes |
-|---|---:|---|---|---|---|
-| RTX 5090 | 32 G | ✗ | ✗ | ✗ | 29.4 GiB of capacity against the 27B's 33.9 GiB need; the 27B is delegated. Retrieval and transcription fit |
-| PRO 5000 | 48 G | ○ 1 session | ✗ | ✗ | The 27B alone |
-| PRO 6000 | 96 G | ○ 4 sessions | ○ alone, 2 sessions | ○ alone | Flash-Next and the coder each need the card to themselves |
-| GB10 | 128 G (unified) | ○ 4 sessions | ○ alone, 8 sessions | ○ alone | System RAM less the 12 GiB reserve |
+| Node | VRAM | `qwen3.8-27b` | `qwen3.8-flash` | Notes |
+|---|---:|---|---|---|
+| RTX 5090 | 32 G | ✗ | ✗ | 29.4 GiB of capacity against the 27B's 33.9 GiB need; the 27B is delegated. Retrieval and transcription fit |
+| PRO 5000 | 48 G | ○ 1 session | ✗ | The 27B alone |
+| PRO 6000 | 96 G | ○ 4 sessions | ○ alone, 2 sessions | Flash-Next needs the card to itself |
+| GB10 | 128 G (unified) | ○ 4 sessions | ○ alone, 8 sessions | System RAM less the 12 GiB reserve |
 
 Sessions are the planner's sizing assumption (`concurrent_sessions`, default
 4), halved down to what the card holds.
@@ -100,9 +98,39 @@ Sessions are the planner's sizing assumption (`concurrent_sessions`, default
   `VLLM_<PREFIX>_DEVICES`, which compose passes as `NVIDIA_VISIBLE_DEVICES`.
   Not `CUDA_VISIBLE_DEVICES`: it has no value meaning "every card", and on
   GB10 it fails engine init. An unpinned node gets `all`.
-- `qwen3.8-flash` and `qwen3-coder-next` each need a node to themselves
-  and are pool models: the head node holds retrieval, transcription and a
-  27B replica.
+- `qwen3.8-flash` needs a node to itself and is a pool model: the head node
+  holds retrieval, transcription and a 27B replica.
+
+## Image models (vllm-omni)
+
+The self-hosted image models run outside the scheduler
+(`docker-compose.vllm-omni.yml`), but the scheduler sees the memory they hold
+and charges it to their card. Each omni container pins its own cards, so a
+two-card 96 GiB node can be split by hand:
+
+| Model | Weights | Role |
+|---|---:|---|
+| `z-image-turbo` | ~31 GB on disk, ~25 GiB while serving | Fast text-to-image |
+| `qwen-image-2512` | ~54 GB on disk | Text-to-image, better layout |
+| `qwen-image-edit-2511` | ~58 GB on disk | Image editing: an input picture plus an instruction |
+
+Target placement on a node with two 96 GiB cards:
+
+| Card | Holds | Approximate weights |
+|---|---|---:|
+| GPU 0 | `qwen-image-2512` + `z-image-turbo` | 54 + 31 GB (as today, one card) |
+| GPU 1 | `qwen-image-edit-2511` | 58 GB, the rest of the card is activation headroom |
+
+```bash
+# the node's .env
+VLLM_OMNI_QWENIMAGE_DEVICES=0
+VLLM_OMNI_ZIMAGE_DEVICES=0
+VLLM_OMNI_QWENIMAGEEDIT_DEVICES=1
+```
+
+The edit model's 58 GB estimate is the checkpoint size; the figure while
+serving is measured on the node and is not part of the scheduler's plan. Start
+the omni containers before `scheduler apply`.
 
 ## Tuning knobs
 
@@ -124,7 +152,6 @@ and compose defaults used when placement is skipped
 | `VLLM_QWENFLASH_MAX_BATCHED_TOKENS` / `_MAX_NUM_SEQS` | `16384` / `16` | 16 matches the concurrency-gate cap |
 | `VLLM_QWENFLASH_SPEC_TOKENS` | `2` | MTP draft tokens per step; the checkpoint has one MTP layer |
 | `VLLM_QWENFLASH_ENGRAM` | (empty) | PLE table storage; see [env reference](env-reference.md) |
-| `VLLM_CODERNEXT_GPU_UTIL` / `_MAX_LEN` | `0.85` / `262144` | 75 GiB of weights; 12 KiB/token keeps the native context affordable |
 | `VLLM_BGEM3_GPU_UTIL` / `_MAX_LEN` | `0.08` / `8192` | Compose defaults |
 | `VLLM_RERANK_GPU_UTIL` / `_MAX_LEN` | `0.06` / `8192` | Compose defaults |
 | `VLLM_WHISPER_GPU_UTIL` / `_MAX_LEN` | `0.14` / `448` | Compose defaults; 448 is the decoder window |
