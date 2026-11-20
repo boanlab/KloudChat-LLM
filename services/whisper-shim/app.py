@@ -37,8 +37,8 @@ BACKENDS: list[str] = _parse_backends()
 #: Name put on every forwarded request; one of vllm-whisper's --served-model-name values.
 MODEL_NAME: str = os.getenv("WHISPER_MODEL_NAME", "local/whisper-large-v3")
 HEALTH_PROBE_TIMEOUT_SEC = float(os.getenv("HEALTH_PROBE_TIMEOUT_SEC", "2.0"))
-HEALTH_CACHE_TTL_SEC    = float(os.getenv("HEALTH_CACHE_TTL_SEC", "10"))
-TRANSCRIBE_TIMEOUT_SEC  = float(os.getenv("TRANSCRIBE_TIMEOUT_SEC", "900"))
+HEALTH_CACHE_TTL_SEC = float(os.getenv("HEALTH_CACHE_TTL_SEC", "10"))
+TRANSCRIBE_TIMEOUT_SEC = float(os.getenv("TRANSCRIBE_TIMEOUT_SEC", "900"))
 #: Upload ceiling, the same figure the GPU nodes' vllm-whisper accepts
 MAX_UPLOAD_BYTES = int(float(os.getenv("WHISPER_MAX_UPLOAD_MB", "100")) * 1024 * 1024)
 #: Multipart framing allowed on top of the audio in Content-Length

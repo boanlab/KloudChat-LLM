@@ -152,9 +152,6 @@ def _probe(hosts: dict[str, str], specs) -> list:
     )
 
 
-# ── commands ────────────────────────────────────────────────────────────
-
-
 def cmd_inventory(args) -> int:
     specs = _load_specs(args.models)
     hosts = _resolve_hosts(args.hosts)

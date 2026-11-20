@@ -40,8 +40,7 @@ LITELLM_KEY = os.getenv("LITELLM_MASTER_KEY", "")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "strict-local/bge-reranker-v2-m3").strip()
 #: Vector candidates fetched per requested passage before reranking.
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "5"))
-#: Reranker score floor (bge-reranker-v2-m3: answering passages 0.73–0.94,
-#: loosely related <= 0.025)
+#: Reranker score floor
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.1"))
 #: Cosine distance bound on reranker candidates; recall filter only
 RERANK_RECALL_DISTANCE = float(os.getenv("RERANK_RECALL_DISTANCE", "0.85"))
@@ -52,7 +51,7 @@ EMBED_MODELS = [
     m.strip() for m in os.getenv("EMBED_MODELS", "strict-local/bge-m3").split(",")
     if m.strip()
 ]
-#: Vector column width (bge-m3 1024, zero-padded). Changing it is a migration.
+#: Vector column width; shorter vectors are zero-padded. A change needs a fresh table.
 EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))
 
 #: Embedding probe behind /health: rerun interval, and the wait per health call
@@ -178,8 +177,7 @@ class Query(BaseModel):
     collection: str = Field(min_length=1, max_length=200)
     query: str = Field(min_length=1, max_length=4000)
     limit: int = Field(default=4, ge=1, le=20)
-    #: Cosine distance cut without a reranker (bge-m3 similarity: answered
-    #: 0.50–0.55, unanswered 0.31–0.32)
+    #: Cosine distance cut without a reranker
     max_distance: float = Field(default=0.58, ge=0.0, le=2.0)
 
 
@@ -190,7 +188,7 @@ async def health() -> dict[str, Any]:
     Bounded by the slower of HEALTH_DB_TIMEOUT_SEC and HEALTH_EMBED_TIMEOUT_SEC;
     the embedding result is cached for HEALTH_EMBED_TTL_SEC."""
     ok_db, embed_model = await asyncio.gather(_database_answers(), embed_probe.current())
-    mismatch = getattr(app.state, "dim_error", "")
+    mismatch = app.state.dim_error
     return {
         "status": "ok" if ok_db and not mismatch else "degraded",
         "database": ok_db,

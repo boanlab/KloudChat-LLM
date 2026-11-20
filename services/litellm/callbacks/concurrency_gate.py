@@ -36,14 +36,13 @@ log = logging.getLogger("litellm-concurrency-gate")
 
 POLL_TTL = float(os.environ.get("CONCURRENCY_GATE_TTL", "1.5"))
 SCRAPE_TIMEOUT = float(os.environ.get("CONCURRENCY_GATE_SCRAPE_TIMEOUT", "1.0"))
-# Age beyond which a strict alias's last good sample is stale
+#: Age beyond which a strict alias's last good sample is stale
 STRICT_STATE_TTL = max(POLL_TTL * 3, POLL_TTL + SCRAPE_TIMEOUT * 2)
-#: Request metadata key naming the model a spilled request was rewritten from and to
+#: Request metadata key holding {"from", "to"} of a spilled request
 SPILL_KEY = "kchat_spill"
 #: model_info modes of the retrieval models
 _POOLING_MODES = ("embedding", "rerank")
-# In-flight cap for a strict alias whose deployments declare none (model_info
-# kchat_max_inflight, from scheduler/models.yaml)
+#: In-flight cap for a strict alias whose deployments declare no kchat_max_inflight
 DEFAULT_CAP = 256
 
 
@@ -114,7 +113,7 @@ def _load_gate_map() -> dict:
             mi = (d.get("model_info") or {})
             name = d.get("model_name", "")
             routed = lp.get("model", "")
-            # Embedding and rerank hold no chat queue: not gated on vLLM metrics
+            # No chat queue to read
             if mi.get("mode") in _POOLING_MODES:
                 continue
             if isinstance(routed, str) and routed.startswith("hosted_vllm/") and lp.get("api_base"):
@@ -339,7 +338,7 @@ class ConcurrencyGate(CustomLogger):
             if g is None:
                 # Strict alias with no gate entry: unknown capacity, rejected,
                 # unless a shim alone serves it (pictures, transcription).
-                if model in getattr(self, "_shim_models", set()):
+                if model in self._shim_models:
                     return None
                 if _strict_request(data):
                     return StrictLocalUnavailableError()
@@ -350,7 +349,7 @@ class ConcurrencyGate(CustomLogger):
                     metadata = {}
                     data["metadata"] = metadata
                 metadata["kchat_strict_local"] = True
-            last_success = getattr(self, "_last_success", {}).get(model, 0.0)
+            last_success = self._last_success.get(model, 0.0)
             strict_state_stale = (
                 g["mode"] == "reject"
                 and time.monotonic() - last_success > STRICT_STATE_TTL
@@ -359,10 +358,9 @@ class ConcurrencyGate(CustomLogger):
                 return None
             if g["mode"] == "reject":
                 log.warning("concurrency gate: rejecting saturated strict-local model %s", model)
-                # LiteLLM raises an Exception returned by this hook before routing.
+                # LiteLLM raises a returned Exception before routing
                 return StrictLocalUnavailableError()
-            # The response headers name the spill, as LiteLLM does for a router fallback,
-            # so the caller's usage record shows the request left for OpenRouter
+            # Read back by the response-headers hook
             metadata = data.get("metadata")
             if not isinstance(metadata, dict):
                 metadata = {}
@@ -411,8 +409,7 @@ class ConcurrencyGate(CustomLogger):
         del original_exception, user_api_key_dict, traceback_str
         if not isinstance(request_data, dict) or not _strict_request(request_data):
             return None
-        # An HTTPException returned here becomes the client-facing error.
-        # Lazy import: the unit tests run without the proxy dependency graph.
+        # Lazy import: unit tests run without fastapi
         from fastapi import HTTPException
 
         return HTTPException(
@@ -429,7 +426,7 @@ class ConcurrencyGate(CustomLogger):
 
 gate_instance = ConcurrencyGate()
 
-# Self-registration for a config that only imports the module
+# Registers itself when a config only imports the module
 try:
     import litellm as _litellm
     if gate_instance not in _litellm.callbacks:

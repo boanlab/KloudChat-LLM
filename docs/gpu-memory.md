@@ -123,7 +123,7 @@ Target placement on a node with two 96 GiB cards:
 
 | Card | Holds | Approximate weights |
 |---|---|---:|
-| GPU 0 | `qwen-image-2512` + `z-image-turbo` | 54 + 31 GB (as today, one card) |
+| GPU 0 | `qwen-image-2512` + `z-image-turbo` | 54 + 31 GB, one card |
 | GPU 1 | `qwen-image-edit-2511` | 58 GB, the rest of the card is activation headroom |
 
 ```bash
@@ -143,8 +143,8 @@ and check where they landed:
 nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv
 ```
 
-A container created before the reservation followed these variables shows
-`cards all` and sees every card; CUDA then puts it on GPU 0.
+A container whose status shows `cards all` holds a `count: all` reservation and
+sees every card; CUDA then puts it on GPU 0. `up --recreate` applies the variables.
 
 The edit model's 58 GB estimate is the checkpoint size; the figure while
 serving is measured on the node and is not part of the scheduler's plan. On a

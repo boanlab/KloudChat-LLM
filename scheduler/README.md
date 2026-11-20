@@ -111,8 +111,9 @@ memory were read: planned on half an answer it would look empty (its services
 started twice) or full (its services stopped). A node that does not answer in
 full is retried once, then reported as `no answer` and left out of placement and
 of every action. `/proc/meminfo` stands in for card memory only when
-`nvidia-smi` ran and reported none, and only on a GB10, so a discrete node whose
-`nvidia-smi` call failed is never sized by its system RAM.
+`nvidia-smi` ran and reported none, and only for a GB10 (or a card whose name
+could not be read), so a discrete node whose `nvidia-smi` call failed is never
+sized by its system RAM.
 
 The card name classifies the node as `gb10`, `rtx5090`, `pro5000`, `pro6000` or
 `unsupported` (the same vocabulary as `lib.sh::detect_gpu_class`; `unknown`
@@ -204,8 +205,8 @@ KV = (bytes/token × context + sliding bytes/sequence) × concurrent sessions ×
 - `concurrent_sessions` is a sizing assumption: on a card that cannot hold the
   declared width it is halved down to fit, and the plan says so. The context
   floor is never traded away.
-- `gpu_util` is an output: per-card need over the card's total memory, rounded
-  up to two decimals and clamped to 0.05–0.95.
+- `gpu_util`, unless declared, is per-card need over the card's total memory,
+  rounded up to two decimals and clamped to 0.05–0.95.
 
 ### Tensor parallelism
 
@@ -257,7 +258,7 @@ In the orchestrator's `.env` it writes `VLLM_PLACED` (a CSV of
 keys are written. Re-applying an unchanged plan does nothing.
 
 `python3 -m scheduler catalog` prints the catalogue as TSV (id, api, env prefix,
-OpenRouter slug, timeout, max in flight, presence penalty) for the shell scripts.
+OpenRouter slug, timeout, max in flight, presence penalty, temperature) for the shell scripts.
 
 **On failure.** Actions run node by node in order. The first failing action on a
 node skips that node's remaining actions (an env write precedes the recreate
@@ -284,8 +285,7 @@ is printed and the command exits 1.
 ## Tests
 
 ```bash
-pytest scheduler/tests -q
-PYTHONPATH=. python3 scheduler/tests/test_scheduler.py   # without pytest
+python3 -m pytest -q scheduler
 ```
 
 No GPU, network or Docker needed.

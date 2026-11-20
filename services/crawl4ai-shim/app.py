@@ -337,11 +337,13 @@ def _site(url: str) -> str:
 
 
 def _build_metadata(result: Any, url: str) -> dict[str, Any]:
-    md = result.metadata if getattr(result, "metadata", None) else {}
+    md = getattr(result, "metadata", None)
+    if not isinstance(md, dict):
+        md = {}
     return {
-        "title": md.get("title") if isinstance(md, dict) else None,
-        "description": md.get("description") if isinstance(md, dict) else None,
-        "language": md.get("language") if isinstance(md, dict) else None,
+        "title": md.get("title"),
+        "description": md.get("description"),
+        "language": md.get("language"),
         "sourceURL": url,
         "statusCode": getattr(result, "status_code", None),
     }

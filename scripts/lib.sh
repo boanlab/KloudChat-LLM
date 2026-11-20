@@ -108,7 +108,6 @@ gpu_is_supported() {
 }
 
 # Cards a container's GPU reservation holds: device ids, or "all" for count: all
-# (what a container created before per-service device_ids still carries)
 reserved_cards() {
   docker inspect "$1" --format '{{range .HostConfig.DeviceRequests}}{{if lt .Count 0}}all{{else}}{{join .DeviceIDs ","}}{{end}}{{end}}' 2>/dev/null || true
 }
@@ -141,10 +140,9 @@ gpu_usable_vram_gb() {
   (( total > UNIFIED_RESERVE_GB )) && echo $(( total - UNIFIED_RESERVE_GB )) || echo 0
 }
 
-# OpenRouter commercial catalogue, one array per provider; array order is
-# picker order. Ids: https://openrouter.ai/api/v1/models
-# Only the providers in OR_PROVIDER_ALLOW are registered (see below); the
-# TENCENT, XIAOMI and MINIMAX arrays stay so an operator can allow them again.
+# OpenRouter commercial catalogue, one array per provider, in picker order.
+# Ids: https://openrouter.ai/api/v1/models. Only providers in OR_PROVIDER_ALLOW
+# are registered; TENCENT, XIAOMI and MINIMAX are outside the default list.
 OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6.1-terra gpt-6-luna gpt-5.4-nano gpt-5.3-codex gpt-oss-120b gpt-oss-20b)
 ANTHROPIC_MODELS=(claude-fable-5.2 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-5.5)
 GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite gemma-4-31b-it gemma-4-26b-a4b-it gemma-3-27b-it gemma-3-12b-it
@@ -170,14 +168,11 @@ OR_PROVIDERS=(openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI
               moonshotai:MOONSHOTAI qwen:QWEN bytedance-seed:BYTEDANCE_SEED
               meta-llama:META_LLAMA mistralai:MISTRALAI
               tencent:TENCENT xiaomi:XIAOMI minimax:MINIMAX)
-# Providers the generator registers, commercial and free alike (comma-separated;
-# `*` = every provider). Shell environment first, then .env; an empty value
-# means this default, not "no limit".
+# Default for an empty OR_PROVIDER_ALLOW (`*` = every provider)
 OR_PROVIDER_ALLOW_DEFAULT="qwen,deepseek,anthropic,google,moonshotai,nvidia,openai,perplexity,x-ai,z-ai,bytedance-seed,meta-llama,mistralai"
 
-# Image generation, cheapest per picture first (picker default). Criteria:
-# Korean text rendered right, 16:9 ratio kept, served on chat/completions
-# (GPT Image 2.5, FLUX 3 and Qwen Image 3 serve only OpenRouter's /images).
+# Image generation, cheapest per picture first (picker default). Criteria: Korean
+# text rendered right, 16:9 kept, served on chat/completions
 OR_IMAGE_MODELS=(
   bytedance-seed/seedream-5-0-flash
   bytedance-seed/seedream-5-5
@@ -186,10 +181,9 @@ OR_IMAGE_MODELS=(
   openai/gpt-5.4-image-2
   google/gemini-3-pro-image
 )
-# USD per image_output token. Gemini spends ~1290 tokens on a picture; the
-# image-only models are priced as 4175 tokens per 1K picture (Seedream bills a
-# flat $0.018 whatever token count it reports; KloudChat charges usage.cost).
-# GPT-5.4 Image 2: $0.127 over 3866 output tokens for one 16:9 picture
+# USD per image_output token. Gemini spends ~1290 tokens on a picture; image-only
+# models are priced as 4175 tokens per 1K picture; GPT-5.4 Image 2 as $0.127 over
+# 3866 tokens. KloudChat charges usage.cost.
 declare -A MODEL_IMAGE_OUT_COST=(
   [bytedance-seed/seedream-5-0-flash]=0.0000043114
   [bytedance-seed/seedream-5-5]=0.0000047904
@@ -198,8 +192,8 @@ declare -A MODEL_IMAGE_OUT_COST=(
   [openai/gpt-5.4-image-2]=0.0000329196
   [google/gemini-3-pro-image]=0.00012
 )
-# Audio generation through chat/completions (streaming required): gpt-audio
-# speech per token, lyria music per clip
+# Audio generation through chat/completions (streaming required): gpt-audio per
+# token, lyria per clip
 OR_AUDIO_MODELS=(
   openai/gpt-audio-mini
   openai/gpt-audio
@@ -257,8 +251,8 @@ declare -A VLLM_MODEL_WEIGHT_GB=(
 # GiB over the weights: activations plus KV for one request
 VLLM_RUNTIME_HEADROOM_GB=6
 
-# Image models (vllm-omni, docker-compose.vllm-omni.yml): download alias → HF repo.
-# Diffusers layout (model_index.json), weights under VLLM_MODELS_ROOT/<alias>.
+# Image models (docker-compose.vllm-omni.yml): download alias → HF repo, diffusers
+# layout, weights under VLLM_MODELS_ROOT/<alias>
 declare -A OMNI_MODELS=(
   [z-image-turbo]="Tongyi-MAI/Z-Image-Turbo"
   [qwen-image-2512]="Qwen/Qwen-Image-2512"
@@ -325,8 +319,7 @@ vllm_model_unservable_reason() {
   return 0
 }
 
-# vLLM base image: the latest release, multi-arch (amd64, arm64).
-# install-vllm.sh pins the resolved digest per node as VLLM_BASE_DIGEST.
+# vLLM base image, multi-arch; install-vllm.sh pins its digest per node
 VLLM_IMAGE_LATEST="vllm/vllm-openai:latest"
 
 vllm_default_image() {
@@ -449,11 +442,9 @@ or_catalogue() {
   cat "$__OR_CATALOGUE_CACHE"
 }
 
-# model_info lines for an OpenRouter slug that takes an effort: LiteLLM's
-# supports_reasoning (without it drop_params discards reasoning_effort) and the
-# levels KloudChat's /llm proxy and model listing read. Nothing when the
-# catalogue is unreachable or the model takes no effort.
-#   or_reasoning_info <slug>
+# model_info lines for a slug that takes an effort: supports_reasoning (without
+# it drop_params discards reasoning_effort) and the levels KloudChat reads.
+# Nothing when the catalogue is unreachable or the model takes no effort.
 or_reasoning_info() {
   local slug="$1"
   or_catalogue 2>/dev/null \
@@ -469,9 +460,9 @@ or_reasoning_info() {
       ' 2>/dev/null || true
 }
 
-# model_info lines from the catalogue for an OpenRouter slug: context window,
-# vision input, and function calling only when the catalogue says the model
-# takes no tools. Nothing when the catalogue is unreachable or the slug unknown.
+# model_info lines for a slug: context window, vision input, and
+# supports_function_calling: false when the model takes no tools. Nothing when
+# the catalogue is unreachable or the slug unknown.
 or_capability_info() {
   local slug="$1"
   or_catalogue 2>/dev/null \
@@ -555,14 +546,7 @@ or_free_models_all() {
         | .id' 2>/dev/null | sort
 }
 
-# Which OpenRouter models the generator leaves out. Two filters, both read from
-# the shell environment first and then .env:
-#   OR_PROVIDER_ALLOW  providers to register (empty = the built-in default list,
-#                      `*` = every provider); applies to commercial, image,
-#                      audio and free models alike. Local routes are not touched.
-#   OR_MODEL_EXCLUDE   comma-separated items taken out of what is allowed: a
-#                      `provider/` prefix, a `provider/model`, or a glob such as
-#                      `liquid/lfm-*:free`. Empty = nothing excluded.
+# Provider filter: OR_PROVIDER_ALLOW (shell environment first, then .env)
 or_provider_allowed() {  # $1=provider
   local spec="${OR_PROVIDER_ALLOW-$(env_get OR_PROVIDER_ALLOW)}" p
   spec="${spec//[[:space:]]/}"
@@ -573,6 +557,7 @@ or_provider_allowed() {  # $1=provider
   return 1
 }
 
+# Provider filter plus OR_MODEL_EXCLUDE (`provider/`, `provider/model` or glob)
 __or_filter_excluded() {  # $1=provider/model slug (free slugs keep their :free suffix)
   local slug="$1" spec="${OR_MODEL_EXCLUDE-$(env_get OR_MODEL_EXCLUDE)}" pat
   or_provider_allowed "${slug%%/*}" || return 0
@@ -588,17 +573,11 @@ __or_filter_excluded() {  # $1=provider/model slug (free slugs keep their :free 
   return 1
 }
 
-# ── Run policy: which OpenRouter endpoints a model may run on ───────────────────
-# All off by default (nothing changes). Shell environment first, then .env:
-#   OR_OPEN_WEIGHT_POLICY  strict: an open-weight model (OR_OPEN_WEIGHT) runs only on
-#                          endpoints that disclose their quantization AND are ZDR, any such
-#                          endpoint (cheapest first with :floor); none → the model is left out
-#   OR_OPEN_WEIGHT         glob list of the open-weight models (default below)
-#   OR_PROVIDER_PIN        `pattern=Provider[|Provider]`, comma-separated: run on that provider
-#                          only (no fallback); for an open-weight model it must be eligible
-#   OR_ZDR_ONLY=1          every OpenRouter request carries provider.zdr; a model with no ZDR
-#                          endpoint is left out
-# Endpoint facts come from /api/v1/models/<id>/endpoints and /api/v1/endpoints/zdr (public).
+# ── Run policy: which OpenRouter endpoints a model may run on (docs/models.md) ──
+# Settings read from the shell environment first, then .env: OR_OPEN_WEIGHT_POLICY,
+# OR_OPEN_WEIGHT (glob list; default below), OR_PROVIDER_PIN, OR_ZDR_ONLY,
+# OR_OPEN_WEIGHT_QUANTIZATIONS. Endpoint facts come from the public
+# /api/v1/models/<id>/endpoints and /api/v1/endpoints/zdr.
 OR_OPEN_WEIGHT_DEFAULT="openai/gpt-oss-*,google/gemma-*,meta-llama/*,nvidia/nemotron-*,deepseek/*,z-ai/*,moonshotai/*,qwen/qwen3-coder*,qwen/qwen3.5-*,qwen/qwen3.6-*,qwen/qwen3-vl-*,mistralai/mistral-nemo,mistralai/ministral-*,mistralai/mistral-small-*"
 
 __or_setting() {  # $1=NAME: shell environment first, then .env
@@ -792,7 +771,7 @@ or_price_drift() {
       fi
     done
   done
-  # Twins and the STT fallback
+  # Twins of local models
   for slug in "${!OR_TWIN_PRICE_IN_PM[@]}"; do
     actual="$(jq -r --arg s "$slug" '
       .data[] | select(.id == $s)
@@ -1238,16 +1217,12 @@ rsync_push() {
   rsync -az --delete \
     --exclude='.git/' \
     --exclude='.env' \
-    --exclude='.env.bak.*' \
+    --exclude='.env.bak*' \
     --exclude='data/' \
-    --exclude='whisper/.cache/' \
     --exclude='services/searxng/settings.yml' \
     --exclude='__pycache__/' \
     --exclude='*.pyc' \
-    --exclude='node_modules/' \
     --exclude='.venv/' \
-    --exclude='test-results/' \
-    --exclude='playwright-report/' \
     --rsync-path="mkdir -p '${KLOUDCHAT_REMOTE_DIR}' && rsync" \
     "${__PROJECT_DIR}/" "${host}:${KLOUDCHAT_REMOTE_DIR}/"
 }

@@ -2,27 +2,23 @@
 # service's root.
 #
 #   /litellm/*         → litellm root       (admin API included, Authorization passed through)
+#   /v1/*              → litellm /v1        (OpenAI-compatible clients)
 #   /tools/index/*     → index-shim         (RAG: chunk, embed, store, search)
-#   /v1/*              → litellm /v1        (for OpenAI-compatible clients)
-#   /tools/search/*    → search-shim        (cache and cap in front of searxng)
+#   /tools/search/*    → search-shim
 #   /tools/fetch/*     → crawl4ai-shim      (shim key injected)
 #   /tools/exec/*      → code-interpreter   (x-api-key injected)
 #   /tools/research/*  → deep-research      (MCP streamable-http)
 #   /tools/stt/*       → whisper-shim
-#   /tools/ocr/*       → ocr-shim           (text from scanned pages, CPU)
-#   /metrics/*         → metrics-shim       (GPU-node /metrics found from the endpoint settings, read-only)
+#   /tools/ocr/*       → ocr-shim
+#   /metrics/*         → metrics-shim       (GPU-node /metrics, read-only; /metrics/targets lists names)
 #
-# /tools/* and /metrics/* require TOOLS_GATEWAY_KEY in X-Tools-Key; anything
-# else gets 401 {"error":"unauthorized"} before any upstream is contacted, and
-# the header is stripped before proxying. Fail closed: compose refuses to start
-# with the key unset or empty, and a key under 32 characters denies every
-# request. Hex only (`openssl rand -hex 32`): the value is substituted into a CEL
-# string literal. metrics-shim answers only the names its settings produced
-# (/metrics/targets lists them).
-# /litellm* and /v1/* are authenticated by LiteLLM itself; /health is open.
-# Service keys are injected here and never reach clients.
-# Request bodies capped per route on JSON-only tools; uploads (exec, stt, ocr)
-# are bounded by their services.
+# /tools/* and /metrics/* need TOOLS_GATEWAY_KEY in X-Tools-Key, else 401 before
+# any upstream is contacted; the header is stripped before proxying. Fail
+# closed: compose refuses an unset key and a key under 32 characters denies
+# everything. Hex only (`openssl rand -hex 32`): the value goes into a CEL string
+# literal. /litellm* and /v1/* are authenticated by LiteLLM; /health is open.
+# Service keys are injected here and never reach clients. JSON-only tools have a
+# body cap per route; uploads (exec, stt, ocr) are bounded by their services.
 {
 	admin off
 	auto_https off
@@ -54,8 +50,7 @@
 	}
 
 	handle /tools* {
-		# Constant-time comparison is not available in Caddy; the key is 32+
-		# random bytes and the comparison runs on the gateway host only.
+		# Caddy has no constant-time comparison; the key is 32+ random bytes
 		@authorized expression `{http.request.header.X-Tools-Key} == "{$TOOLS_GATEWAY_KEY}" && size("{$TOOLS_GATEWAY_KEY}") >= 32`
 
 		handle @authorized {
@@ -128,8 +123,7 @@
 		}
 	}
 
-	# Prometheus text of the GPU nodes for KloudChat's performance page. Target
-	# names come from metrics-shim's own list: the request never chooses the upstream.
+	# GPU-node Prometheus text; the request never chooses the upstream
 	handle /metrics/* {
 		@metrics_authorized expression `{http.request.header.X-Tools-Key} == "{$TOOLS_GATEWAY_KEY}" && size("{$TOOLS_GATEWAY_KEY}") >= 32`
 

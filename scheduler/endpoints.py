@@ -47,19 +47,19 @@ def count_instances(
     raw: str, *, serves: Callable[[str], Iterable[str]] = served_models,
 ) -> dict[str, int]:
     """Instances per model id from a VLLM_ENDPOINTS value."""
-    urls: dict[str, set[str]] = {}
+    by_model: dict[str, set[str]] = {}
     for item in raw.split(","):
         item = item.strip().replace(" ", "")
         if not item:
             continue
         name, sep, url = item.partition("=")
         if sep:
-            urls.setdefault(model_id(name), set()).add(url.rstrip("/"))
+            by_model.setdefault(model_id(name), set()).add(url.rstrip("/"))
             continue
         found = [model_id(n) for n in serves(item)]
         if not found:
             print(f"VLLM_ENDPOINTS: {item} serves nothing it can name (write id={item})",
                   file=sys.stderr)
         for mid in found:
-            urls.setdefault(mid, set()).add(item.rstrip("/"))
-    return {mid: len(u) for mid, u in urls.items()}
+            by_model.setdefault(mid, set()).add(item.rstrip("/"))
+    return {mid: len(u) for mid, u in by_model.items()}

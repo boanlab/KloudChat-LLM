@@ -118,8 +118,6 @@ def test_the_endpoint_table_lists_only_eligible_ones_by_default() -> None:
     assert "not disclosed" in or_policy.table(eps, only_eligible=False)
 
 
-# ── generator ────────────────────────────────────────────────────────────────
-
 def _fixtures(tmp_path: Path) -> dict[str, str]:
     d = tmp_path / "endpoints"
     d.mkdir()

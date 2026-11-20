@@ -25,7 +25,7 @@ URL.
 | Python | 3.11+ with PyYAML (`setup.sh` installs `python3-yaml` through apt) | not needed |
 | Disk | 50 GB (images and runtime data) | 100 GB+ (model weights) |
 | RAM | 16 GB | 16 GB+ |
-| Open ports | `GATEWAY_PORT` (8080 by default) and nothing else | vLLM 8001–8009, transcription 9000, image models 8091–8092 and gpu-exporter 9835, reachable from the compose host |
+| Open ports | `GATEWAY_PORT` (8080 by default) and nothing else | vLLM 8001–8009, transcription 9000, image models 8091–8093 and gpu-exporter 9835, reachable from the compose host |
 
 - macOS and Windows are unsupported.
 - No Docker yet: `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`
@@ -63,11 +63,9 @@ Occupancy figures are in the [GPU memory guide](gpu-memory.md).
 
 ### Transcription (STT)
 
-- Transcribes audio uploaded through `/tools/stt`.
-- Optional. With no backend, dictation is off; there is no OpenRouter route.
-  Deploy it by keeping `whisper-large-v3` in `VLLM_MODELS`, or list a server
-  you run in `WHISPER_URLS`.
-- Local serving keeps audio inside the network and has no per-token billing.
+Optional. Keep `whisper-large-v3` in `VLLM_MODELS`, or list a server you run in
+`WHISPER_URLS`. With no backend, dictation is off; there is no OpenRouter route
+([tools.md](tools.md#transcription-whisper-shim)).
 
 ### Commands to run on a GPU host
 
