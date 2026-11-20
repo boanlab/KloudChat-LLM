@@ -1,0 +1,137 @@
+# GPU-node vllm-omni image models. Started by hand with scripts/manage-vllm-omni.sh;
+# LiteLLM reaches them through imagegen-shim (IMAGEGEN_BACKENDS in the
+# orchestrator's .env):
+#
+#   omni-z-image          Z-Image-Turbo, ~25 GiB while serving
+#   omni-qwen-image       Qwen-Image-2512, ~55 GiB of weights
+#   omni-qwen-image-edit  Qwen-Image-Edit-2511 (edits a given picture), ~58 GiB of weights
+#
+# Each service reads VLLM_OMNI_<MODEL>_DEVICES (ZIMAGE, QWENIMAGE, QWENIMAGEEDIT),
+# defaulting to VLLM_OMNI_DEVICES (default all); it is the reservation's
+# device_ids, which the nvidia driver applies over the environment.
+#
+# The scheduler does not place or start these; it charges their nvidia-smi memory
+# to their card, so start them before `scheduler apply`. Names start with omni-:
+# the scheduler stops any vllm-* container it did not place.
+name: kloudchat-vllm-omni
+
+x-vllm-omni: &vllm-omni
+  # Pinned; arm64 and amd64
+  image: ${VLLM_OMNI_IMAGE:-vllm/vllm-omni:v0.30.0}
+  restart: unless-stopped
+  ipc: host
+  entrypoint: [vllm]
+
+# Container logs rotated per service; the host's daemon settings do not matter
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 50m
+    max-file: "5"
+
+services:
+  omni-z-image:
+    <<: *vllm-omni
+    container_name: omni-z-image
+    logging: *logging
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_OMNI_ZIMAGE_DEVICES:-${VLLM_OMNI_DEVICES:-all}}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${VLLM_OMNI_ZIMAGE_DEVICES:-${VLLM_OMNI_DEVICES:-all}}"]
+              capabilities: [gpu]
+    command:
+      - serve
+      - /model
+      - --omni
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8091"
+      - --served-model-name
+      - local/z-image-turbo
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_OMNI_ZIMAGE_DIR:-z-image-turbo}:/model:ro
+    ports:
+      - "8091:8091"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8091/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+
+  omni-qwen-image:
+    <<: *vllm-omni
+    container_name: omni-qwen-image
+    logging: *logging
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_OMNI_QWENIMAGE_DEVICES:-${VLLM_OMNI_DEVICES:-all}}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${VLLM_OMNI_QWENIMAGE_DEVICES:-${VLLM_OMNI_DEVICES:-all}}"]
+              capabilities: [gpu]
+    command:
+      - serve
+      - /model
+      - --omni
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8092"
+      - --served-model-name
+      - local/qwen-image-2512
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_OMNI_QWENIMAGE_DIR:-qwen-image-2512}:/model:ro
+    ports:
+      - "8092:8092"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8092/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+
+  # Image editing on /v1/images/edits: input picture plus instruction
+  omni-qwen-image-edit:
+    <<: *vllm-omni
+    container_name: omni-qwen-image-edit
+    logging: *logging
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_OMNI_QWENIMAGEEDIT_DEVICES:-${VLLM_OMNI_DEVICES:-all}}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${VLLM_OMNI_QWENIMAGEEDIT_DEVICES:-${VLLM_OMNI_DEVICES:-all}}"]
+              capabilities: [gpu]
+    command:
+      - serve
+      - /model
+      - --omni
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8093"
+      - --served-model-name
+      - local/qwen-image-edit-2511
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_OMNI_QWENIMAGEEDIT_DIR:-qwen-image-edit-2511}:/model:ro
+    ports:
+      - "8093:8093"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8093/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 600s

@@ -1,0 +1,183 @@
+"""Request and reply shapes between KloudChat's chat-style image call and vllm-omni.
+
+No third-party imports, so CI tests it without the image's dependencies.
+"""
+from __future__ import annotations
+
+import base64
+import binascii
+import os
+import time
+import uuid
+from typing import Any
+
+#: WIDTHxHEIGHT per aspect. Qwen-Image's are the ones its card lists; the rest
+#: are about one megapixel in multiples of 16.
+_QWEN_SIZES = {
+    "1:1": "1328x1328", "16:9": "1664x928", "9:16": "928x1664", "4:3": "1472x1104",
+    "3:4": "1104x1472", "3:2": "1584x1056", "2:3": "1056x1584",
+}
+_MEGAPIXEL_SIZES = {
+    "1:1": "1024x1024", "16:9": "1360x768", "9:16": "768x1360", "4:3": "1152x864",
+    "3:4": "864x1152", "3:2": "1248x832", "2:3": "832x1248", "4:5": "896x1120",
+    "5:4": "1120x896", "21:9": "1568x672",
+}
+
+#: Per family: sizes and the sampling its card recommends.
+#: A family with `edit` set only edits: its server answers `/v1/images/edits` and
+#: takes the size of the first input picture. It is listed before `qwen-image`,
+#: whose key is part of its name.
+FAMILIES: dict[str, dict[str, Any]] = {
+    "qwen-image-edit": {
+        "edit": True,
+        "sizes": {},
+        "params": {"num_inference_steps": int(os.getenv("QWEN_IMAGE_EDIT_STEPS", "40")),
+                   "true_cfg_scale": 4.0, "guidance_scale": 1.0, "negative_prompt": " "},
+    },
+    "qwen-image": {
+        "sizes": _QWEN_SIZES,
+        "params": {"num_inference_steps": int(os.getenv("QWEN_IMAGE_STEPS", "30")),
+                   "true_cfg_scale": 4.0, "negative_prompt": " "},
+    },
+    "z-image": {
+        "sizes": _MEGAPIXEL_SIZES,
+        "params": {"num_inference_steps": 9, "guidance_scale": 0.0},
+    },
+    "flux2-klein": {
+        "sizes": _MEGAPIXEL_SIZES,
+        "params": {"num_inference_steps": 4, "guidance_scale": 1.0},
+    },
+}
+
+
+def bare(name: str) -> str:
+    """Model name without a leading `local/`."""
+    return name.strip().removeprefix("local/")
+
+
+def parse_backends(raw: str) -> dict[str, list[str]]:
+    """`{model name: [base URL, ...]}` from comma-separated `name=url` pairs.
+
+    One model on several nodes repeats its name, one pair per node; duplicate
+    URLs are dropped. A leading `local/` on a name is dropped.
+    """
+    out: dict[str, list[str]] = {}
+    for item in raw.split(","):
+        name, sep, url = item.strip().partition("=")
+        name, url = bare(name), url.strip().rstrip("/")
+        if sep and name and url and url not in out.setdefault(name, []):
+            out[name].append(url)
+    return {name: urls for name, urls in out.items() if urls}
+
+
+def family_of(model: str) -> dict[str, Any]:
+    """The family whose key appears in the served name; Z-Image's when none does."""
+    name = model.lower()
+    for key, family in FAMILIES.items():
+        if key in name:
+            return family
+    return FAMILIES["z-image"]
+
+
+def is_edit(model: str) -> bool:
+    """Whether the model only edits a given picture."""
+    return bool(family_of(model).get("edit"))
+
+
+def size_for(model: str, aspect: str) -> str:
+    sizes = family_of(model)["sizes"]
+    return sizes.get(aspect) or sizes["1:1"]
+
+
+def prompt_of(messages: list[dict[str, Any]]) -> str:
+    """Text of the last user message, its text parts joined."""
+    for message in reversed(messages or []):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+            return "\n".join(t for t in parts if t).strip()
+    return ""
+
+
+def images_of(messages: list[dict[str, Any]]) -> list[tuple[str, bytes]]:
+    """`(media type, bytes)` of each picture in the last user message.
+
+    Only `data:` URLs are read: the shim never fetches an address a caller names.
+    Raises ValueError for any other URL or undecodable data.
+    """
+    for message in reversed(messages or []):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            return []
+        out: list[tuple[str, bytes]] = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "image_url":
+                continue
+            url = str((part.get("image_url") or {}).get("url") or "")
+            head, sep, payload = url.partition(",")
+            if not (sep and head.startswith("data:") and head.endswith(";base64")):
+                raise ValueError("input pictures must be base64 data URLs")
+            try:
+                data = base64.b64decode(payload, validate=True)
+            except (binascii.Error, ValueError) as e:
+                raise ValueError("input picture is not valid base64") from e
+            if not data:
+                raise ValueError("input picture is empty")
+            out.append((head[len("data:"):-len(";base64")] or "image/png", data))
+        return out
+    return []
+
+
+def edit_form(model: str, body: dict[str, Any]) -> dict[str, str]:
+    """Form fields of a vllm-omni `/v1/images/edits` request; the pictures go as files."""
+    out: dict[str, str] = {
+        "prompt": prompt_of(body.get("messages") or []),
+        "n": "1",
+        "size": "auto",
+        "response_format": "b64_json",
+        **{k: str(v) for k, v in family_of(model)["params"].items()},
+    }
+    if isinstance(body.get("seed"), int):
+        out["seed"] = str(body["seed"])
+    return out
+
+
+def generation_body(model: str, body: dict[str, Any]) -> dict[str, Any]:
+    """vllm-omni `/v1/images/generations` request for a chat-shaped one."""
+    aspect = str((body.get("image_config") or {}).get("aspect_ratio") or "")
+    out: dict[str, Any] = {
+        "prompt": prompt_of(body.get("messages") or []),
+        "n": 1,
+        "size": size_for(model, aspect),
+        "response_format": "b64_json",
+        **family_of(model)["params"],
+    }
+    if isinstance(body.get("seed"), int):
+        out["seed"] = body["seed"]
+    return out
+
+
+def chat_reply(model: str, b64: str) -> dict[str, Any]:
+    """OpenRouter-shaped completion carrying one PNG."""
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "images": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}],
+            },
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }

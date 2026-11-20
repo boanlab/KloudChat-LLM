@@ -4,7 +4,11 @@
    size, onto the roomiest eligible node.
 2. Restoration — leftover capacity raises contexts toward their targets.
 3. Replication — remaining capacity takes extra instances, weighted by
-   ``share``; ``replicas`` caps it, 1 turns it off.
+   ``share``; a model's ``replicas`` caps its own, 1 turns it off.
+
+Instances already served elsewhere (``external``, from VLLM_ENDPOINTS) count as
+instances: a model with one needs no coverage instance, and every later round
+and the model's ``replicas`` cap see the total.
 
 ``placement`` restricts a model to the head node or the pool before any phase.
 Unplaced models are delegated to OpenRouter with a reason.
@@ -22,12 +26,8 @@ from scheduler.kv_model import (
     kv_bytes_per_token,
     sliding_bytes_per_sequence,
 )
-from scheduler.registry import ModelSpec
+from scheduler.registry import MAX_GPU_UTIL, MIN_GPU_UTIL, ModelSpec
 from scheduler.types import GB, Dtype, NodeSpec
-
-#: --gpu-memory-utilization bounds; 1.0 fails engine init
-MAX_GPU_UTIL = 0.95
-MIN_GPU_UTIL = 0.05
 
 #: Runtime headroom for a generate runner: activation, CUDA-graph capture,
 #: hybrid conv state
@@ -145,6 +145,28 @@ def allocation(need: int, node: NodeSpec) -> tuple[float, int]:
     return util, max(need, math.ceil(util * denom))
 
 
+def charge(spec: ModelSpec, ctx: int, node: NodeSpec,
+           card_bytes: Optional[int] = None) -> tuple[float, int]:
+    """(gpu_util, bytes per card) a placement takes: sized from ``need``, or a
+    declared ``gpu_util`` taken as is."""
+    if spec.gpu_util is None:
+        return allocation(per_gpu_need_bytes(spec, ctx, card_bytes), node)
+    denom = node.total_vram_bytes or node.planner_vram_bytes
+    return spec.gpu_util, math.ceil(spec.gpu_util * max(0, denom))
+
+
+def _short_share(spec: ModelSpec, node: NodeSpec, ctx: int, card_bytes: int) -> Optional[str]:
+    """Note when a declared ``gpu_util`` is below what ``ctx`` needs."""
+    if spec.gpu_util is None:
+        return None
+    _, fixed = charge(spec, ctx, node, card_bytes)
+    need = per_gpu_need_bytes(spec, ctx, card_bytes)
+    if need <= fixed:
+        return None
+    return (f"{spec.id} on {node.node_id}: gpu_util {spec.gpu_util:.2f} is below the "
+            f"{need / GB:.1f} GiB its {ctx // 1024}K context needs by the sizing model")
+
+
 def _fit_sessions(spec: ModelSpec, node: NodeSpec, free: Sequence[int],
                   card_capacity: int) -> Optional[tuple[ModelSpec, list[int]]]:
     """The spec as seatable on this node, or None.
@@ -155,7 +177,11 @@ def _fit_sessions(spec: ModelSpec, node: NodeSpec, free: Sequence[int],
     while sessions >= 1:
         candidate = replace(spec, concurrent_sessions=sessions)
         cards = _assign_cards(candidate, node, free, candidate.ctx_floor, card_capacity)
-        if cards is not None:
+        # A declared gpu_util seats as declared; sessions narrow to what its share holds
+        if cards is not None and (
+            spec.gpu_util is None or sessions == 1
+            or _short_share(candidate, node, candidate.ctx_floor, card_capacity) is None
+        ):
             return candidate, cards
         sessions //= 2
     return None
@@ -169,7 +195,7 @@ def _assign_cards(spec: ModelSpec, node: NodeSpec, free: Sequence[int], ctx: int
     tp = max(1, spec.tensor_parallel)
     if tp > node.gpu_count:
         return None
-    _, need = allocation(per_gpu_need_bytes(spec, ctx, card_capacity), node)
+    _, need = charge(spec, ctx, node, card_capacity)
     if need > card_capacity:
         return None
     order = sorted(range(len(free)), key=lambda i: (-free[i], i))
@@ -181,22 +207,23 @@ def plan(
     specs: Sequence[ModelSpec],
     nodes: Sequence[NodeSpec],
     *,
-    replicas: Optional[int] = None,
     deployed: Optional[dict[str, frozenset[str]]] = None,
     head: Optional[str] = None,
+    external: Optional[dict[str, int]] = None,
 ) -> Plan:
     """Decide the placement.
 
     Args:
         specs: models to deploy, with metadata bound.
         nodes: probed nodes.
-        replicas: cap on instances per model; None fills spare capacity, 1 disables.
+        external: model id to the instances already served outside the nodes.
         deployed: model id to node ids already running it; a near-tie keeps it there.
-        head: head node id (first in NODES_VLLM). None on a single-node cluster,
+        head: head node id (first in VLLM_NODES). None on a single-node cluster,
             where ``placement`` constrains nothing.
     """
     result = Plan()
     deployed = deployed or {}
+    external = {k: v for k, v in (external or {}).items() if v > 0}
 
     # Unsupported cards: nothing placed, node kept in the notes
     for n in nodes:
@@ -209,7 +236,8 @@ def plan(
 
     if not nodes:
         for spec in specs:
-            result.delegations.append(Delegation(spec.id, "no GPU node available"))
+            if not external.get(spec.id):
+                result.delegations.append(Delegation(spec.id, "no GPU node available"))
         return result
 
     # Per-card budget; free bytes per card by CUDA device ordinal
@@ -222,6 +250,12 @@ def plan(
         specs, key=lambda s: (s.priority, need_bytes(s, s.ctx_floor)), reverse=True
     )
     for spec in ordered:
+        if external.get(spec.id):
+            result.notes.append(
+                f"{spec.id}: {external[spec.id]} instance(s) served by VLLM_ENDPOINTS, "
+                "none placed for coverage"
+            )
+            continue
         allowed = _eligible(spec, nodes, head)
         holders = [n for n in allowed if _carries(n, spec)]
         seatable = {
@@ -243,7 +277,10 @@ def plan(
                 f"{spec.concurrent_sessions} — the card has no room for more KV"
             )
         cap = card_capacity[target.node_id]
-        util, per_card = allocation(per_gpu_need_bytes(seated, seated.ctx_floor, cap), target)
+        util, per_card = charge(seated, seated.ctx_floor, target, cap)
+        short = _short_share(seated, target, seated.ctx_floor, cap)
+        if short:
+            result.notes.append(short)
         for i in cards:
             free[target.node_id][i] -= per_card
         result.placements.append(
@@ -257,9 +294,8 @@ def plan(
     _restore_context(result, specs, by_id, free, card_capacity)
 
     # 3. Replication, then restoration again for the replicas
-    if replicas is None or replicas > 1:
-        _replicate(result, specs, nodes, free, card_capacity, replicas, head)
-        _restore_context(result, specs, by_id, free, card_capacity)
+    _replicate(result, specs, nodes, free, card_capacity, head, external)
+    _restore_context(result, specs, by_id, free, card_capacity)
 
     return result
 
@@ -279,11 +315,13 @@ def _worst_fit(
 
 
 def _eligible(spec: ModelSpec, nodes: Sequence[NodeSpec],
-              head: Optional[str]) -> list[NodeSpec]:
-    """Nodes allowed by ``placement``; unfiltered when ``head`` is None (single-node cluster)."""
-    if head is None or spec.placement == "any":
+              head: Optional[str], *, extra: bool = False) -> list[NodeSpec]:
+    """Nodes allowed by ``placement``; unfiltered when ``head`` is None (single-node cluster).
+
+    ``extra`` asks for an additional instance: ``head-first`` then allows any node."""
+    if head is None or spec.placement == "any" or (extra and spec.placement == "head-first"):
         return list(nodes)
-    if spec.placement == "head":
+    if spec.placement in ("head", "head-first"):
         return [n for n in nodes if n.node_id == head]
     return [n for n in nodes if n.node_id != head]
 
@@ -297,11 +335,11 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
              card_capacity: dict[str, int]) -> str:
     """Delegation reason over ``nodes`` (what ``placement`` left): no node, arch, checkpoint, cards, or capacity."""
     if not nodes:
-        if spec.placement == "head":
-            return ("the head node — the first in NODES_VLLM — is not answering, "
-                    "and placement: head keeps this model off the pool")
+        if spec.placement in ("head", "head-first"):
+            return ("the head node — the first in VLLM_NODES — is not answering, "
+                    f"and placement: {spec.placement} puts its first instance there")
         return ("no pool node is answering — the pool is every node in "
-                "NODES_VLLM but the first")
+                "VLLM_NODES but the first")
 
     where = _scope(spec)
     servable = [n for n in nodes if spec.runs_on(n.arch)]
@@ -325,8 +363,13 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
             f"and the widest node has {most}"
         )
 
-    roomiest_card_capacity = max(card_capacity[n.node_id] for n in wide_enough)
-    per_gpu = per_gpu_need_bytes(spec, spec.ctx_floor, roomiest_card_capacity)
+    roomiest = max(wide_enough, key=lambda n: card_capacity[n.node_id])
+    roomiest_card_capacity = card_capacity[roomiest.node_id]
+    per_gpu = (
+        per_gpu_need_bytes(spec, spec.ctx_floor, roomiest_card_capacity)
+        if spec.gpu_util is None
+        else charge(spec, spec.ctx_floor, roomiest, roomiest_card_capacity)[1]
+    )
     if per_gpu > roomiest_card_capacity:
         return (
             f"needs {per_gpu / GB:.1f} GiB per card at its "
@@ -353,7 +396,7 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
 
 def _scope(spec: ModelSpec) -> str:
     """Scope of a delegation reason's figures."""
-    return {"head": "the head node", "pool": "the pool"}.get(
+    return {"head": "the head node", "head-first": "the head node", "pool": "the pool"}.get(
         spec.placement, "this cluster"
     )
 
@@ -380,6 +423,9 @@ def _restore_context(
                     continue
                 bumped = min(spec.ctx_target, placement.ctx * 2)
                 cap = card_capacity[node_id]
+                # A declared share stays at its floor: what runs is what was declared
+                if spec.gpu_util is not None:
+                    continue
                 util, grown = allocation(per_gpu_need_bytes(spec, bumped, cap), node)
                 if grown > cap:
                     continue
@@ -402,25 +448,32 @@ def _restore_context(
 def _replicate(
     plan_: Plan, specs: Sequence[ModelSpec], nodes: Sequence[NodeSpec],
     free: dict[str, list[int]], card_capacity: dict[str, int],
-    replicas: Optional[int], head: Optional[str] = None,
+    head: Optional[str] = None,
+    external: Optional[dict[str, int]] = None,
 ) -> None:
-    """Extra instances, one per round to the model furthest below its share (``instances / share``)."""
+    """Extra instances, one per round to the model furthest below its share (``instances / share``).
+
+    A model's count is its placed instances plus the ``external`` ones."""
+    external = external or {}
     placed = {p.model_id for p in plan_.placements}
-    eligible = [s for s in specs if s.id in placed]
-    counts = {s.id: 1 for s in eligible}
+    eligible = [s for s in specs if s.id in placed or external.get(s.id)]
+    counts = {
+        s.id: external.get(s.id, 0) + sum(1 for p in plan_.placements if p.model_id == s.id)
+        for s in eligible
+    }
 
     grew = True
     while grew:
         grew = False
         for spec in sorted(eligible,
                            key=lambda s: (counts[s.id] / s.share, -s.priority)):
-            if replicas is not None and counts[spec.id] >= replicas:
+            if spec.replicas is not None and counts[spec.id] >= spec.replicas:
                 continue
             used = {p.node_id for p in plan_.placements if p.model_id == spec.id}
             seatable = {
                 n.node_id: _fit_sessions(spec, n, free[n.node_id],
                                           card_capacity[n.node_id])
-                for n in _eligible(spec, nodes, head)
+                for n in _eligible(spec, nodes, head, extra=True)
                 if n.node_id not in used and _carries(n, spec)
             }
             candidates = [n for n in nodes if seatable.get(n.node_id) is not None]
@@ -429,7 +482,10 @@ def _replicate(
             target = _worst_fit(candidates, free)
             seated, cards = seatable[target.node_id]
             cap = card_capacity[target.node_id]
-            util, per_card = allocation(per_gpu_need_bytes(seated, seated.ctx_floor, cap), target)
+            util, per_card = charge(seated, seated.ctx_floor, target, cap)
+            short = _short_share(seated, target, seated.ctx_floor, cap)
+            if short:
+                plan_.notes.append(short)
             for i in cards:
                 free[target.node_id][i] -= per_card
             plan_.placements.append(

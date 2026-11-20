@@ -66,17 +66,6 @@ def test_compose_refuses_to_start_the_gateway_without_a_key():
     assert re.search(r"TOOLS_GATEWAY_KEY: \$\{TOOLS_GATEWAY_KEY:\?", gateway)
 
 
-METRICS_TARGETS = {
-    "vllm-27b": "METRICS_VLLM_27B_URL",
-    "vllm-flashnext": "METRICS_VLLM_FLASHNEXT_URL",
-    "vllm-bgem3": "METRICS_VLLM_BGEM3_URL",
-    "vllm-rerank": "METRICS_VLLM_RERANK_URL",
-    "vllm-whisper": "METRICS_VLLM_WHISPER_URL",
-    "gpu-1": "METRICS_GPU_1_URL",
-    "gpu-2": "METRICS_GPU_2_URL",
-}
-
-
 def test_metrics_take_the_tools_key_and_answer_401_without_it():
     block = _block(CADDYFILE, "handle /metrics/* {")
     matcher = re.search(r"@metrics_authorized expression `(.+)`", block)
@@ -87,21 +76,16 @@ def test_metrics_take_the_tools_key_and_answer_401_without_it():
     assert "reverse_proxy" not in fallback
 
 
-def test_each_metrics_name_is_a_fixed_upstream_with_the_key_stripped():
+def test_metrics_go_only_to_metrics_shim_with_the_key_stripped():
     authorized = _block(_block(CADDYFILE, "handle /metrics/* {"), "handle @metrics_authorized {")
-    names = re.findall(r"handle /metrics/([\w-]+) \{", authorized)
-    assert set(names) == set(METRICS_TARGETS)
-    for name, env in METRICS_TARGETS.items():
-        route = _block(authorized, f"handle /metrics/{name} {{")
-        assert "rewrite * /metrics" in route
-        proxy = route[route.index("reverse_proxy ") :]
-        assert proxy.startswith(f"reverse_proxy {{${env}}} {{\n"), proxy
-        assert "header_up -X-Tools-Key" in proxy
+    assert re.findall(r"reverse_proxy (\S+)", authorized) == ["metrics-shim:9200"]
+    assert "header_up -X-Tools-Key" in authorized
     # No upstream is taken from the request
     assert "{http.request" not in authorized
 
 
-def test_compose_gives_every_metrics_upstream_a_closed_default():
-    gateway = COMPOSE.split("\n  gateway:\n", 1)[1].split("\n  # ──", 1)[0]
-    for env in METRICS_TARGETS.values():
-        assert f"{env}: ${{{env}:-127.0.0.1:9}}" in gateway
+def test_compose_gives_metrics_shim_only_the_endpoint_settings():
+    shim = COMPOSE.split("\n  metrics-shim:\n", 1)[1].split("\n  # ──", 1)[0]
+    assert "profiles: [tools]" in shim
+    assert "KEY" not in shim and "env_file" not in shim
+    assert "METRICS_" not in COMPOSE

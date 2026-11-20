@@ -67,3 +67,10 @@ def test_everything_waited_on_declares_a_start_period(services: dict) -> None:
             f"{name}: another service waits on its health, so its first probes "
             "need a start_period — otherwise one early failure aborts the start"
         )
+
+
+def test_litellm_workers_run_under_gunicorn(services: dict) -> None:
+    """Uvicorn's supervisor kills a worker that misses a 5 s ping, dropping its streams."""
+    command = services["litellm"]["command"]
+    assert "--num_workers" in command
+    assert "--run_gunicorn" in command

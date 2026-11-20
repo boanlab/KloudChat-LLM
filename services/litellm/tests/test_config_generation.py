@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -34,18 +35,46 @@ def _fake_curl(bin_dir: Path) -> None:
         textwrap.dedent(
             """\
             #!/bin/sh
-            url=""
+            url=""; out=""; prev=""
             for arg in "$@"; do
               case "$arg" in http://*|https://*) url="$arg" ;; esac
+              [ "$prev" = "-o" ] && out="$arg"
+              prev="$arg"
             done
+            # Writes a fixture where curl was told to (-o), else to stdout; exit 22 when absent
+            serve() {
+              [ -n "$1" ] && [ -f "$1" ] || exit 22
+              if [ -n "$out" ]; then cat "$1" > "$out"; else cat "$1"; fi
+              exit 0
+            }
             case "$url" in
               *qwen.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/qwen3.8-27b","max_model_len":65536}]}' ;;
+              *qwen.test*/version)
+                printf '%s\n' '{"version":"0.33.0"}' ;;
+              *qwen.test*/metrics)
+                printf '%s\n' 'vllm:cache_config_info{block_size="16",cache_dtype="fp8",engine="0"} 1.0' ;;
+              *flash.test*/v1/models)
+                printf '%s\n' '{"data":[{"id":"local/qwen3.8-flash","max_model_len":131072}]}' ;;
+              *other.test*/v1/models)
+                printf '%s\n' '{"data":[{"id":"Org/Other-7B","max_model_len":32768}]}' ;;
               *bge.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/bge-m3","max_model_len":8192}]}' ;;
+              *bge2.test*/v1/models)
+                printf '%s\n' '{"data":[{"id":"BAAI/bge-m3","max_model_len":8192}]}' ;;
               *whisper.test*/v1/models)
                 printf '%s\n' '{"data":[{"id":"local/whisper-large-v3","max_model_len":448}]}' ;;
-              *openrouter.ai*) printf '%s\n' '{"data":[]}' ;;
+              *openrouter.ai/api/v1/endpoints/zdr*)
+                serve "${KC_FAKE_OR_ZDR:-}" ;;
+              *openrouter.ai/api/v1/models/*/endpoints*)
+                slug="${url#*api/v1/models/}"; slug="${slug%/endpoints*}"
+                serve "${KC_FAKE_OR_ENDPOINTS_DIR:-/nonexistent}/$(printf '%s' "$slug" | sed 's#/#__#g').json" ;;
+              *openrouter.ai/api/v1/models)
+                if [ -n "${KC_FAKE_OR_CATALOGUE:-}" ]; then serve "$KC_FAKE_OR_CATALOGUE"; fi
+                printf '%s\n' '{"data":[]}' | { if [ -n "$out" ]; then cat > "$out"; else cat; fi; } ;;
+              *openrouter.ai*)
+                if [ -n "${KC_FAKE_OR_CATALOGUE:-}" ]; then cat "$KC_FAKE_OR_CATALOGUE"
+                else printf '%s\n' '{"data":[]}'; fi ;;
               *) exit 22 ;;
             esac
             """
@@ -86,6 +115,8 @@ def _run_generator(
     dry_run: bool = True,
     store_prompts: str | None = "false",
     whisper_urls: str | None = None,
+    extra_env: dict[str, str] | None = None,
+    env_values: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     _require_associative_array_bash()
     env_file = tmp_path / ".env"
@@ -96,14 +127,16 @@ def _run_generator(
 
     values = {
         "OPENROUTER_API_KEY": "test-openrouter-key" if with_openrouter else "",
-        "OPENAI_API_KEY": "test-openai-key" if include_all_classes else "",
-        "VLLM_QWEN27B_URL": "http://qwen.test:8000" if with_vllm else "",
-        "VLLM_BGEM3_URL": "http://bge.test:8000" if include_all_classes else "",
+        "VLLM_ENDPOINTS": ",".join(
+            (["qwen3.8-27b=http://qwen.test:8000"] if with_vllm else [])
+            + (["bge-m3=http://bge.test:8000"] if include_all_classes else [])
+        ),
         "WHISPER_URLS": (
             whisper_urls if whisper_urls is not None
             else ("" if include_all_classes else "http://whisper.test:9000")
         ),
     }
+    values.update(env_values or {})
     env_file.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
     config_file.write_text(_base_config(store_prompts))
 
@@ -113,6 +146,7 @@ def _run_generator(
             "KLOUDCHAT_ENV_FILE": str(env_file),
             "KLOUDCHAT_LITELLM_CONFIG_FILE": str(config_file),
             "PATH": f"{bin_dir}:{env['PATH']}",
+            **(extra_env or {}),
         }
     )
     args = [BASH, str(GENERATOR)]
@@ -200,6 +234,70 @@ def test_local_and_strict_aliases_follow_deployment_topology(
     assert not any(source.startswith("strict-local/") for source in fallback_sources)
 
 
+def test_the_27b_deployment_defaults_to_a_presence_penalty(tmp_path: Path) -> None:
+    """Callers that send none get 1.0 on the vLLM 27B; the OpenRouter twin is left alone."""
+    result, _ = _run_generator(tmp_path, with_vllm=True, with_openrouter=True)
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {model["model_name"]: model for model in models}
+
+    for alias in ("local/qwen3.8-27b", "strict-local/qwen3.8-27b"):
+        assert by_name[alias]["litellm_params"]["presence_penalty"] == 1.0
+    assert "presence_penalty" not in by_name["qwen/qwen3.8-27b"]["litellm_params"]
+
+
+@pytest.mark.parametrize(("value", "expected"), [("", None), ("0.5", 0.5), ("high", None)])
+def test_the_27b_presence_penalty_follows_the_override(
+    tmp_path: Path, value: str, expected: float | None
+) -> None:
+    result, _ = _run_generator(
+        tmp_path,
+        with_vllm=True,
+        with_openrouter=False,
+        extra_env={"KC_QWEN27B_PRESENCE_PENALTY": value},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    params = {m["model_name"]: m["litellm_params"] for m in models}["local/qwen3.8-27b"]
+    assert params.get("presence_penalty") == expected
+
+
+_WITH_FLASH = {"VLLM_ENDPOINTS": "qwen3.8-27b=http://qwen.test:8000,qwen3.8-flash=http://flash.test:8004"}
+
+
+def test_the_flash_deployment_defaults_to_a_temperature(tmp_path: Path) -> None:
+    """Callers that send none get 0.4 on the vLLM flash; the 27B and the twin are left alone."""
+    result, _ = _run_generator(
+        tmp_path, with_vllm=True, with_openrouter=True, env_values=_WITH_FLASH
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {model["model_name"]: model for model in models}
+
+    for alias in ("local/qwen3.8-flash", "strict-local/qwen3.8-flash"):
+        assert by_name[alias]["litellm_params"]["temperature"] == 0.4
+    for name in ("local/qwen3.8-27b", "strict-local/qwen3.8-27b", "qwen/qwen3.8-flash"):
+        assert "temperature" not in by_name[name]["litellm_params"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [("", None), ("0.7", 0.7), ("0", 0), ("warm", None), ("-1", None)]
+)
+def test_the_flash_temperature_follows_the_override(
+    tmp_path: Path, value: str, expected: float | None
+) -> None:
+    result, _ = _run_generator(
+        tmp_path,
+        with_vllm=True,
+        with_openrouter=False,
+        env_values=_WITH_FLASH,
+        extra_env={"KC_QWENFLASH_TEMPERATURE": value},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m["litellm_params"] for m in models}
+    for alias in ("local/qwen3.8-flash", "strict-local/qwen3.8-flash"):
+        assert by_name[alias].get("temperature") == expected
+    if value in ("warm", "-1"):
+        assert f"temperature '{value}' for qwen3.8-flash is not a number" in result.stderr
+
+
 @pytest.mark.parametrize("with_vllm", [True, False])
 def test_local_alias_never_carries_an_external_boundary(
     tmp_path: Path, with_vllm: bool
@@ -237,8 +335,8 @@ def test_every_generated_model_class_declares_its_boundary(tmp_path: Path) -> No
         assert isinstance(info.get("kchat_privacy_only"), bool)
 
     by_name = {model["model_name"]: model for model in models}
-    assert by_name["local/bge-m3"]["model_info"]["kchat_data_boundary"] == "self_hosted"
-    assert by_name["text-embedding-3-small"]["model_info"]["kchat_data_boundary"] == "external"
+    assert by_name["strict-local/bge-m3"]["model_info"]["kchat_data_boundary"] == "self_hosted"
+    assert "text-embedding-3-small" not in by_name and "local/bge-m3" not in by_name
     assert by_name["strict-local/qwen3.8-27b"]["model_info"]["kchat_strict_local"] is True
 
 
@@ -280,58 +378,396 @@ def test_config_example_disables_prompt_and_response_storage() -> None:
     assert config["general_settings"]["store_prompts_in_spend_logs"] is False
 
 
-STT_OR_MODEL = "mistralai/voxtral-small-24b-2507"
-
-
-def _stt_registered(output: str) -> bool:
-    models, _ = _parse_dry_run(output)
-    return any(m.get("model_name") == STT_OR_MODEL for m in models)
-
-
-def test_a_placed_transcription_backend_keeps_stt_local(tmp_path: Path) -> None:
-    """A live transcription backend suppresses the OpenRouter STT route."""
+def test_a_transcription_backend_registers_strict_local_only(tmp_path: Path) -> None:
+    """WHISPER_URLS set: strict-local/<id> behind whisper-shim, no local/ alias, no OpenRouter route."""
     result, _ = _run_generator(
         tmp_path, with_vllm=True, with_openrouter=True,
         whisper_urls="http://whisper.test:9000",
     )
-    assert not _stt_registered(result.stdout)
+    models, fallbacks = _parse_dry_run(result.stdout)
+    stt = [
+        m for m in models
+        if (m.get("model_info") or {}).get("mode") == "audio_transcription"
+        or "whisper" in m["model_name"] or "voxtral" in m["model_name"]
+    ]
+    assert [m["model_name"] for m in stt] == ["strict-local/whisper-large-v3"]
+    entry = stt[0]
+    assert entry["litellm_params"]["api_base"] == "http://whisper-shim:9000/v1"
+    assert entry["litellm_params"]["model"] == "openai/whisper-large-v3"
+    info = entry["model_info"]
+    assert info["kchat_data_boundary"] == "self_hosted"
+    assert info["kchat_strict_local"] is True and info["kchat_privacy_only"] is True
+    assert not any("whisper" in k for mapping in fallbacks for k in mapping)
 
 
-def test_a_placed_but_dead_transcription_backend_still_delegates(tmp_path: Path) -> None:
-    """A placed but unreachable transcription backend still registers OpenRouter STT."""
+@pytest.mark.parametrize("whisper_urls", ["", " , "])
+def test_no_transcription_backend_registers_no_audio_route_at_all(
+    tmp_path: Path, whisper_urls: str
+) -> None:
+    """Nothing routes a recording anywhere, OpenRouter included."""
+    result, _ = _run_generator(
+        tmp_path, with_vllm=True, with_openrouter=True, whisper_urls=whisper_urls,
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    assert not [
+        m["model_name"] for m in models
+        if "voxtral" in m["model_name"] or "whisper" in m["model_name"]
+        or (m.get("model_info") or {}).get("mode") == "audio_transcription"
+    ]
+
+
+def test_an_openrouter_model_that_takes_an_effort_says_so(tmp_path: Path) -> None:
+    """Without supports_reasoning, drop_params discards a caller's reasoning_effort."""
+    catalogue = tmp_path / "catalogue.json"
+    catalogue.write_text(json.dumps({"data": [
+        {"id": "z-ai/glm-5.3-flash", "pricing": {"prompt": "0", "completion": "0"},
+         "supported_parameters": ["reasoning", "reasoning_effort", "tools"],
+         "reasoning": {"mandatory": True, "supported_efforts": ["max", "high", "low"],
+                       "default_effort": "max"}},
+        {"id": "z-ai/glm-5.3", "pricing": {"prompt": "0", "completion": "0"},
+         "supported_parameters": ["tools"]},
+    ]}))
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True,
+        extra_env={"KC_FAKE_OR_CATALOGUE": str(catalogue)},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {model["model_name"]: model["model_info"] for model in models}
+
+    flash = by_name["z-ai/glm-5.3-flash"]
+    assert flash["supports_reasoning"] is True
+    assert flash["kchat_reasoning_efforts"] == ["max", "high", "low"]
+    assert flash["kchat_reasoning_default"] == "max"
+    assert flash["kchat_reasoning_mandatory"] is True
+    # No effort in the catalogue: nothing claimed
+    assert "supports_reasoning" not in by_name["z-ai/glm-5.3"]
+    assert "kchat_reasoning_efforts" not in by_name["z-ai/glm-5.3"]
+
+
+def test_each_self_hosted_image_backend_is_registered_inside_the_boundary(tmp_path: Path) -> None:
+    """Every name in IMAGEGEN_BACKENDS becomes a strict-local image model behind the shim only."""
     result, _ = _run_generator(
         tmp_path, with_vllm=True, with_openrouter=True,
-        whisper_urls="http://whisper-down.test:9000",
+        env_values={"IMAGEGEN_BACKENDS": "z-image-turbo=http://gpu-2:8092, local/flux2-klein-4b=http://gpu-2:8093"},
     )
-    assert _stt_registered(result.stdout)
+    models, _ = _parse_dry_run(result.stdout)
+    shim = [m for m in models if "imagegen-shim" in str(m["litellm_params"].get("api_base"))]
+    images = {m["model_name"]: m for m in shim}
+    assert set(images) == {"strict-local/z-image-turbo", "strict-local/flux2-klein-4b"}
+    # No local/ alias: nothing could route such a picture to OpenRouter
+    assert not [m for m in models if m["model_name"] in {"local/z-image-turbo", "local/flux2-klein-4b"}]
+    for name, entry in images.items():
+        # The shim is addressed by the bare model name
+        assert entry["litellm_params"]["model"] == f"openai/{name.split('/', 1)[1]}"
+        assert entry["litellm_params"]["api_base"] == "http://imagegen-shim:9100/v1"
+        info = entry["model_info"]
+        assert info["mode"] == "image_generation"
+        assert info["kchat_data_boundary"] == "self_hosted" and info["kchat_strict_local"] is True
+        assert info["kchat_privacy_only"] is True
 
 
-def test_no_transcription_backend_at_all_delegates(tmp_path: Path) -> None:
+def test_an_image_model_on_several_nodes_is_registered_once(tmp_path: Path) -> None:
     result, _ = _run_generator(
-        tmp_path, with_vllm=True, with_openrouter=True, whisper_urls="",
+        tmp_path, with_vllm=True, with_openrouter=True,
+        env_values={"IMAGEGEN_BACKENDS": (
+            "z-image-turbo=http://gpu-1:8091,local/z-image-turbo=http://gpu-2:8091,"
+            "qwen-image-2512=http://gpu-1:8092,z-image-turbo=http://gpu-3:8091"
+        )},
     )
-    assert _stt_registered(result.stdout)
+    models, _ = _parse_dry_run(result.stdout)
+    names = [m["model_name"] for m in models if "imagegen-shim" in str(m["litellm_params"].get("api_base"))]
+    assert sorted(names) == ["strict-local/qwen-image-2512", "strict-local/z-image-turbo"]
 
 
-def test_every_chat_model_in_the_catalogue_is_registered() -> None:
-    """Every generate-runner model in models.yaml has an emit_brain line and its twin named."""
-    catalogue = yaml.safe_load((ROOT / "scheduler" / "models.yaml").read_text())
-    generator = GENERATOR.read_text()
+def test_no_image_backend_registers_no_local_image_model(tmp_path: Path) -> None:
+    result, _ = _run_generator(tmp_path, with_vllm=True, with_openrouter=True)
+    models, _ = _parse_dry_run(result.stdout)
+    assert not [m for m in models if "imagegen-shim" in str(m["litellm_params"].get("api_base"))]
 
-    for entry in catalogue["models"]:
-        if (entry.get("runner") or "generate") != "generate":
-            continue
-        model_id = entry["id"]
-        assert f'emit_brain "{model_id}"' in generator, (
-            f"{model_id} is in the catalogue but gen-litellm-config.sh never "
-            "registers it — it would deploy and be unreachable"
+
+def _catalogue() -> list[dict]:
+    return yaml.safe_load((ROOT / "scheduler" / "models.yaml").read_text())["models"]
+
+
+def _chat_entries() -> list[dict]:
+    return [
+        e for e in _catalogue()
+        if (e.get("api") or {"generate": "chat"}.get(e.get("runner") or "generate")) == "chat"
+    ]
+
+
+def test_every_chat_model_in_the_catalogue_registers_from_its_endpoint(tmp_path: Path) -> None:
+    """A catalogue chat model named in VLLM_ENDPOINTS gets both aliases, its cap and its twin."""
+    entries = _chat_entries()
+    endpoints = ",".join(f"{e['id']}=http://down-{i}.test:8000" for i, e in enumerate(entries))
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True,
+        env_values={"VLLM_ENDPOINTS": endpoints},
+    )
+    models, fallbacks = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m for m in models}
+    sources = {k: v for mapping in fallbacks for k, v in mapping.items()}
+    for e in entries:
+        for alias in (f"local/{e['id']}", f"strict-local/{e['id']}"):
+            entry = by_name[alias]
+            assert entry["litellm_params"]["model"] == f"hosted_vllm/local/{e['id']}"
+            assert entry["model_info"]["kchat_max_inflight"] == e.get("max_inflight", 256)
+        if e.get("openrouter"):
+            assert sources[f"local/{e['id']}"] == [e["openrouter"]]
+
+
+def test_an_unlisted_model_found_at_a_bare_endpoint_registers_as_chat(tmp_path: Path) -> None:
+    """A bare URL is asked what it serves; a name outside the catalogue keeps its served id."""
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True,
+        env_values={"VLLM_ENDPOINTS": "http://other.test:8000, http://qwen.test:8000"},
+    )
+    models, fallbacks = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m for m in models}
+
+    other = by_name["local/Other-7B"]
+    assert other["litellm_params"]["model"] == "hosted_vllm/Org/Other-7B"
+    assert other["model_info"]["max_input_tokens"] == 32768 - 4096
+    assert other["model_info"]["kchat_max_inflight"] == 256
+    assert by_name["strict-local/Other-7B"]["model_info"]["kchat_strict_local"] is True
+    assert "local/Other-7B" not in {k for mapping in fallbacks for k in mapping}
+    # The catalogue model behind the other URL keeps its twin as fallback only
+    assert by_name["local/qwen3.8-27b"]["litellm_params"]["presence_penalty"] == 1.0
+    assert by_name["qwen/qwen3.8-27b"]["model_info"]["kchat_hidden"] is True
+
+
+def test_an_unreachable_bare_endpoint_is_skipped_and_a_named_one_kept(tmp_path: Path) -> None:
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=False,
+        env_values={"VLLM_ENDPOINTS": "http://gone.test:8000,qwen3.8-flash=http://gone.test:8004"},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    names = {m["model_name"] for m in models}
+    assert "local/qwen3.8-flash" in names
+    assert "gone.test:8000" in result.stderr
+
+
+def test_the_schedulers_placements_register(tmp_path: Path) -> None:
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=False,
+        env_values={"VLLM_PLACED": "qwen3.8-27b=http://qwen.test:8000,bge-m3=http://bge.test:8000"},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m for m in models}
+    assert by_name["local/qwen3.8-27b"]["model_info"]["max_input_tokens"] == 65536 - 4096
+    assert by_name["strict-local/bge-m3"]["model_info"]["mode"] == "embedding"
+
+
+def _exclude_catalogue(tmp_path: Path) -> Path:
+    catalogue = tmp_path / "catalogue.json"
+    catalogue.write_text(json.dumps({"data": [
+        {"id": slug, "pricing": {"prompt": "0", "completion": "0"},
+         "architecture": {"output_modalities": ["text"]}}
+        for slug in (
+            "liquid/lfm-2.5:free", "recursive/some-model:free",
+            "thinkingmachines/tm-1:free", "other/keep-me:free",
         )
-        twin = entry.get("openrouter")
-        if twin:
-            assert twin in generator, (
-                f"{model_id} declares the OpenRouter twin {twin}, which the "
-                "generator does not name — its fallback would be wrong"
-            )
+    ]}))
+    return catalogue
+
+
+def _registered_names(
+    tmp_path: Path, exclude: str | None, allow: str = "*"
+) -> tuple[set[str], str]:
+    env_values = {"OR_PROVIDER_ALLOW": allow}
+    if exclude is not None:
+        env_values["OR_MODEL_EXCLUDE"] = exclude
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True, env_values=env_values,
+        extra_env={"KC_FAKE_OR_CATALOGUE": str(_exclude_catalogue(tmp_path))},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    return {m["model_name"] for m in models}, result.stderr
+
+
+def test_no_model_exclusion_changes_nothing(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    base, _ = _registered_names(tmp_path / "a", None)
+    empty, err = _registered_names(tmp_path / "b", "")
+    assert base == empty
+    assert "OR_MODEL_EXCLUDE" not in err
+    assert {"tencent/hy4-preview", "liquid/lfm-2.5:free", "other/keep-me:free"} <= base
+
+
+@pytest.mark.parametrize(
+    ("spec", "gone", "kept"),
+    [
+        # provider/ prefix
+        ("tencent/", {"tencent/hy4-preview"}, {"liquid/lfm-2.5:free", "deepseek/"}),
+        ("tencent/*,openai/gpt-6-luna", {"tencent/hy4-preview", "openai/gpt-6-luna"}, {"openai/gpt-6.1-sol"}),
+        # exact provider/model, commercial and free (with and without :free)
+        ("tencent/hy4-preview", {"tencent/hy4-preview"}, {"liquid/lfm-2.5:free"}),
+        ("liquid/lfm-2.5:free", {"liquid/lfm-2.5:free"}, {"tencent/hy4-preview"}),
+        ("liquid/lfm-2.5", {"liquid/lfm-2.5:free"}, {"recursive/some-model:free"}),
+        # glob, with spaces around the commas
+        ("liquid/lfm-*:free , recursive/*", {"liquid/lfm-2.5:free", "recursive/some-model:free"},
+         {"thinkingmachines/tm-1:free", "other/keep-me:free"}),
+        (
+            "tencent/*,liquid/*,recursive/*,thinkingmachines/*",
+            {"tencent/hy4-preview", "liquid/lfm-2.5:free", "recursive/some-model:free",
+             "thinkingmachines/tm-1:free"},
+            {"other/keep-me:free"},
+        ),
+    ],
+)
+def test_excluded_openrouter_models_are_not_registered(
+    tmp_path: Path, spec: str, gone: set[str], kept: set[str]
+) -> None:
+    names, err = _registered_names(tmp_path, spec)
+    assert not (gone & names)
+    assert all(any(n.startswith(k) or n == k for n in names) for k in kept)
+    assert "OR_MODEL_EXCLUDE left out" in err
+    for slug in gone:
+        assert slug in err
+
+
+def test_only_the_allowed_providers_register_by_default(tmp_path: Path) -> None:
+    result, _ = _run_generator(
+        tmp_path, with_vllm=True, with_openrouter=True,
+        extra_env={"KC_FAKE_OR_CATALOGUE": str(_exclude_catalogue(tmp_path))},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    names = {m["model_name"] for m in models}
+    providers = {n.split("/")[0] for n in names}
+    assert providers <= {
+        "qwen", "deepseek", "anthropic", "google", "moonshotai", "nvidia", "openai",
+        "perplexity", "x-ai", "z-ai", "bytedance-seed", "meta-llama", "mistralai", "local", "strict-local",
+    }
+    assert {"nvidia/nemotron-3.5-super-vl", "anthropic/claude-fable-5.2",
+            "bytedance-seed/seedream-5-0-flash", "local/qwen3.8-27b"} <= names
+    assert not any(n.startswith(("tencent/", "xiaomi/", "minimax/", "recraft/",
+                                 "liquid/", "recursive/", "thinkingmachines/"))
+                   for n in names)
+    assert "other/keep-me:free" not in names
+
+
+def test_an_empty_provider_allowlist_means_the_default_not_no_limit(tmp_path: Path) -> None:
+    names, _ = _registered_names(tmp_path, None, allow="")
+    assert "tencent/hy4-preview" not in names
+    assert "openai/gpt-6.1-sol" in names
+
+
+def test_a_provider_can_be_allowed_again(tmp_path: Path) -> None:
+    names, _ = _registered_names(
+        tmp_path, None, allow="openai,tencent,liquid")
+    assert "tencent/hy4-preview" in names and "liquid/lfm-2.5:free" in names
+    assert "deepseek/deepseek-v4.1-flash" not in names
+
+
+def test_excluding_free_models_keeps_the_paid_twin(tmp_path: Path) -> None:
+    catalogue = tmp_path / "catalogue.json"
+    catalogue.write_text(json.dumps({"data": [
+        {"id": "google/gemma-4-31b-it", "pricing": {"prompt": "0.0000002", "completion": "0.0000004"},
+         "architecture": {"output_modalities": ["text"]}},
+        {"id": "google/gemma-4-31b-it:free", "pricing": {"prompt": "0", "completion": "0"},
+         "architecture": {"output_modalities": ["text"]}},
+    ]}))
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True,
+        env_values={"OR_MODEL_EXCLUDE": "*:free"},
+        extra_env={"KC_FAKE_OR_CATALOGUE": str(catalogue)},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m for m in models}
+    assert "google/gemma-4-31b-it" in by_name
+    assert "google/gemma-4-31b-it:free" not in by_name
+    info = by_name["google/gemma-4-31b-it"]["model_info"]
+    assert info["input_cost_per_token"] == pytest.approx(2e-7)
+    assert info["output_cost_per_token"] == pytest.approx(4e-7)
+
+
+def test_open_models_register_with_catalogue_capabilities(tmp_path: Path) -> None:
+    def entry(slug, ctx, inp, tools, free=False):
+        price = "0" if free else "0.0000001"
+        return {"id": slug, "context_length": ctx,
+                "pricing": {"prompt": price, "completion": price},
+                "architecture": {"input_modalities": inp, "output_modalities": ["text"]},
+                "supported_parameters": ["tools"] if tools else []}
+    catalogue = tmp_path / "catalogue.json"
+    catalogue.write_text(json.dumps({"data": [
+        entry("meta-llama/llama-4-scout", 1310720, ["text", "image"], True),
+        entry("meta-llama/llama-4-scout:free", 131072, ["text"], True, True),
+        entry("google/gemma-3-4b-it", 131072, ["text", "image"], False),
+        entry("google/gemma-3-4b-it:free", 131072, ["text"], False, True),
+        entry("openai/gpt-oss-120b", 131072, ["text"], True),
+        entry("openai/gpt-oss-120b:free", 131072, ["text"], True, True),
+        entry("typesafe/jev-router", 1000, ["text"], True),
+    ]}))
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True,
+        env_values={"OR_PROVIDER_ALLOW": "", "OR_MODEL_EXCLUDE": "*:free"},
+        extra_env={"KC_FAKE_OR_CATALOGUE": str(catalogue)},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m["model_info"] for m in models}
+    for slug in ("meta-llama/llama-3.3-70b-instruct", "meta-llama/llama-4-maverick",
+                 "meta-llama/llama-4-scout", "google/gemma-4-26b-a4b-it",
+                 "google/gemma-3-27b-it", "google/gemma-3-12b-it", "google/gemma-3-4b-it",
+                 "openai/gpt-oss-120b", "openai/gpt-oss-20b"):
+        assert slug in by_name, slug
+    assert not any(n.endswith(":free") for n in by_name)
+    assert not any(n.startswith("typesafe/") for n in by_name)
+    scout = by_name["meta-llama/llama-4-scout"]
+    assert scout["max_input_tokens"] == 1310720 and scout["supports_vision"] is True
+    assert "supports_function_calling" not in scout
+    assert by_name["google/gemma-3-4b-it"]["supports_function_calling"] is False
+    assert "supports_vision" not in by_name["openai/gpt-oss-120b"]
+
+
+def test_mistral_qwen_and_kimi_models_register_without_free_variants(tmp_path: Path) -> None:
+    def entry(slug, inp, free=False):
+        price = "0" if free else "0.0000001"
+        return {"id": slug, "context_length": 262144,
+                "pricing": {"prompt": price, "completion": price},
+                "architecture": {"input_modalities": inp, "output_modalities": ["text"]},
+                "supported_parameters": ["tools"]}
+    catalogue = tmp_path / "catalogue.json"
+    catalogue.write_text(json.dumps({"data": [
+        entry("mistralai/mistral-nemo", ["text"]),
+        entry("mistralai/mistral-nemo:free", ["text"], True),
+        entry("moonshotai/kimi-k3", ["text", "image"]),
+        entry("typesafe/jev-1.14", ["text"]),
+    ]}))
+    result, _ = _run_generator(
+        tmp_path, with_vllm=False, with_openrouter=True,
+        env_values={"OR_PROVIDER_ALLOW": "", "OR_MODEL_EXCLUDE": "*:free"},
+        extra_env={"KC_FAKE_OR_CATALOGUE": str(catalogue)},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    by_name = {m["model_name"]: m["model_info"] for m in models}
+    for slug in (
+        "mistralai/mistral-large-4-0", "mistralai/mistral-medium-3-5",
+        "mistralai/mistral-small-2603", "mistralai/ministral-14b-2512",
+        "mistralai/ministral-8b-2512", "mistralai/ministral-3b-2512",
+        "mistralai/codestral-2508", "mistralai/devstral-2512", "mistralai/mistral-nemo",
+        "qwen/qwen3.6-35b-a3b", "qwen/qwen3.5-9b",
+        "qwen/qwen3.5-35b-a3b", "qwen/qwen3-vl-235b-a22b-instruct",
+        "moonshotai/kimi-k3", "moonshotai/kimi-k3.1-pro",
+    ):
+        assert slug in by_name, slug
+    assert "mistralai/mistral-nemo:free" not in by_name
+    assert not any(n.startswith("typesafe/") for n in by_name)
+    assert not any("voxtral" in n for n in by_name)  # recordings stay local
+    assert by_name["moonshotai/kimi-k3"]["supports_vision"] is True
+
+
+def test_excluded_models_leave_the_team_allowlist(tmp_path: Path) -> None:
+    env = tmp_path / ".env"
+    env.write_text("OPENROUTER_API_KEY=k\nOR_PROVIDER_ALLOW=*\nOR_MODEL_EXCLUDE=tencent/*\n")
+    out = subprocess.run(
+        [BASH, "-c", f'source "{ROOT}/scripts/lib.sh"; litellm_chat_models_csv'],
+        env={**os.environ, "KLOUDCHAT_ENV_FILE": str(env), "ENV_FILE": str(env)},
+        cwd=ROOT, text=True, capture_output=True, check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    assert "tencent/" not in out.stdout
+    assert "deepseek/" in out.stdout
 
 
 def test_every_env_the_generator_references_reaches_the_container() -> None:
@@ -343,13 +779,46 @@ def test_every_env_the_generator_references_reaches_the_container() -> None:
     assert not missing, f"docker-compose.yml does not pass {sorted(missing)} to litellm"
 
 
-def test_every_chat_model_has_a_concurrency_gate_cap() -> None:
-    """Each generate-runner model gets local/ and strict-local/ caps, or strict requests are refused."""
-    catalogue = yaml.safe_load((ROOT / "scheduler" / "models.yaml").read_text())
-    gate = (ROOT / "services" / "litellm" / "callbacks" / "concurrency_gate.py").read_text()
-    caps = set(re.findall(r'"((?:strict-)?local/[^"]+)":\s*\d+', gate))
-    for entry in catalogue["models"]:
-        if (entry.get("runner") or "generate") != "generate":
-            continue
-        for alias in (f"local/{entry['id']}", f"strict-local/{entry['id']}"):
-            assert alias in caps, f"{alias} has no DEFAULT_CAPS entry"
+def test_one_model_served_under_two_names_keeps_every_replica(tmp_path: Path) -> None:
+    """Each server registers under its own served name, so no replica is dropped."""
+    result, _ = _run_generator(
+        tmp_path,
+        with_vllm=False,
+        with_openrouter=False,
+        env_values={"VLLM_ENDPOINTS": "http://bge.test:8000,http://bge2.test:8000"},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    served = sorted(
+        m["litellm_params"]["model"] for m in models if m["model_name"] == "strict-local/bge-m3"
+    )
+    assert served == ["hosted_vllm/BAAI/bge-m3", "hosted_vllm/local/bge-m3"]
+
+
+@pytest.mark.parametrize(
+    ("labels", "expected"),
+    [
+        ('block_size="16",cache_dtype="fp8",mamba_cache_dtype="auto",mamba_ssm_cache_dtype="float32"', "fp8"),
+        ('mamba_ssm_cache_dtype="float32",mamba_cache_dtype="auto",cache_dtype="fp8",engine="0"', "fp8"),
+        ('cache_dtype="fp8",mamba_cache_dtype="auto"', "fp8"),
+        ('cache_dtype="auto",mamba_cache_dtype="auto",mamba_ssm_cache_dtype="float32"', ""),
+        ('mamba_ssm_cache_dtype="float32",cache_dtype="auto"', ""),
+        ('mamba_ssm_cache_dtype="float32"', ""),
+    ],
+)
+def test_the_kv_cache_label_is_exactly_cache_dtype(tmp_path: Path, labels: str, expected: str) -> None:
+    _require_associative_array_bash()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' "vllm:cache_config_info{$KC_LABELS} 1.0"\n'
+    )
+    curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
+    out = subprocess.run(
+        [BASH, "-c", f'source "{ROOT}/scripts/lib.sh"; vllm_discover_kv_cache http://x.test:8000'],
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "KC_LABELS": labels,
+             "KLOUDCHAT_ENV_FILE": str(tmp_path / "none")},
+        cwd=ROOT, text=True, capture_output=True, check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == expected

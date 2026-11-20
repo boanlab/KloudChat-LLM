@@ -52,7 +52,7 @@ jobs:
         run: ruff check scheduler services
 
       - name: Tests
-        run: pytest scheduler/tests services/litellm/tests services/crawl4ai-shim/tests services/search-shim/tests services/gpu-exporter/tests services/ocr-shim/tests -q
+        run: pytest scheduler/tests services/litellm/tests services/crawl4ai-shim/tests services/search-shim/tests services/gpu-exporter/tests services/ocr-shim/tests services/imagegen-shim/tests services/metrics-shim/tests services/index-shim/tests services/whisper-shim/tests services/gateway/tests -q
 
   compose:
     name: Validate compose files
@@ -69,6 +69,9 @@ jobs:
 
       - name: Validate docker-compose.vllm.yml
         run: docker compose -f docker-compose.vllm.yml config --quiet
+
+      - name: Validate docker-compose.vllm-omni.yml
+        run: docker compose -f docker-compose.vllm-omni.yml config --quiet
 
       - name: Verify pinned LiteLLM spend-log redaction
         run: |

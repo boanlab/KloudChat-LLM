@@ -3,9 +3,9 @@
 What fits on which GPU, and how much VRAM each model occupies. Read this when
 sizing a node or diagnosing an OOM.
 
-> Figures cover every model in `scheduler/models.yaml`, deployed or not. There
-> is no local media backend: images, audio and video pass through to
-> OpenRouter.
+> Figures cover every placeable model in `scheduler/models.yaml`, deployed or not. The
+> self-hosted image models (vllm-omni) are outside the scheduler; see
+> [models](models.md#self-hosted-image-models).
 
 ## The lineup
 
@@ -13,7 +13,6 @@ sizing a node or diagnosing an OOM.
 |---|---|---:|---|
 | `qwen3.8-27b` (Qwen3.8-27B) | NVFP4 | **21.3 GiB** (measured) | Chat. Dense, vision, 262144 context, MTP speculative decoding |
 | `qwen3.8-flash` (Qwen3.8-Flash-Next) | NVFP4 body, FP8 PLE table | **78.3 GiB** resident (measured; 124 GB on disk) | Quality and judging. MoE, 131072 here, MTP. A GB10 (util 0.81) or RTX PRO 6000 (util 0.92) node to itself |
-| `qwen3-coder-next` (Qwen3-Coder-Next-80B-A3B) | FP8 | **~75 GiB** (on disk) | Coding. Hybrid attention, 262144 context. A card to itself |
 | `bge-m3` | BF16 | **~2 GiB** | Retrieval embeddings. Pooling, shares a card |
 | `bge-reranker-v2-m3` | BF16 | **2.1 GiB** (measured) | Retrieval reranking. Pooling, shares a card |
 | `whisper-large-v3` | FP16 | **3.1 GiB** (measured) | Transcription |
@@ -35,14 +34,13 @@ sizing a node or diagnosing an OOM.
 ## KV cost
 
 Only 16 of the 64 layers in `qwen3.8-27b` carry KV; the other 48 are linear
-attention with fixed-size state. `qwen3.8-flash` and `qwen3-coder-next`
-hold KV on 12 of 48 layers.
+attention with fixed-size state. `qwen3.8-flash` holds KV on 12 of 48
+layers.
 
 | Model | KV per token (fp8) | 128K | 256K |
 |---|---:|---:|---:|
 | `qwen3.8-27b` | **32 KiB** | 4.0 GiB | 8.0 GiB |
 | `qwen3.8-flash` | **12 KiB** | 1.5 GiB | 3.0 GiB |
-| `qwen3-coder-next` | **12 KiB** | 1.5 GiB | 3.0 GiB |
 
 Measured on GB10, from vLLM's `GPU KV cache size` line:
 
@@ -77,12 +75,12 @@ activation + 8.8 GiB of KV per concurrent 256K session (admission margin
 1.10), against the card minus its reserve (8%, clamped to 1–8 GiB; 12 GiB on
 unified memory).
 
-| Node | VRAM | `qwen3.8-27b` | `qwen3.8-flash` | `qwen3-coder-next` | Notes |
-|---|---:|---|---|---|---|
-| RTX 5090 | 32 G | ✗ | ✗ | ✗ | 29.4 GiB of capacity against the 27B's 33.9 GiB need; the 27B is delegated. Retrieval and transcription fit |
-| PRO 5000 | 48 G | ○ 1 session | ✗ | ✗ | The 27B alone |
-| PRO 6000 | 96 G | ○ 4 sessions | ○ alone, 2 sessions | ○ alone | Flash-Next and the coder each need the card to themselves |
-| GB10 | 128 G (unified) | ○ 4 sessions | ○ alone, 8 sessions | ○ alone | System RAM less the 12 GiB reserve |
+| Node | VRAM | `qwen3.8-27b` | `qwen3.8-flash` | Notes |
+|---|---:|---|---|---|
+| RTX 5090 | 32 G | ✗ | ✗ | 29.4 GiB of capacity against the 27B's 33.9 GiB need; the 27B is delegated. Retrieval and transcription fit |
+| PRO 5000 | 48 G | ○ 1 session | ✗ | The 27B alone |
+| PRO 6000 | 96 G | ○ 4 sessions | ○ alone, 2 sessions | Flash-Next needs the card to itself |
+| GB10 | 128 G (unified) | ○ 4 sessions | ○ alone, 8 sessions | System RAM less the 12 GiB reserve |
 
 Sessions are the planner's sizing assumption (`concurrent_sessions`, default
 4), halved down to what the card holds.
@@ -97,19 +95,69 @@ Sessions are the planner's sizing assumption (`concurrent_sessions`, default
   it.
 - A node with more than one card is packed per card. `gpu_util` is a fraction
   of one device; the scheduler assigns device ordinals and writes them as
-  `VLLM_<PREFIX>_DEVICES`, which compose passes as `NVIDIA_VISIBLE_DEVICES`.
-  Not `CUDA_VISIBLE_DEVICES`: it has no value meaning "every card", and on
-  GB10 it fails engine init. An unpinned node gets `all`.
-- `qwen3.8-flash` and `qwen3-coder-next` each need a node to themselves
-  and are pool models: the head node holds the 27B, retrieval and
-  transcription.
+  `VLLM_<PREFIX>_DEVICES`. Compose uses it twice: as the `device_ids` of the
+  container's GPU reservation, which decides the cards, and as
+  `NVIDIA_VISIBLE_DEVICES`. The reservation has to carry it: Docker's nvidia
+  driver sets `NVIDIA_VISIBLE_DEVICES` from the reservation after the
+  service's own environment, so a `count: all` reservation hands every card to
+  every container whatever the environment says. Not `CUDA_VISIBLE_DEVICES`:
+  it has no value meaning "every card", and on GB10 it fails engine init. An
+  unpinned node gets `all`, which as `device_ids` is what `count: all` sends.
+- `qwen3.8-flash` needs a node to itself and is a pool model: the head node
+  holds retrieval, transcription and a 27B replica.
+
+## Image models (vllm-omni)
+
+The self-hosted image models run outside the scheduler
+(`docker-compose.vllm-omni.yml`), but the scheduler sees the memory they hold
+and charges it to their card. Each omni container pins its own cards, so a
+two-card 96 GiB node can be split by hand:
+
+| Model | Weights | Role |
+|---|---:|---|
+| `z-image-turbo` | ~31 GB on disk, ~25 GiB while serving | Fast text-to-image |
+| `qwen-image-2512` | ~54 GB on disk | Text-to-image, better layout |
+| `qwen-image-edit-2511` | ~58 GB on disk | Image editing: an input picture plus an instruction |
+
+Target placement on a node with two 96 GiB cards:
+
+| Card | Holds | Approximate weights |
+|---|---|---:|
+| GPU 0 | `qwen-image-2512` + `z-image-turbo` | 54 + 31 GB, one card |
+| GPU 1 | `qwen-image-edit-2511` | 58 GB, the rest of the card is activation headroom |
+
+```bash
+# the node's .env
+VLLM_OMNI_QWENIMAGE_DEVICES=0
+VLLM_OMNI_ZIMAGE_DEVICES=0
+VLLM_OMNI_QWENIMAGEEDIT_DEVICES=1
+```
+
+Each variable is the `device_ids` of that container's GPU reservation, as for
+the scheduler's services above. After changing one, recreate the containers
+and check where they landed:
+
+```bash
+./scripts/manage-vllm-omni.sh up --recreate
+./scripts/manage-vllm-omni.sh status      # "cards 0", "cards 0", "cards 1"
+nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv
+```
+
+A container whose status shows `cards all` holds a `count: all` reservation and
+sees every card; CUDA then puts it on GPU 0. `up --recreate` applies the variables.
+
+The edit model's 58 GB estimate is the checkpoint size; the figure while
+serving is measured on the node and is not part of the scheduler's plan. On a
+node that also takes scheduled models, start the omni containers before
+`scheduler apply`; a node given to the image models is listed in
+`VLLM_NODES_HOLD` and the scheduler leaves it alone.
 
 ## Tuning knobs
 
 Normally nobody sets these. The placement step of `setup.sh all`
 (`python3 -m scheduler apply`) measures node capacity, computes `MAX_LEN` and
 `GPU_UTIL` per model, and writes them into that node's `.env` (see
-[scheduler](../scheduler/README.md)). The values below are the `.env.example`
+[scheduler](../scheduler/README.md)). The values below are the `.env.node.example`
 and compose defaults used when placement is skipped
 (`KLOUDCHAT_SKIP_SCHEDULER=1`).
 
@@ -124,7 +172,7 @@ and compose defaults used when placement is skipped
 | `VLLM_QWENFLASH_MAX_BATCHED_TOKENS` / `_MAX_NUM_SEQS` | `16384` / `16` | 16 matches the concurrency-gate cap |
 | `VLLM_QWENFLASH_SPEC_TOKENS` | `2` | MTP draft tokens per step; the checkpoint has one MTP layer |
 | `VLLM_QWENFLASH_ENGRAM` | (empty) | PLE table storage; see [env reference](env-reference.md) |
-| `VLLM_CODERNEXT_GPU_UTIL` / `_MAX_LEN` | `0.85` / `262144` | 75 GiB of weights; 12 KiB/token keeps the native context affordable |
+| `VLLM_QWENFLASH_KV_OFFLOAD_GB` | (empty) | KV blocks in host RAM, GiB; off when empty. Host RAM, so outside `GPU_UTIL` |
 | `VLLM_BGEM3_GPU_UTIL` / `_MAX_LEN` | `0.08` / `8192` | Compose defaults |
 | `VLLM_RERANK_GPU_UTIL` / `_MAX_LEN` | `0.06` / `8192` | Compose defaults |
 | `VLLM_WHISPER_GPU_UTIL` / `_MAX_LEN` | `0.14` / `448` | Compose defaults; 448 is the decoder window |
@@ -149,11 +197,12 @@ like every other model.
 |---|---|
 | Weights | **3.1 GiB** measured (the repository ships several serialisations; vLLM reads one) |
 | Context | 448, the decoder window. Longer clips are split by the server |
-| Placement | `head`, priority 4, below `bge-m3`: losing embeddings turns retrieval lexical, losing this one still transcribes through OpenRouter |
+| Placement | `head-first`, priority 4, below `bge-m3`: losing embeddings turns retrieval lexical, losing this one turns dictation off |
 | Sessions | `concurrent_sessions: 4` |
 
-`WHISPER_URLS` is written from the placement. Empty (no room, or no GPU node)
-sends STT to OpenRouter (`STT_OR_MODEL`).
+The placement is written to `VLLM_PLACED` as `whisper-large-v3=URL`. With no
+entry there and no `WHISPER_URLS` (no room, or no GPU node), dictation is off:
+audio is never sent to OpenRouter.
 
 ## Throughput
 

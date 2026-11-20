@@ -49,10 +49,10 @@ sudo dmesg -T | grep -iE "nvrm|oom" | tail -10
 |---|---|---|
 | `_initialize_kv_caches` fails | `--gpu-memory-utilization` too low: no room for weights plus KV | Raise that model's `VLLM_<PREFIX>_GPU_UTIL` in the node's `.env`, or re-run [placement](../scheduler/README.md) |
 | `max_num_seqs (...) exceeds available Mamba cache blocks` | The hybrid conv-state cache in `qwen3.8-27b` requires `max_num_seqs ≤ state blocks` during cudagraph capture | Lower `VLLM_QWEN27B_MAX_NUM_SEQS`; the log prints the block count |
-| `Assertion error (layout.hpp:60): Unknown SF transformation` | DeepGEMM rejects an FP8 block-quantised scale-factor layout on this card. Fails after the weights load | Set `VLLM_CODERNEXT_DEEP_GEMM=0` in the node's `.env` |
 | `ModuleNotFoundError: 'pytest'` | The derived image is missing its pytest layer | `./scripts/install-vllm.sh --reinstall` |
 | `NVRM: Out of memory` (dmesg) | Unified memory (GB10): page cache plus co-resident vLLM | `sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'`. If it recurs, shrink that node's models and re-run [placement](../scheduler/README.md) |
 | OS killer during weight load | RAM smaller than the weights | Stop other containers |
+| `CUDA out of memory` on a two-card node, every container on GPU 0 in `nvidia-smi --query-compute-apps` | The container was created with a `count: all` reservation and sees every card, whatever `NVIDIA_VISIBLE_DEVICES` says | `manage-vllm.sh status` / `manage-vllm-omni.sh status` show `cards all`: recreate it (`up --recreate`) so the reservation takes `VLLM_<PREFIX>_DEVICES` |
 
 ## Placement apply reports failures
 
@@ -63,8 +63,8 @@ routes `apply` wrote to `.env`.
 
 - A failure on a node stops that node's remaining actions; other nodes
   continue.
-- A service whose start or recreate failed is left out of the `VLLM_*_URL`
-  and `WHISPER_URLS` routes written to `.env`, so LiteLLM never registers it.
+- A service whose start or recreate failed is left out of the `VLLM_PLACED`
+  value written to `.env`, so LiteLLM never registers it.
 - A node classified `unsupported` holds nothing; the plan says so in its
   notes.
 
@@ -88,13 +88,38 @@ cat /proc/sys/vm/swappiness                              # 60 by default
 | `sudo swapoff -a && sudo swapon -a` | Clears swap; risks OOM if RAM is tight |
 | Shrink `VLLM_MODELS` and re-apply placement | The real fix |
 
+## Streams dropped mid-answer
+
+Clients see `peer closed connection without sending complete message body
+(incomplete chunked read)` on several streams at once, and the gateway logs
+`aborting with incomplete response` with `reading: unexpected EOF`. Look for a
+LiteLLM worker restart at the same second:
+
+```bash
+docker logs -t kloudchat-litellm 2>&1 | grep -E 'Child process|WORKER TIMEOUT|Booting worker'
+sar -W                                  # pswpin/s in the same 10-minute slot
+```
+
+`Waiting for child process [N]` / `Child process [N] died` with no traceback
+is uvicorn's supervisor killing a worker that missed its 5 s ping; every
+stream on that worker dies with it. A worker misses the ping when it stalls
+holding the GIL, as it does on swap-in when its idle pages were swapped out.
+The compose file runs the workers under gunicorn (`--run_gunicorn`, 600 s
+heartbeat), which lets such a stall pass as a pause instead of a restart.
+Keeping the host out of swap (see [Swap thrash](#swap-thrash-mid-stream-stall))
+removes the stall itself.
+
+`reading: context canceled` in the gateway log is the client closing first,
+for example when it stops reading a looping answer; it is not an upstream
+failure.
+
 ## vLLM node unreachable
 
 The vLLM discovery in `gen-litellm-config.sh` hit a TCP failure. If no local
 models appear in the UI, discovery returned nothing.
 
 ```bash
-# Ports: qwen27b 8001, bge-m3 8003, qwenflash 8004, codernext 8008, rerank 8009,
+# Ports: qwen27b 8001, bge-m3 8003, qwenflash 8004, rerank 8009,
 # whisper 9000
 curl -sf http://<vllm-host>:8001/v1/models | jq '.data[].id'
 ss -tlnp | grep -E '800[1-9]|9000'
@@ -115,7 +140,7 @@ curl -sf http://localhost:8080/litellm/health/readiness    # verifies backends
 
 | Cause | Action |
 |---|---|
-| `LITELLM_MASTER_KEY` empty | Re-run `gen-env.sh`, or fill it in |
+| `LITELLM_MASTER_KEY` empty | `gen-env.sh --fill`, or fill it in |
 | Database migration failed | `docker logs kloudchat-litellm-db`: is postgres healthy |
 | Hit `:8000` directly | Use `/litellm/*`; the gateway is the only published port |
 | `manage.sh` cannot connect | Gateway up on `GATEWAY_PORT`? Elsewhere: set `LITELLM_URL` to `http://<host>:<GATEWAY_PORT>/litellm` |
@@ -131,7 +156,7 @@ docker exec kloudchat-litellm cat /app/config.yaml | grep -E "model_name|api_bas
 - Missing from `model/info` too: a config generation problem. Run
   `./scripts/gen-litellm-config.sh`, then
   `docker compose up -d --force-recreate litellm`.
-- Only the local models missing: `VLLM_*_URL` is empty in `.env`, or the node
+- Only the local models missing: no URL for them is in `VLLM_ENDPOINTS` or `VLLM_PLACED`, or the node
   is down (see the section above).
 - Present in `model/info` but not in the UI: a UI-side problem. Check the
   backend address in the admin screen and the team model allowlist
@@ -183,7 +208,7 @@ See [models.md](models.md#retrieval) for the two stages.
 | Cause | Action |
 |---|---|
 | `index` not in `COMPOSE_PROFILES` | Add it and re-run `setup.sh up`; `index-db` and `index-shim` do not start otherwise |
-| No embedding deployment | `INDEX_EMBED_MODELS` is tried in order: `local/bge-m3` needs a vLLM placement, `text-embedding-3-small` needs `OPENAI_API_KEY`. `GET /tools/index/health` reports whether embeddings answer |
+| No embedding deployment | `strict-local/bge-m3` needs a vLLM placement (or an endpoint in `VLLM_ENDPOINTS`); there is no external fallback. `GET /tools/index/health` reports whether embeddings answer |
 | Collection never indexed | The index starts empty; the UI fills it through `PUT /tools/index/documents`. Losing the volume costs a re-index, not a document |
 | Results arrive but are weak | The reranker may be missing; the search response carries `"reranked": true\|false`. Without it search falls back to vector order |
 

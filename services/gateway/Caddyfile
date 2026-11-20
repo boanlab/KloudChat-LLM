@@ -2,27 +2,23 @@
 # service's root.
 #
 #   /litellm/*         → litellm root       (admin API included, Authorization passed through)
+#   /v1/*              → litellm /v1        (OpenAI-compatible clients)
 #   /tools/index/*     → index-shim         (RAG: chunk, embed, store, search)
-#   /v1/*              → litellm /v1        (for OpenAI-compatible clients)
-#   /tools/search/*    → search-shim        (cache and cap in front of searxng)
+#   /tools/search/*    → search-shim
 #   /tools/fetch/*     → crawl4ai-shim      (shim key injected)
 #   /tools/exec/*      → code-interpreter   (x-api-key injected)
 #   /tools/research/*  → deep-research      (MCP streamable-http)
 #   /tools/stt/*       → whisper-shim
-#   /tools/ocr/*       → ocr-shim           (text from scanned pages, CPU)
-#   /metrics/<target>  → one GPU-node /metrics (vLLM or gpu-exporter), read-only
+#   /tools/ocr/*       → ocr-shim
+#   /metrics/*         → metrics-shim       (GPU-node /metrics, read-only; /metrics/targets lists names)
 #
-# /tools/* requires the shared key TOOLS_GATEWAY_KEY in the X-Tools-Key header;
-# anything else gets 401 {"error":"unauthorized"} before any upstream is
-# contacted. The header is stripped before proxying. Fail closed: compose
-# refuses to start the gateway with TOOLS_GATEWAY_KEY unset or empty, and a key
-# shorter than 32 characters denies every /tools request here as well. Use hex
-# (`openssl rand -hex 32`): the value is substituted into a CEL string literal.
-# /metrics/* takes the same key and the same 401: each name is a fixed upstream
-# from METRICS_*_URL (one host:port each, no path, no list); an unset one points
-# at a closed local port and answers 502.
-# /litellm* and /v1/* are authenticated by LiteLLM itself; /health is open.
-# Service keys are injected here and never reach clients.
+# /tools/* and /metrics/* need TOOLS_GATEWAY_KEY in X-Tools-Key, else 401 before
+# any upstream is contacted; the header is stripped before proxying. Fail
+# closed: compose refuses an unset key and a key under 32 characters denies
+# everything. Hex only (`openssl rand -hex 32`): the value goes into a CEL string
+# literal. /litellm* and /v1/* are authenticated by LiteLLM; /health is open.
+# Service keys are injected here and never reach clients. JSON-only tools have a
+# body cap per route; uploads (exec, stt, ocr) are bounded by their services.
 {
 	admin off
 	auto_https off
@@ -54,18 +50,23 @@
 	}
 
 	handle /tools* {
-		# Constant-time comparison is not available in Caddy; the key is 32+
-		# random bytes and the comparison runs on the gateway host only.
+		# Caddy has no constant-time comparison; the key is 32+ random bytes
 		@authorized expression `{http.request.header.X-Tools-Key} == "{$TOOLS_GATEWAY_KEY}" && size("{$TOOLS_GATEWAY_KEY}") >= 32`
 
 		handle @authorized {
 			handle_path /tools/search* {
+				request_body {
+					max_size 1MB
+				}
 				reverse_proxy search-shim:8080 {
 					header_up -X-Tools-Key
 				}
 			}
 
 			handle_path /tools/fetch* {
+				request_body {
+					max_size 1MB
+				}
 				reverse_proxy crawl4ai-shim:8080 {
 					header_up -X-Tools-Key
 					header_up Authorization "Bearer {$SCRAPER_API_KEY}"
@@ -80,6 +81,9 @@
 			}
 
 			handle_path /tools/research* {
+				request_body {
+					max_size 1MB
+				}
 				reverse_proxy deep-research:8081 {
 					header_up -X-Tools-Key
 					flush_interval -1
@@ -93,6 +97,9 @@
 			}
 
 			handle_path /tools/index* {
+				request_body {
+					max_size 32MB
+				}
 				reverse_proxy index-shim:8080 {
 					header_up -X-Tools-Key
 				}
@@ -116,64 +123,13 @@
 		}
 	}
 
-	# Prometheus text of the GPU nodes for KloudChat's performance page. Fixed
-	# names only: the request never chooses the upstream.
+	# GPU-node Prometheus text; the request never chooses the upstream
 	handle /metrics/* {
 		@metrics_authorized expression `{http.request.header.X-Tools-Key} == "{$TOOLS_GATEWAY_KEY}" && size("{$TOOLS_GATEWAY_KEY}") >= 32`
 
 		handle @metrics_authorized {
-			handle /metrics/vllm-27b {
-				rewrite * /metrics
-				reverse_proxy {$METRICS_VLLM_27B_URL} {
-					header_up -X-Tools-Key
-				}
-			}
-
-			handle /metrics/vllm-flashnext {
-				rewrite * /metrics
-				reverse_proxy {$METRICS_VLLM_FLASHNEXT_URL} {
-					header_up -X-Tools-Key
-				}
-			}
-
-			handle /metrics/vllm-bgem3 {
-				rewrite * /metrics
-				reverse_proxy {$METRICS_VLLM_BGEM3_URL} {
-					header_up -X-Tools-Key
-				}
-			}
-
-			handle /metrics/vllm-rerank {
-				rewrite * /metrics
-				reverse_proxy {$METRICS_VLLM_RERANK_URL} {
-					header_up -X-Tools-Key
-				}
-			}
-
-			handle /metrics/vllm-whisper {
-				rewrite * /metrics
-				reverse_proxy {$METRICS_VLLM_WHISPER_URL} {
-					header_up -X-Tools-Key
-				}
-			}
-
-			handle /metrics/gpu-1 {
-				rewrite * /metrics
-				reverse_proxy {$METRICS_GPU_1_URL} {
-					header_up -X-Tools-Key
-				}
-			}
-
-			handle /metrics/gpu-2 {
-				rewrite * /metrics
-				reverse_proxy {$METRICS_GPU_2_URL} {
-					header_up -X-Tools-Key
-				}
-			}
-
-			handle {
-				header Content-Type application/json
-				respond `{"error":"unknown path"}` 404
+			reverse_proxy metrics-shim:9200 {
+				header_up -X-Tools-Key
 			}
 		}
 

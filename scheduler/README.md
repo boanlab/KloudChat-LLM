@@ -1,7 +1,7 @@
 # scheduler
 
-Places the models in `VLLM_MODELS` across the GPU nodes in `NODES_VLLM`, writes
-the result into each node's `.env` and the orchestrator's `VLLM_*_URL`, and
+Places the models in `VLLM_MODELS` across the GPU nodes in `VLLM_NODES`, writes
+the result into each node's `.env` and the orchestrator's `VLLM_PLACED`, and
 starts, stops or recreates the compose services accordingly.
 
 ```bash
@@ -11,21 +11,34 @@ python3 -m scheduler apply         # apply it, after confirmation
 python3 -m scheduler apply -y      # apply without confirmation
 ```
 
-`setup.sh all` runs `apply -y` when `NODES_VLLM` is set, unless
+`setup.sh all` runs `apply -y` when `VLLM_NODES` is set, unless
 `KLOUDCHAT_SKIP_SCHEDULER=1`; `setup.sh scheduler <subcommand>` forwards to the
 module. Every subcommand accepts `--hosts` and `--models` (CSV) to override
-`.env`, and `--replicas N` to cap instances per model (`1` disables
-replication).
+`.env`. Per model, [`models.yaml`](models.yaml) sets `replicas:` (instance cap; `1`
+disables replication), `placement:` (see Node roles) and `manual: true` (hand-run,
+never placed).
 
 ## Input
 
 ```bash
 # .env
-NODES_VLLM=ops@gpu-1,ops@gpu-2       # SSH targets, head node first
+VLLM_NODES=ops@gpu-1,ops@gpu-2       # SSH targets, head node first
+VLLM_NODES_HOLD=ops@gpu-3            # targets in VLLM_NODES left alone (see Held nodes)
 VLLM_MODELS=qwen3.8-27b,qwen3.8-flash,bge-m3
 VLLM_MODELS_ROOT=/var/lib/vllm/models
 KLOUDCHAT_REMOTE_DIR=KloudChat-LLM   # compose workdir on each node (env or .env)
+VLLM_ENDPOINTS=http://gpu-9:8001     # servers you run yourself; counted as instances
+WHISPER_URLS=http://gpu-9:9000       # hand-run transcription backends; never written
+VLLM_PLACED=...                      # written by `apply`; do not edit
 ```
+
+`VLLM_ENDPOINTS` entries (`id=url`, or a bare URL asked at `/v1/models`) count as
+instances of their model, transcription excepted (hand-run, it goes through
+`WHISPER_URLS`). A model with one is not placed for coverage and is not
+delegated, and replication and its `replicas` cap see the total. `apply` stops a
+scheduler-placed instance of such a model, but never the service an entry
+points at: an entry whose host is a node in `VLLM_NODES` and whose port is a
+catalogued service's keeps that container running.
 
 Models are defined in [`models.yaml`](models.yaml). Undeclared fields come from
 the checkpoint's `config.json` and its size on disk, read over SSH from the
@@ -34,6 +47,49 @@ first answering node that has it. `config.json` is cached under
 copies excluded) is measured on every run, with an analytic estimate when the
 measurement fails. A model whose `config.json` no node can read, or that declares
 no context length, is delegated.
+
+### Site overrides
+
+`scheduler/site.yaml`, when present (untracked, one per deployment), lays
+fields over the catalogue entries by id without editing `models.yaml`. It sets
+where and how large a model runs, never what it is or where it answers:
+`placement`, `replicas`, `share`, `priority`, `ctx_floor`, `ctx_target`,
+`concurrent_sessions`, `tensor_parallel`, `activation`, `weight`, `arches` and
+`gpu_util`. Any other field, or an id the catalogue lacks, is an error.
+
+`gpu_util` fixes `--gpu-memory-utilization`: the planner charges that share of
+the card as is instead of sizing one, narrows `concurrent_sessions` to what the
+share holds, keeps the context at `ctx_floor`, and notes a share too small for
+the floor. A layout that already runs is written down this way so that
+`apply` finds nothing to change:
+
+```yaml
+# scheduler/site.yaml: 27B, retrieval and transcription on the head node,
+# Flash on each of three pool nodes
+models:
+  - id: qwen3.8-27b
+    placement: head
+    replicas: 1
+    ctx_floor: 131072
+    ctx_target: 131072
+    gpu_util: 0.66
+  - id: qwen3.8-flash
+    replicas: 3
+    gpu_util: 0.92
+  - id: bge-m3
+    replicas: 1
+    gpu_util: 0.05
+  - id: bge-reranker-v2-m3
+    replicas: 1
+    gpu_util: 0.05
+  - id: whisper-large-v3
+    replicas: 1
+    gpu_util: 0.14
+```
+
+Without the caps, the catalogue's unlimited `replicas` hand spare nodes to
+whichever model is furthest below its share, so a 27B replica can take a pool
+node Flash was meant to hold.
 
 ### Node ids
 
@@ -49,8 +105,15 @@ Per node, over SSH, each step tolerant of the others failing: `docker ps`,
 `nvidia-smi` (card name, count, memory per card; `/proc/meminfo` on
 unified-memory nodes), `uname -m`, GPU memory held per card by processes outside
 this stack, and the checkpoint directories (those with a `config.json`) under
-`VLLM_MODELS_ROOT`. A node answering nothing (no containers, no memory) is
-retried once, then reported as `no answer` and left out of placement.
+`VLLM_MODELS_ROOT`. Each SSH call is retried while the connection itself fails
+(exit 255). A node counts as answering only when both `docker ps` and its card
+memory were read: planned on half an answer it would look empty (its services
+started twice) or full (its services stopped). A node that does not answer in
+full is retried once, then reported as `no answer` and left out of placement and
+of every action. `/proc/meminfo` stands in for card memory only when
+`nvidia-smi` ran and reported none, and only for a GB10 (or a card whose name
+could not be read), so a discrete node whose `nvidia-smi` call failed is never
+sized by its system RAM.
 
 The card name classifies the node as `gb10`, `rtx5090`, `pro5000`, `pro6000` or
 `unsupported` (the same vocabulary as `lib.sh::detect_gpu_class`; `unknown`
@@ -65,25 +128,42 @@ host processes) is foreign and charged to the card that holds it. `inventory`'s
 
 ## Node roles
 
-The first target in `NODES_VLLM` is the **head** node; every other target is the
+The first target in `VLLM_NODES` is the **head** node; every other target is the
 **pool**. `placement:` in models.yaml restricts a model to one of them before any
 packing:
 
 | `placement` | Nodes | Models |
 |---|---|---|
-| `head` | the head node only | embeddings, reranking, transcription |
-| `pool` | every node but the head | Flash-Next, the coder |
+| `head` | the head node only | (none by default) |
+| `head-first` | the first instance on the head node, extra instances on any node | embeddings, reranking, transcription |
+| `pool` | every node but the head | Flash-Next |
 | unset | any | chat |
 
 A pool model with no pool seat is delegated to OpenRouter rather than placed on
 the head node. A single-node cluster has no pool, and `placement` is ignored.
+A `head-first` model's extra instances (replication, `replicas`) go to any node, the
+head included.
+
+### Held nodes
+
+A target in `VLLM_NODES_HOLD` is probed and shown by `inventory` as `held`, and
+nothing else: no placement, no start, stop or recreate, no `.env` write, and
+`setup.sh vllm` installs nothing there. It is for a node in `VLLM_NODES` that
+runs something else, such as the image models (`docker-compose.vllm-omni.yml`,
+outside the scheduler): left in the pool, the room on its second card would
+draw extra embedding and transcription instances, and while its omni
+containers are down it would look empty. An entry is the target as written in
+`VLLM_NODES`, its host, or its node id; one that `VLLM_NODES` does not list, or
+the head node, is an error. Listing the node in `VLLM_NODES` at all keeps it in
+metrics-shim's node list and in the `inventory`.
 
 ## Placement
 
 0. **Unsupported cards** — a node classified `unsupported` holds nothing; the
    plan notes it and the node drops out of every step below. With no node left,
    every model is delegated.
-1. **Coverage** — one instance of each model at its context floor, ordered by
+1. **Coverage** — one instance of each model without an external instance (see
+   Input) at its context floor, ordered by
    `priority` (highest first, ties largest first), onto the eligible node with
    the most free memory summed over its cards. Differences under 1 GiB do not
    decide; within that band the node already running the model (per
@@ -93,7 +173,8 @@ the head node. A single-node cluster has no pool, and `placement` is ignored.
    context toward the target, furthest-from-target first, until nothing grows.
 3. **Replication** — remaining capacity takes extra instances at the context
    floor, one per round to the model furthest below its `share:`
-   (`instances / share`, ties by priority), on a node not already running it;
+   (`instances / share`, ties by priority; external instances count), on a node
+   not already running it;
    then restoration runs again. Shares are weights among models competing for
    the same nodes.
 
@@ -124,8 +205,8 @@ KV = (bytes/token × context + sliding bytes/sequence) × concurrent sessions ×
 - `concurrent_sessions` is a sizing assumption: on a card that cannot hold the
   declared width it is halved down to fit, and the plan says so. The context
   floor is never traded away.
-- `gpu_util` is an output: per-card need over the card's total memory, rounded
-  up to two decimals and clamped to 0.05–0.95.
+- `gpu_util`, unless declared, is per-card need over the card's total memory,
+  rounded up to two decimals and clamped to 0.05–0.95.
 
 ### Tensor parallelism
 
@@ -139,7 +220,8 @@ node     = per card × N
 
 Activation is paid per rank. KV shards by head: `kv_shards = min(N, kv_heads)`,
 and 1 for MLA. A sharded model takes a slice of each card it spans (emptiest
-cards first); the applier writes the device ordinals as `{env_prefix}_DEVICES`.
+cards first); the applier writes the device ordinals as `{env_prefix}_DEVICES`,
+which compose reserves as the container's `device_ids`.
 
 ## Output
 
@@ -158,10 +240,25 @@ confirmation unless `-y`. Per node it:
   drops, and recreates (`--force-recreate`) a running service only where one of
   its options changed. Containers outside the `vllm-*` prefix are never touched.
 
-In the orchestrator's `.env` it writes `{env_prefix}_URL` (a CSV of
-`http://host:port`) for every model in models.yaml, empty for models not
-placed, and `WHISPER_URLS` in place of the transcription model's `_URL`. Only
-changed keys are written. Re-applying an unchanged plan does nothing.
+The scheduler knows a service by its container name (`docker ps`), not by
+compose labels, so a container started by `docker run` under the service's name
+counts as that service. Acting on one takes care of the difference: before a
+start or recreate, a same-named container outside the `kloudchat-vllm` compose
+project is removed (it would block `compose up` on the name, and a recreate
+replaces it anyway), and a stop also runs `docker stop`, since `compose stop`
+skips a container it did not create. An unchanged plan leaves such a container
+running untouched; the first recreate brings it under compose.
+
+`apply` reads each node's `.env` before deciding what changed; when one cannot
+be read it applies nothing rather than take every option as changed.
+
+In the orchestrator's `.env` it writes `VLLM_PLACED` (a CSV of
+`id=http://host:port`, one per instance, the transcription model included).
+`VLLM_ENDPOINTS` and `WHISPER_URLS`, the servers you run by hand, are never written. Only changed
+keys are written. Re-applying an unchanged plan does nothing.
+
+`python3 -m scheduler catalog` prints the catalogue as TSV (id, api, env prefix,
+OpenRouter slug, timeout, max in flight, presence penalty, temperature) for the shell scripts.
 
 **On failure.** Actions run node by node in order. The first failing action on a
 node skips that node's remaining actions (an env write precedes the recreate
@@ -178,6 +275,7 @@ is printed and the command exits 1.
 | `registry.py` | YAML loader; declared and derived values into `ModelSpec` |
 | `inventory.py` | SSH probing: GPU class, VRAM, architecture, running services, foreign memory per card, checkpoints; node ids |
 | `model_metadata.py` | `config.json` to layer count, KV heads, dtype, native context; weight size on disk |
+| `endpoints.py` | `VLLM_ENDPOINTS` to instance counts per model |
 | `kv_model.py` | KV bytes per token and per sequence |
 | `types.py` | `ModelMetadata`, `NodeSpec` (reserve, per-card budget and free memory) |
 | `planner.py` | Placement decision |
@@ -187,8 +285,7 @@ is printed and the command exits 1.
 ## Tests
 
 ```bash
-pytest scheduler/tests -q
-PYTHONPATH=. python3 scheduler/tests/test_scheduler.py   # without pytest
+python3 -m pytest -q scheduler
 ```
 
 No GPU, network or Docker needed.

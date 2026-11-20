@@ -3,7 +3,7 @@
 Models send "2" as well as 2, and MCP clients validate against the inputSchema;
 upstream's ``Optional[int]`` rejects the string. Types become
 ``Optional[Union[int, str]]`` with numeric strings coerced in the validators.
-Applied at image build; idempotent.
+Applied at image build; each replacement is asserted.
 """
 import pathlib
 
@@ -11,10 +11,6 @@ import local_deep_research.mcp.server as _m
 
 p = pathlib.Path(_m.__file__)
 s = p.read_text()
-
-if "Optional[Union[int, str]]" in s:
-    print("[patch_ldr_mcp_iterations] already applied, skipping")
-    raise SystemExit(0)
 
 orig = s
 s = s.replace(
@@ -46,7 +42,7 @@ assert "from typing import Any, Dict, Optional, Union" in s, "Union import faile
 assert "Optional[Union[int, str]]" in s, "type-hint widen failed"
 assert "iterations = int(iterations)" in s, "iterations coercion failed"
 assert "qpi = int(qpi)" in s, "qpi coercion failed"
-assert s != orig, "patch made no changes — LDR upstream layout changed?"
+assert s != orig, "patch made no changes"
 
 p.write_text(s)
 print("[patch_ldr_mcp_iterations] applied to", p)

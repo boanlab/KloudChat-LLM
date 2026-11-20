@@ -1,9 +1,9 @@
 #!/bin/sh
 # cgroup v2 setup for per-sandbox memory limits, then exec the service.
 # Remounts the container cgroup read-write (CAP_SYS_ADMIN), moves its processes
-# into a "service" leaf and enables memory+pids for children, where nsjail-memcg
-# creates one NSJAIL.<pid> cgroup per sandbox. Exits on failure: no sandbox runs
-# without a memory limit.
+# into a "service" leaf and enables memory, pids and cpu for children, where
+# nsjail-memcg creates one NSJAIL.<pid> cgroup per sandbox. Exits on failure: no
+# sandbox runs without its limits.
 set -eu
 CG=/sys/fs/cgroup
 grep -q ' /sys/fs/cgroup cgroup2 ' /proc/mounts || { echo "cgroup-init: cgroup v2 not mounted at $CG" >&2; exit 1; }
@@ -14,6 +14,6 @@ mkdir -p "$CG/service"
 for pid in $(cat "$CG/cgroup.procs"); do
   echo "$pid" > "$CG/service/cgroup.procs" 2>/dev/null || true
 done
-echo '+memory +pids' > "$CG/cgroup.subtree_control"
-echo "cgroup-init: per-sandbox memory limit ${MAX_MEMORY_MB:?MAX_MEMORY_MB is required} MB" >&2
+echo '+memory +pids +cpu' > "$CG/cgroup.subtree_control"
+echo "cgroup-init: per-sandbox limits ${MAX_MEMORY_MB:?MAX_MEMORY_MB is required} MB, ${MAX_SANDBOX_PIDS:-256} processes, ${MAX_SANDBOX_CPU_MS:-1000} CPU ms/s" >&2
 exec "$@"

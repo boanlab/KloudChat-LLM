@@ -1,4 +1,5 @@
 .env
+.env.bak*
 # Editor swap and backup files: a swap of .env holds the same live credentials
 .*.sw[a-p]
 *.sw[a-p]
@@ -8,6 +9,8 @@
 # Runtime configuration generated per deployment; templates are the *.example files
 services/litellm/config.yaml
 services/searxng/settings.yml
+# This deployment's overrides of scheduler/models.yaml
+scheduler/site.yaml
 
 # Service runtime data (postgres, minio, redis)
 data/
@@ -20,3 +23,4 @@ __pycache__/
 .pytest_cache/
 
 *.log
+services/litellm/config.yaml.bak*

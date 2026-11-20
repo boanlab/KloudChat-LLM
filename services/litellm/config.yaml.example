@@ -86,6 +86,8 @@ litellm_settings:
   callbacks:
     # In-flight cap per local model; overflow spills to the OpenRouter twin
     - "callbacks.concurrency_gate.gate_instance"
+    # Passes the OpenRouter provider that answered through streamed responses
+    - "callbacks.provider_echo.echo_instance"
   drop_params: true
   drop_unsupported_params: true
   request_timeout: 900   # matches router_settings.timeout

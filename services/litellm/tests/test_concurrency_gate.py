@@ -36,6 +36,14 @@ def _load_gate_module():
     return importlib.import_module("services.litellm.callbacks.concurrency_gate")
 
 
+def _bare_gate(gate_module):
+    """A gate without config or poll thread; tests set `gate` and `_saturated`."""
+    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate._last_success = {}
+    gate._shim_models = set()
+    return gate
+
+
 def test_gate_map_separates_normal_spill_and_strict_rejection(
     tmp_path: Path,
     monkeypatch,
@@ -49,7 +57,7 @@ def test_gate_map_separates_normal_spill_and_strict_rejection(
                     "model": "hosted_vllm/local/qwen3.8-27b",
                     "api_base": "http://qwen:8000/v1",
                 },
-                "model_info": {"kchat_strict_local": False},
+                "model_info": {"kchat_strict_local": False, "kchat_max_inflight": 128},
             },
             {
                 "model_name": "strict-local/qwen3.8-27b",
@@ -57,7 +65,7 @@ def test_gate_map_separates_normal_spill_and_strict_rejection(
                     "model": "hosted_vllm/local/qwen3.8-27b",
                     "api_base": "http://qwen:8000/v1",
                 },
-                "model_info": {"kchat_strict_local": True},
+                "model_info": {"kchat_strict_local": True, "kchat_max_inflight": 128},
             },
             {
                 "model_name": "strict-local/qwen3.8-27b",
@@ -65,7 +73,7 @@ def test_gate_map_separates_normal_spill_and_strict_rejection(
                     "model": "hosted_vllm/local/qwen3.8-27b",
                     "api_base": "http://qwen-2:8000/v1",
                 },
-                "model_info": {"kchat_strict_local": True},
+                "model_info": {"kchat_strict_local": True, "kchat_max_inflight": 128},
             },
         ],
         "router_settings": {
@@ -100,6 +108,7 @@ def test_normal_cap_override_is_mirrored_to_strict_alias(tmp_path: Path, monkeyp
                     "model": "hosted_vllm/local/qwen3.8-27b",
                     "api_base": "http://qwen:8000/v1",
                 },
+                "model_info": {"kchat_max_inflight": 128},
             },
             {
                 "model_name": "strict-local/qwen3.8-27b",
@@ -107,7 +116,7 @@ def test_normal_cap_override_is_mirrored_to_strict_alias(tmp_path: Path, monkeyp
                     "model": "hosted_vllm/local/qwen3.8-27b",
                     "api_base": "http://qwen:8000/v1",
                 },
-                "model_info": {"kchat_strict_local": True},
+                "model_info": {"kchat_strict_local": True, "kchat_max_inflight": 128},
             },
         ],
         "router_settings": {
@@ -137,6 +146,7 @@ def test_nonpositive_overrides_cannot_disable_strict_rejection(
                     "model": "hosted_vllm/local/qwen3.8-27b",
                     "api_base": "http://qwen:8000/v1",
                 },
+                "model_info": {"kchat_max_inflight": 128},
             },
             {
                 "model_name": "strict-local/qwen3.8-27b",
@@ -144,7 +154,7 @@ def test_nonpositive_overrides_cannot_disable_strict_rejection(
                     "model": "hosted_vllm/local/qwen3.8-27b",
                     "api_base": "http://qwen:8000/v1",
                 },
-                "model_info": {"kchat_strict_local": True},
+                "model_info": {"kchat_strict_local": True, "kchat_max_inflight": 128},
             },
         ],
         "router_settings": {
@@ -164,6 +174,48 @@ def test_nonpositive_overrides_cannot_disable_strict_rejection(
     assert "local/qwen3.8-27b" not in gate
     assert gate["strict-local/qwen3.8-27b"]["mode"] == "reject"
     assert gate["strict-local/qwen3.8-27b"]["cap"] == 128
+
+
+def test_caps_come_from_the_deployments_model_info(tmp_path: Path, monkeypatch) -> None:
+    """kchat_max_inflight sets the cap; a strict alias without one takes DEFAULT_CAP,
+    a normal alias without one is not gated."""
+    gate_module = _load_gate_module()
+    monkeypatch.delenv("CONCURRENCY_GATE_CAPS", raising=False)
+    config = {
+        "model_list": [
+            {
+                "model_name": "local/any-model",
+                "litellm_params": {"model": "hosted_vllm/Org/Any-Model", "api_base": "http://a:8000/v1"},
+                "model_info": {"kchat_max_inflight": 7},
+            },
+            {
+                "model_name": "strict-local/any-model",
+                "litellm_params": {"model": "hosted_vllm/Org/Any-Model", "api_base": "http://a:8000/v1"},
+                "model_info": {"kchat_strict_local": True},
+            },
+            {
+                "model_name": "local/uncapped",
+                "litellm_params": {"model": "hosted_vllm/local/uncapped", "api_base": "http://b:8000/v1"},
+            },
+        ],
+        "router_settings": {
+            "fallbacks": [
+                {"local/any-model": ["org/any-model"]},
+                {"local/uncapped": ["org/uncapped"]},
+            ]
+        },
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    monkeypatch.setenv("CONFIG_FILE_PATH", str(config_path))
+
+    gate = gate_module._load_gate_map()
+
+    assert gate["local/any-model"] == {
+        "metrics": ["http://a:8000/metrics"], "cap": 7, "mode": "spill", "or": "org/any-model",
+    }
+    assert gate["strict-local/any-model"]["cap"] == gate_module.DEFAULT_CAP
+    assert "local/uncapped" not in gate
 
 
 def test_strict_alias_starts_rejected_until_first_successful_poll(monkeypatch) -> None:
@@ -200,7 +252,7 @@ def test_strict_alias_starts_rejected_until_first_successful_poll(monkeypatch) -
 
 def test_saturated_strict_alias_fails_without_rewriting_model() -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "strict-local/qwen3.8-27b": {
             "metrics": ["http://qwen:8000/metrics"],
@@ -218,9 +270,9 @@ def test_saturated_strict_alias_fails_without_rewriting_model() -> None:
     assert data["model"] == "strict-local/qwen3.8-27b"
 
 
-def test_saturated_normal_alias_preserves_existing_openrouter_spill() -> None:
+def test_saturated_normal_alias_spills_to_openrouter() -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "local/qwen3.8-27b": {
             "metrics": ["http://qwen:8000/metrics"],
@@ -240,7 +292,7 @@ def test_saturated_normal_alias_preserves_existing_openrouter_spill() -> None:
 
 def test_unsaturated_strict_alias_stays_on_vllm() -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "strict-local/qwen3.8-27b": {
             "metrics": ["http://qwen:8000/metrics"],
@@ -261,10 +313,9 @@ def test_unsaturated_strict_alias_stays_on_vllm() -> None:
 
 def test_unregistered_strict_alias_is_rejected() -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {}
     gate._saturated = {}
-    gate._last_success = {}
     data = {"model": "strict-local/future-model"}
 
     result = asyncio.run(gate.async_pre_call_hook(None, None, data, "acompletion"))
@@ -274,7 +325,7 @@ def test_unregistered_strict_alias_is_rejected() -> None:
 
 def test_strict_backend_failure_is_normalized_to_service_unavailable() -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
 
     result = asyncio.run(
         gate.async_post_call_failure_hook(
@@ -293,7 +344,7 @@ def test_strict_backend_failure_is_normalized_to_service_unavailable() -> None:
 
 def test_normal_backend_failure_is_not_transformed() -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
 
     result = asyncio.run(
         gate.async_post_call_failure_hook(
@@ -308,7 +359,7 @@ def test_normal_backend_failure_is_not_transformed() -> None:
 
 def test_stale_strict_capacity_state_is_rejected(monkeypatch) -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "strict-local/qwen3.8-27b": {
             "metrics": ["http://qwen:8000/metrics"],
@@ -333,7 +384,7 @@ def test_stale_strict_capacity_state_is_rejected(monkeypatch) -> None:
 
 def test_metrics_failure_rejects_strict_but_keeps_normal_fail_open(monkeypatch) -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "local/qwen3.8-27b": {
             "metrics": ["http://qwen:8000/metrics"],
@@ -363,7 +414,7 @@ def test_poll_cycle_scrapes_shared_multi_node_endpoints_once_and_in_parallel(
     monkeypatch,
 ) -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     qwen_urls = [
         "http://qwen-1:8000/metrics",
         "http://qwen-2:8000/metrics",
@@ -385,7 +436,7 @@ def test_poll_cycle_scrapes_shared_multi_node_endpoints_once_and_in_parallel(
             "cap": 64,
             "mode": "reject",
         },
-        "strict-local/qwen3-coder-next": {
+        "strict-local/qwen3.8-flash": {
             "metrics": big_urls,
             "cap": 12,
             "mode": "reject",
@@ -414,9 +465,9 @@ def test_poll_cycle_scrapes_shared_multi_node_endpoints_once_and_in_parallel(
     assert all(last_success > 0 for last_success in gate._last_success.values())
 
 
-def test_one_unknown_node_rejects_a_multi_node_strict_alias(monkeypatch) -> None:
+def test_one_unknown_node_leaves_a_multi_node_strict_alias_on_the_other(monkeypatch) -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "strict-local/qwen3.8-27b": {
             "metrics": [
@@ -427,7 +478,8 @@ def test_one_unknown_node_rejects_a_multi_node_strict_alias(monkeypatch) -> None
             "mode": "reject",
         }
     }
-    gate._saturated = {"strict-local/qwen3.8-27b": False}
+    gate._saturated = {"strict-local/qwen3.8-27b": True}
+    gate._last_success = {"strict-local/qwen3.8-27b": 0.0}
 
     def one_node_unknown(url: str):
         if "qwen-2" in url:
@@ -437,7 +489,35 @@ def test_one_unknown_node_rejects_a_multi_node_strict_alias(monkeypatch) -> None
     monkeypatch.setattr(gate_module, "_scrape", one_node_unknown)
     gate._poll_once()
 
-    assert gate._saturated["strict-local/qwen3.8-27b"] is True
+    assert gate._saturated["strict-local/qwen3.8-27b"] is False
+
+
+def test_saturated_reachable_node_still_spills_while_its_peer_is_down(monkeypatch) -> None:
+    gate_module = _load_gate_module()
+    gate = _bare_gate(gate_module)
+    gate.gate = {
+        "local/qwen3.8-27b": {
+            "metrics": [
+                "http://qwen-1:8000/metrics",
+                "http://qwen-2:8000/metrics",
+            ],
+            "cap": 64,
+            "mode": "spill",
+            "or": "qwen/qwen3.8-27b",
+        }
+    }
+    gate._saturated = {"local/qwen3.8-27b": False}
+    gate._last_success = {"local/qwen3.8-27b": 0.0}
+
+    def one_down_one_busy(url: str):
+        if "qwen-2" in url:
+            raise OSError("metrics unavailable")
+        return 64.0, 3.0
+
+    monkeypatch.setattr(gate_module, "_scrape", one_down_one_busy)
+    gate._poll_once()
+
+    assert gate._saturated["local/qwen3.8-27b"] is True
 
 
 def test_http_200_without_vllm_capacity_metrics_is_a_scrape_failure(monkeypatch) -> None:
@@ -490,3 +570,122 @@ def test_non_finite_capacity_metrics_are_rejected(monkeypatch) -> None:
         assert str(exc) == "invalid vllm concurrency metrics"
     else:
         raise AssertionError("non-finite vLLM metrics must fail closed")
+
+
+def test_strict_picture_model_behind_the_shim_passes_the_gate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    gate_module = _load_gate_module()
+    picture_info = {"mode": "image_generation", "kchat_strict_local": True}
+    config = {
+        "model_list": [
+            {
+                "model_name": "strict-local/z-image-turbo",
+                "litellm_params": {
+                    "model": "openai/z-image-turbo",
+                    "api_base": "http://imagegen-shim:9100/v1",
+                },
+                "model_info": picture_info,
+            },
+            {
+                "model_name": "strict-local/elsewhere-image",
+                "litellm_params": {
+                    "model": "openai/local/elsewhere-image",
+                    "api_base": "http://somewhere:9100/v1",
+                },
+                "model_info": picture_info,
+            },
+            {
+                "model_name": "strict-local/twinned-image",
+                "litellm_params": {
+                    "model": "openai/local/twinned-image",
+                    "api_base": "http://imagegen-shim:9100/v1",
+                },
+                "model_info": picture_info,
+            },
+        ],
+        "router_settings": {
+            "fallbacks": [{"strict-local/twinned-image": ["vendor/image"]}]
+        },
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    monkeypatch.setenv("CONFIG_FILE_PATH", str(config_path))
+
+    assert gate_module._load_shim_models() == {"strict-local/z-image-turbo"}
+
+    gate = _bare_gate(gate_module)
+    gate.gate = {}
+    gate._saturated = {}
+    gate._shim_models = gate_module._load_shim_models()
+    data = {"model": "strict-local/z-image-turbo"}
+    result = asyncio.run(gate.async_pre_call_hook(None, None, data, "aimage_generation"))
+    assert result is None
+    assert data["model"] == "strict-local/z-image-turbo"
+
+    for model in ("strict-local/elsewhere-image", "strict-local/twinned-image"):
+        refused = asyncio.run(
+            gate.async_pre_call_hook(None, None, {"model": model}, "aimage_generation")
+        )
+        assert isinstance(refused, gate_module.StrictLocalUnavailableError)
+
+
+def test_strict_transcription_behind_the_shim_passes_the_gate(tmp_path: Path, monkeypatch) -> None:
+    """A recording has no capacity metrics and no twin: it reaches whisper-shim or nothing."""
+    gate_module = _load_gate_module()
+    info = {"mode": "audio_transcription", "kchat_strict_local": True}
+    config = {
+        "model_list": [
+            {
+                "model_name": "strict-local/whisper-large-v3",
+                "litellm_params": {
+                    "model": "openai/whisper-large-v3",
+                    "api_base": "http://whisper-shim:9000/v1",
+                },
+                "model_info": info,
+            },
+            {
+                "model_name": "strict-local/elsewhere-stt",
+                "litellm_params": {"model": "openai/x", "api_base": "http://somewhere:9000/v1"},
+                "model_info": info,
+            },
+        ],
+        "router_settings": {"fallbacks": []},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    monkeypatch.setenv("CONFIG_FILE_PATH", str(config_path))
+    assert gate_module._load_shim_models() == {"strict-local/whisper-large-v3"}
+
+    gate = _bare_gate(gate_module)
+    gate.gate = {}
+    gate._saturated = {}
+    gate._shim_models = gate_module._load_shim_models()
+    data = {"model": "strict-local/whisper-large-v3"}
+    assert asyncio.run(gate.async_pre_call_hook(None, None, data, "atranscription")) is None
+    refused = asyncio.run(
+        gate.async_pre_call_hook(None, None, {"model": "strict-local/elsewhere-stt"}, "atranscription")
+    )
+    assert isinstance(refused, gate_module.StrictLocalUnavailableError)
+
+
+def test_a_spilled_request_carries_the_fallback_headers() -> None:
+    """The caller's usage record can tell the request left: same headers as a router fallback."""
+    gate_module = _load_gate_module()
+    gate = _bare_gate(gate_module)
+    gate.gate = {"local/m": {"metrics": ["http://a:8000/metrics"], "cap": 1,
+                             "mode": "spill", "or": "org/m"}}
+    gate._saturated = {"local/m": True}
+    gate._last_success = {"local/m": 0.0}
+    data = {"model": "local/m"}
+    out = asyncio.run(gate.async_pre_call_hook(None, None, data, "acompletion"))
+    assert out["model"] == "org/m"
+    headers = asyncio.run(gate.async_post_call_response_headers_hook(out, None, None))
+    assert headers == {"x-litellm-attempted-fallbacks": "1", "x-litellm-model-group": "org/m"}
+
+    # A request that stayed local adds nothing
+    gate._saturated = {"local/m": False}
+    stayed = {"model": "local/m"}
+    asyncio.run(gate.async_pre_call_hook(None, None, stayed, "acompletion"))
+    assert asyncio.run(gate.async_post_call_response_headers_hook(stayed, None, None)) is None

@@ -6,7 +6,7 @@
 #
 # Roles
 #   all [--build]           install GPU nodes -> place models -> start stack -> print URLs
-#   vllm                    run install-vllm.sh on every node in NODES_VLLM
+#   vllm                    run install-vllm.sh on every node in VLLM_NODES
 #   scheduler <subcommand>  forwarded to python3 -m scheduler {inventory|plan|apply}
 #   up [--build]            start the backend stack (gateway, tools, LiteLLM)
 #   urls                    print the addresses for the UI admin screen
@@ -18,7 +18,7 @@
 #                           the published ones
 #
 # Environment
-#   KLOUDCHAT_SKIP_SCHEDULER=1           skip placement in `all` (you manage VLLM_*_URL)
+#   KLOUDCHAT_SKIP_SCHEDULER=1           skip placement in `all` (you manage VLLM_ENDPOINTS)
 #   KLOUDCHAT_REMOTE_DIR                 repository path on remote nodes (default: KloudChat-LLM)
 #   KLOUDCHAT_VLLM_WAIT_TIMEOUT          vLLM readiness deadline, s (default 1200)
 #   KLOUDCHAT_VLLM_WAIT_INTERVAL         vLLM probe interval, s (default 10)
@@ -71,7 +71,7 @@ step_env_validate() {
   local vllm_urls; vllm_urls="$(vllm_urls_csv)"
   if has_openrouter; then
     ok "OPENROUTER_API_KEY is set"
-  elif [[ -n "$vllm_urls" || -n "$(env_get NODES_VLLM)" ]]; then
+  elif [[ -n "$vllm_urls" || -n "$(env_get VLLM_NODES)" ]]; then
     ok "vLLM nodes present (local only, no OpenRouter)"
   else
     err "neither OPENROUTER_API_KEY nor a vLLM node — one of them is required"; exit 1
@@ -86,7 +86,7 @@ step_env_validate() {
   for key in "${required[@]}"; do
     [[ -z "$(env_get "$key")" || "$(env_get "$key")" == change-me-* ]] && missing+=("$key")
   done
-  (( ${#missing[@]} )) && { err "unfilled secrets: ${missing[*]} — ./scripts/gen-env.sh --force"; exit 1; }
+  (( ${#missing[@]} )) && { err "unfilled secrets: ${missing[*]} — ./scripts/gen-env.sh --fill"; exit 1; }
   # The gateway denies every /tools request with a shorter key
   local tools_key; tools_key="$(env_get TOOLS_GATEWAY_KEY)"
   [[ ${#tools_key} -ge 32 && "$tools_key" =~ ^[A-Za-z0-9]+$ ]] \
@@ -94,9 +94,10 @@ step_env_validate() {
   ok "secrets are set"
 }
 
-# Every VLLM_<MODEL>_URL the scheduler recorded in .env
+# Every vLLM URL in .env: VLLM_ENDPOINTS and VLLM_PLACED, id= dropped
 vllm_urls_csv() {
-  awk -F= '/^VLLM_[A-Z0-9_]+_URL=/ && $2 != "" { print $2 }' .env 2>/dev/null | paste -sd, -
+  awk '/^(VLLM_ENDPOINTS|VLLM_PLACED)=/ { sub(/^[^=]*=/, ""); print }' .env 2>/dev/null \
+    | tr ',' '\n' | sed 's/^[[:space:]]*//; s/^[^=]*=//; /^$/d' | paste -sd, -
 }
 
 # gen-litellm-config.sh reads each backend's context from /v1/models (32K
@@ -118,9 +119,9 @@ step_wait_vllm() {
   return 0
 }
 
-# `whisper` profile (the transcription shim) once WHISPER_URLS is set
+# `whisper` profile once a backend is set: WHISPER_URLS or a whisper-large-v3 entry in VLLM_PLACED
 step_enable_stt_profile() {
-  [[ -n "$(env_get WHISPER_URLS)" ]] || return 0
+  [[ -n "$(env_get WHISPER_URLS)" || "$(env_get VLLM_PLACED)" == *whisper-large-v3=* ]] || return 0
   local profiles; profiles="$(env_get COMPOSE_PROFILES)"
   profiles="${profiles:-tools,models}"
   [[ ",${profiles}," == *",whisper,"* ]] && return 0
@@ -128,27 +129,49 @@ step_enable_stt_profile() {
   echo "  [profile] COMPOSE_PROFILES=${profiles},whisper (transcription shim)"
 }
 
-# SearXNG reads settings.yml only at start; a rewrite needs a container restart
+# `imagegen` profile once IMAGEGEN_BACKENDS is set
+step_enable_imagegen_profile() {
+  [[ -n "$(env_get IMAGEGEN_BACKENDS)" ]] || return 0
+  local profiles; profiles="$(env_get COMPOSE_PROFILES)"
+  profiles="${profiles:-tools,models}"
+  [[ ",${profiles}," == *",imagegen,"* ]] && return 0
+  env_set COMPOSE_PROFILES "${profiles},imagegen"
+  echo "  [profile] COMPOSE_PROFILES=${profiles},imagegen (image shim)"
+}
+
+# SearXNG and LiteLLM read their config only at start; a rewrite needs a restart
 SEARXNG_CONFIG_CHANGED=0
+LITELLM_CONFIG_CHANGED=0
+
+file_sha() {
+  [[ -f "$1" ]] && sha256sum "$1" | cut -d' ' -f1
+  return 0
+}
 
 step_gen_configs() {
   hdr "2. Generating configuration"
-  local before="" after=""
-  if [[ -f services/searxng/settings.yml ]]; then
-    before="$(sha256sum services/searxng/settings.yml | cut -d' ' -f1)"
-  fi
+  local before
+  before="$(file_sha services/searxng/settings.yml)"
   "${SCRIPT_DIR}/gen-searxng-config.sh"
-  if [[ -f services/searxng/settings.yml ]]; then
-    after="$(sha256sum services/searxng/settings.yml | cut -d' ' -f1)"
-  fi
-  [[ "$before" == "$after" ]] || SEARXNG_CONFIG_CHANGED=1
+  [[ "$before" == "$(file_sha services/searxng/settings.yml)" ]] || SEARXNG_CONFIG_CHANGED=1
+  before="$(file_sha services/litellm/config.yaml)"
+  # The model catalogue is read through the scheduler
+  ensure_scheduler_deps || return 1
   "${SCRIPT_DIR}/gen-litellm-config.sh"
+  [[ "$before" == "$(file_sha services/litellm/config.yaml)" ]] || LITELLM_CONFIG_CHANGED=1
 }
 
-step_apply_searxng_config() {
-  (( SEARXNG_CONFIG_CHANGED )) || return 0
-  docker compose restart searxng
-  ok "searxng restarted with the new settings"
+# Restart of a running service only; `up` would start one outside the active profiles
+restart_if_running() {
+  [[ -n "$(docker compose ps -q "$1" 2>/dev/null)" ]] || return 0
+  docker compose restart "$1"
+  ok "$1 restarted with the new settings"
+}
+
+step_apply_configs() {
+  (( SEARXNG_CONFIG_CHANGED )) && restart_if_running searxng
+  (( LITELLM_CONFIG_CHANGED )) && restart_if_running litellm
+  return 0
 }
 
 step_compose_up() {
@@ -160,7 +183,7 @@ step_compose_up() {
     info "--build: images come from this working tree, not from the registry"
     docker compose up -d --build
     ok "containers started"
-    step_apply_searxng_config
+    step_apply_configs
     return 0
   fi
 
@@ -174,7 +197,7 @@ step_compose_up() {
     return 1
   fi
   ok "containers started"
-  step_apply_searxng_config
+  step_apply_configs
 }
 
 step_wait_gateway() {
@@ -190,9 +213,14 @@ step_wait_gateway() {
   return 1
 }
 
-# Capabilities behind the gateway: "<name>|<public path>|<probe>|<blocking>",
-# for the readiness wait and the URL table. blocking=0 for transcription: its
-# shim exists only under the `whisper` profile.
+# Probe answers that mean the service is up behind the gateway (MCP endpoints
+# answer GET with 405/406)
+capability_up() {
+  case "$1" in 200|202|400|405|406) return 0 ;; *) return 1 ;; esac
+}
+
+# Capabilities behind the gateway: "<name>|<public path>|<probe>|<blocking>".
+# blocking=0 for transcription: its shim runs only under the `whisper` profile.
 CAPABILITIES=(
   "LiteLLM|/litellm|/litellm/health/liveliness|1"
   "Web search|/tools/search|/tools/search/healthz|1"
@@ -212,14 +240,14 @@ step_wait_services() {
       IFS='|' read -r _ _ probe blocking <<<"$spec"
       [[ "$blocking" == 1 ]] || continue
       local code; code=$(gateway_code "http://localhost:${GATEWAY_PORT}${probe}")
-      [[ "$code" == "502" || "$code" == "503" || "$code" == "000" ]] && pending=$((pending+1))
+      capability_up "$code" || pending=$((pending+1))
     done
     printf "\r    [%3ds] capabilities not ready: %d " "$elapsed" "$pending"
     (( pending == 0 )) && { echo; ok "all capabilities responding"; return 0; }
     sleep "$step"
   done
-  echo; warn "some capabilities did not respond within ${max}s — see the table below"
-  return 0
+  echo; err "some capabilities did not respond within ${max}s — see the table below"
+  return 1
 }
 
 # ───────────────────────── integration URLs ─────────────────────────
@@ -242,11 +270,13 @@ role_urls() {
     IFS='|' read -r name path probe _ <<<"$spec"
     local code; code=$(gateway_code "${base}${probe}")
     local status
+    if capability_up "$code"; then
+      printf "  %-46s %-18s %s\n" "${base}${path}" "$name" "connected"
+      continue
+    fi
     case "$code" in
       # The gateway's own refusal of /tools/* without the right X-Tools-Key
-      401) [[ "$path" == /tools/* ]] && status="key rejected (TOOLS_GATEWAY_KEY)" || status="connected" ;;
-      # 4xx = reached (MCP endpoints answer GET with 405)
-      200|202|400|405|406) status="connected" ;;
+      401) [[ "$path" == /tools/* ]] && status="key rejected (TOOLS_GATEWAY_KEY)" || status="http 401" ;;
       502|503)                 status="not started" ;;
       000)                     status="no gateway response" ;;
       *)                       status="http ${code}" ;;
@@ -265,15 +295,21 @@ role_urls() {
 
 dispatch_csv() {
   local role="$1"; shift
-  local var="NODES_${role^^}"
+  local var="${role^^}_NODES"
   local csv; csv="$(env_get "$var")"
   if [[ -z "$csv" ]]; then
     hdr "[${role}] localhost (${var} is empty — running on this host)"
     "${SCRIPT_DIR}/install-${role}.sh" "$@"
     return $?
   fi
-  local host n=0 fail=0
+  local host n=0 fail=0 held
+  held=",$(env_get "${role^^}_NODES_HOLD" | tr -d '[:space:]'),"
   while IFS= read -r host; do
+    # Held nodes (VLLM_NODES_HOLD) run something else; nothing is installed there
+    if [[ "$held" == *",${host},"* || "$held" == *",${host#*@},"* ]]; then
+      hdr "[${role}] ${host} — held (${role^^}_NODES_HOLD), skipped"
+      continue
+    fi
     n=$((n+1))
     hdr "[${role}] ${host}"
     if is_local_host "$host"; then
@@ -325,8 +361,10 @@ role_up() {
   step_gen_configs
   step_compose_up up
   step_wait_gateway || true
-  step_wait_services
+  local rc=0
+  step_wait_services || rc=$?
   role_urls
+  return "$rc"
 }
 
 role_all() {
@@ -334,26 +372,29 @@ role_all() {
   step_env_validate
 
   # 1) GPU nodes; a failed node does not stop the rest
-  if [[ -n "$(env_get NODES_VLLM)" ]]; then
+  if [[ -n "$(env_get VLLM_NODES)" ]]; then
     dispatch_csv vllm || true
   else
-    warn "NODES_VLLM is empty — skipping GPU node installation"
+    warn "VLLM_NODES is empty — skipping GPU node installation"
   fi
 
-  # 2) Placement: writes VLLM_*_URL and WHISPER_URLS into .env
-  if [[ "${KLOUDCHAT_SKIP_SCHEDULER:-0}" != "1" && -n "$(env_get NODES_VLLM)" ]]; then
-    run_scheduler apply -y || warn "placement failed — using the VLLM_*_URL values already in .env"
+  # 2) Placement: writes VLLM_PLACED into .env
+  if [[ "${KLOUDCHAT_SKIP_SCHEDULER:-0}" != "1" && -n "$(env_get VLLM_NODES)" ]]; then
+    run_scheduler apply -y || warn "placement failed — using the endpoints already in .env"
   fi
 
-  # 3) Transcription shim profile
+  # 3) Profiles for the transcription and image shims
   step_enable_stt_profile
+  step_enable_imagegen_profile
 
   step_wait_vllm
   step_gen_configs
   step_compose_up all
   step_wait_gateway || true
-  step_wait_services
+  local rc=0
+  step_wait_services || rc=$?
   role_urls
+  return "$rc"
 }
 
 role_stack_stop() {

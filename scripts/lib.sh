@@ -107,6 +107,11 @@ gpu_is_supported() {
   esac
 }
 
+# Cards a container's GPU reservation holds: device ids, or "all" for count: all
+reserved_cards() {
+  docker inspect "$1" --format '{{range .HostConfig.DeviceRequests}}{{if lt .Count 0}}all{{else}}{{join .DeviceIDs ","}}{{end}}{{end}}' 2>/dev/null || true
+}
+
 get_free_disk_gb() {
   df -BG "${1:-.}" 2>/dev/null | awk 'NR==2 {gsub("G",""); print $4; exit}'
 }
@@ -135,43 +140,60 @@ gpu_usable_vram_gb() {
   (( total > UNIFIED_RESERVE_GB )) && echo $(( total - UNIFIED_RESERVE_GB )) || echo 0
 }
 
-# OpenRouter commercial catalogue, one array per provider; array order is
-# picker order. Ids: https://openrouter.ai/api/v1/models
-OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6-luna gpt-5.4-nano gpt-5.3-codex)
-ANTHROPIC_MODELS=(claude-fable-5.1 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-4.5)
-GOOGLE_MODELS=(gemini-3.1-pro-preview gemini-3.8-flash gemini-3.5-flash-lite)
+# OpenRouter commercial catalogue, one array per provider, in picker order.
+# Ids: https://openrouter.ai/api/v1/models. Only providers in OR_PROVIDER_ALLOW
+# are registered; TENCENT, XIAOMI and MINIMAX are outside the default list.
+OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6.1-terra gpt-6-luna gpt-5.4-nano gpt-5.3-codex gpt-oss-120b gpt-oss-20b)
+ANTHROPIC_MODELS=(claude-fable-5.2 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-5.5)
+GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite gemma-4-31b-it gemma-4-26b-a4b-it gemma-3-27b-it gemma-3-12b-it
+              gemma-3-4b-it)
 XAI_MODELS=(grok-4.7)
 PERPLEXITY_MODELS=(sonar sonar-pro)
-# Open-weight tier
-TENCENT_MODELS=(hy4-preview)
+MISTRALAI_MODELS=(mistral-large-4-0 mistral-medium-3-5 mistral-small-2603 ministral-14b-2512
+                  ministral-8b-2512 ministral-3b-2512 codestral-2508 devstral-2512 mistral-nemo)
+META_LLAMA_MODELS=(llama-4-maverick llama-4-scout llama-3.3-70b-instruct)
+NVIDIA_MODELS=(nemotron-3-ultra-550b-a55b nemotron-3.5-super-vl nemotron-3.5-lightning)
 DEEPSEEK_MODELS=(deepseek-v4-pro-0813 deepseek-v4.1-flash)
 ZAI_MODELS=(glm-5.3 glm-5.3-flash)
+MOONSHOTAI_MODELS=(kimi-k3.1-pro kimi-k3)
+QWEN_MODELS=(qwen4-max qwen3.8-max-0902 qwen3-coder qwen3.6-35b-a3b qwen3.5-9b qwen3.5-35b-a3b
+             qwen3-vl-235b-a22b-instruct)
+BYTEDANCE_SEED_MODELS=(seed-2-1-turbo seed-2.0-lite)
+TENCENT_MODELS=(hy4-preview)
 XIAOMI_MODELS=(mimo-v2.6-flash)
-MOONSHOTAI_MODELS=(kimi-k3)
-# Qwen's hosted tier (not the local checkpoints)
-QWEN_MODELS=(qwen3.8-max-0902 qwen3-coder-plus)
 MINIMAX_MODELS=(minimax-m3)
 # "<OpenRouter provider>:<array prefix>" for each *_MODELS array above
 OR_PROVIDERS=(openai:OPENAI anthropic:ANTHROPIC google:GOOGLE x-ai:XAI
-              perplexity:PERPLEXITY tencent:TENCENT deepseek:DEEPSEEK z-ai:ZAI
-              xiaomi:XIAOMI moonshotai:MOONSHOTAI qwen:QWEN minimax:MINIMAX)
+              perplexity:PERPLEXITY nvidia:NVIDIA deepseek:DEEPSEEK z-ai:ZAI
+              moonshotai:MOONSHOTAI qwen:QWEN bytedance-seed:BYTEDANCE_SEED
+              meta-llama:META_LLAMA mistralai:MISTRALAI
+              tencent:TENCENT xiaomi:XIAOMI minimax:MINIMAX)
+# Default for an empty OR_PROVIDER_ALLOW (`*` = every provider)
+OR_PROVIDER_ALLOW_DEFAULT="qwen,deepseek,anthropic,google,moonshotai,nvidia,openai,perplexity,x-ai,z-ai,bytedance-seed,meta-llama,mistralai"
 
-# Image generation, cheapest first (picker default)
+# Image generation, cheapest per picture first (picker default). Criteria: Korean
+# text rendered right, 16:9 kept, served on chat/completions
 OR_IMAGE_MODELS=(
-  openai/gpt-5-image-mini
-  google/gemini-2.5-flash-image
-  openai/gpt-5-image
+  bytedance-seed/seedream-5-0-flash
+  bytedance-seed/seedream-5-5
+  x-ai/grok-imagine-image-2.0
+  google/gemini-nano-banana-2.1
+  openai/gpt-5.4-image-2
   google/gemini-3-pro-image
 )
-# USD per image_output token; one picture is ~1290 tokens
+# USD per image_output token. Gemini spends ~1290 tokens on a picture; image-only
+# models are priced as 4175 tokens per 1K picture; GPT-5.4 Image 2 as $0.127 over
+# 3866 tokens. KloudChat charges usage.cost.
 declare -A MODEL_IMAGE_OUT_COST=(
-  [openai/gpt-5-image-mini]=0.000008
-  [google/gemini-2.5-flash-image]=0.00003
-  [openai/gpt-5-image]=0.00004
+  [bytedance-seed/seedream-5-0-flash]=0.0000043114
+  [bytedance-seed/seedream-5-5]=0.0000047904
+  [x-ai/grok-imagine-image-2.0]=0.0000095808
+  [google/gemini-nano-banana-2.1]=0.00003
+  [openai/gpt-5.4-image-2]=0.0000329196
   [google/gemini-3-pro-image]=0.00012
 )
-# Audio generation through chat/completions (streaming required): gpt-audio
-# speech per token, lyria music per clip
+# Audio generation through chat/completions (streaming required): gpt-audio per
+# token, lyria per clip
 OR_AUDIO_MODELS=(
   openai/gpt-audio-mini
   openai/gpt-audio
@@ -194,14 +216,13 @@ declare -A MODEL_AUDIO_PER_CALL=(
 )
 
 declare -A MODEL_IMAGE_IN_PM=(
-  [openai/gpt-5-image-mini]=2.50
-  [google/gemini-2.5-flash-image]=0.30
-  [openai/gpt-5-image]=10.00
+  [bytedance-seed/seedream-5-0-flash]=0.00
+  [bytedance-seed/seedream-5-5]=0.00
+  [x-ai/grok-imagine-image-2.0]=0.00
+  [google/gemini-nano-banana-2.1]=1.50
+  [openai/gpt-5.4-image-2]=0.00
   [google/gemini-3-pro-image]=2.00
 )
-
-# RAG embedding fallback, registered with OPENAI_API_KEY
-OPENAI_EMBED_CATALOG=(text-embedding-3-small)
 
 # vLLM catalogue: download alias → HF repo
 declare -A VLLM_MODELS=(
@@ -209,8 +230,6 @@ declare -A VLLM_MODELS=(
   [qwen3.8-27b-nvfp4]="unsloth/Qwen3.8-27B-NVFP4"
   # Quality and judging, MoE, NVFP4 body and FP8 PLE table
   [qwen3.8-flash-next-nvfp4]="nvidia/Qwen3.8-Flash-Next-NVFP4"
-  # Coding, FP8
-  [qwen3-coder-next]="Qwen/Qwen3-Coder-Next-FP8"
   # Retrieval embeddings and reranking, BF16
   [bge-m3]="BAAI/bge-m3"
   [bge-reranker-v2-m3]="BAAI/bge-reranker-v2-m3"
@@ -225,13 +244,37 @@ declare -A VLLM_MODELS=(
 declare -A VLLM_MODEL_WEIGHT_GB=(
   [qwen3.8-27b-nvfp4]=22
   [qwen3.8-flash-next-nvfp4]=79
-  [qwen3-coder-next]=75
   [bge-m3]=3
   [bge-reranker-v2-m3]=3
   [whisper-large-v3]=4
 )
 # GiB over the weights: activations plus KV for one request
 VLLM_RUNTIME_HEADROOM_GB=6
+
+# Image models (docker-compose.vllm-omni.yml): download alias → HF repo, diffusers
+# layout, weights under VLLM_MODELS_ROOT/<alias>
+declare -A OMNI_MODELS=(
+  [z-image-turbo]="Tongyi-MAI/Z-Image-Turbo"
+  [qwen-image-2512]="Qwen/Qwen-Image-2512"
+  [qwen-image-edit-2511]="Qwen/Qwen-Image-Edit-2511"
+)
+# Download size (GiB), for the disk check
+declare -A OMNI_MODEL_DISK_GB=(
+  [z-image-turbo]=31
+  [qwen-image-2512]=54
+  [qwen-image-edit-2511]=58
+)
+# Compose service and served port per alias
+declare -A OMNI_SERVICE=(
+  [z-image-turbo]=omni-z-image
+  [qwen-image-2512]=omni-qwen-image
+  [qwen-image-edit-2511]=omni-qwen-image-edit
+)
+declare -A OMNI_PORT=(
+  [z-image-turbo]=8091
+  [qwen-image-2512]=8092
+  [qwen-image-edit-2511]=8093
+)
 
 # Download set for a node without an explicit model list
 VLLM_PREFERRED_MODELS=(qwen3.8-27b-nvfp4)
@@ -276,8 +319,7 @@ vllm_model_unservable_reason() {
   return 0
 }
 
-# vLLM base image: the latest release, multi-arch (amd64, arm64).
-# install-vllm.sh pins the resolved digest per node as VLLM_BASE_DIGEST.
+# vLLM base image, multi-arch; install-vllm.sh pins its digest per node
 VLLM_IMAGE_LATEST="vllm/vllm-openai:latest"
 
 vllm_default_image() {
@@ -295,42 +337,87 @@ image_base_digest() {
 # Declared prices, USD per 1M tokens; or_refresh_prices overlays the live
 # catalogue. Local models are 0.
 declare -A MODEL_PRICE_IN_PM=(
-  [gpt-6-astra]=10       [gpt-6.1-sol]=2        [gpt-6-luna]=0.10      [gpt-5.4-nano]=0.20
-  [gpt-5.3-codex]=1.75
-  [claude-fable-5.1]=10  [claude-opus-5.5]=4    [claude-sonnet-5.5]=2  [claude-haiku-4.5]=1
-  [gemini-3.1-pro-preview]=2   [gemini-3.8-flash]=0.75   [gemini-3.5-flash-lite]=0.30
-  [grok-4.7]=2           [sonar]=1.00              [sonar-pro]=3.00
-  [hy4-preview]=0.751    [deepseek-v4-pro-0813]=0.22  [deepseek-v4.1-flash]=0.30
-  [glm-5.3]=1.40         [glm-5.3-flash]=0.15      [mimo-v2.6-flash]=0.14    [kimi-k3]=0.99
-  [qwen3.8-max-0902]=2.00  [qwen3-coder-plus]=0.65
-  [minimax-m3]=0.30
-  [qwen3.8-27b]=0  [qwen3.8-flash]=0  [qwen3-coder-next]=0
-  [text-embedding-3-small]=0.02
+  [gpt-6-astra]=10  [gpt-6.1-sol]=2  [gpt-6.1-terra]=1
+  [gpt-6-luna]=0.1  [gpt-5.4-nano]=0.2  [gpt-5.3-codex]=1.75
+  [claude-fable-5.2]=8  [claude-opus-5.5]=4  [claude-sonnet-5.5]=2
+  [claude-haiku-5.5]=0.1  [gemini-4-argon]=2  [gemini-4-carbon]=2
+  [gemini-4-hydrogen]=1.5  [gemini-3.8-flash]=0.825  [gemini-3.5-flash-lite]=0.3  [gemma-4-31b-it]=0.2
+  [grok-4.7]=2  [sonar]=1  [sonar-pro]=3
+  [nemotron-3-ultra-550b-a55b]=0.5  [nemotron-3.5-super-vl]=0.15  [nemotron-3.5-lightning]=0.07
+  [deepseek-v4-pro-0813]=0.111  [deepseek-v4.1-flash]=0.3  [glm-5.3]=0.0699
+  [glm-5.3-flash]=0.15  [kimi-k3.1-pro]=0.2403  [qwen4-max]=1.425
+  [qwen3.8-max-0902]=2  [qwen3-coder]=0.3  [seed-2-1-turbo]=0.5
+  [seed-2.0-lite]=0.25  [hy4-preview]=0.834  [mimo-v2.6-flash]=0.14
+  [minimax-m3]=0.3
+  [gemma-4-26b-a4b-it]=0.09
+  [gemma-3-27b-it]=0.08
+  [gemma-3-12b-it]=0.05
+  [gemma-3-4b-it]=0.05
+  [gpt-oss-120b]=0.15
+  [gpt-oss-20b]=0.018
+  [llama-3.3-70b-instruct]=0.71
+  [llama-4-maverick]=0.35
+  [llama-4-scout]=0.1
+  [mistral-large-4-0]=0.7
+  [mistral-medium-3-5]=1.5
+  [mistral-small-2603]=0.15
+  [ministral-14b-2512]=0.2
+  [ministral-8b-2512]=0.15
+  [ministral-3b-2512]=0.1
+  [codestral-2508]=0.3
+  [devstral-2512]=0.4
+  [mistral-nemo]=0.029
+  [qwen3.6-35b-a3b]=0.1
+  [qwen3.5-9b]=0.17
+  [qwen3.5-35b-a3b]=0.14
+  [qwen3-vl-235b-a22b-instruct]=0.21
+  [kimi-k3]=0.192
 )
 declare -A MODEL_PRICE_OUT_PM=(
-  [gpt-6-astra]=50       [gpt-6.1-sol]=10       [gpt-6-luna]=0.50      [gpt-5.4-nano]=1.25
-  [gpt-5.3-codex]=14.00
-  [claude-fable-5.1]=50  [claude-opus-5.5]=20   [claude-sonnet-5.5]=10 [claude-haiku-4.5]=5
-  [gemini-3.1-pro-preview]=12  [gemini-3.8-flash]=3.75   [gemini-3.5-flash-lite]=2.50
-  [grok-4.7]=6           [sonar]=1.00              [sonar-pro]=15.00
-  [hy4-preview]=2.25     [deepseek-v4-pro-0813]=4.20  [deepseek-v4.1-flash]=1.20
-  [glm-5.3]=4.40         [glm-5.3-flash]=0.50      [mimo-v2.6-flash]=0.28    [kimi-k3]=13.00
-  [qwen3.8-max-0902]=6.00  [qwen3-coder-plus]=3.25
-  [minimax-m3]=1.20
-  [qwen3.8-27b]=0  [qwen3.8-flash]=0  [qwen3-coder-next]=0
+  [gpt-6-astra]=50  [gpt-6.1-sol]=10  [gpt-6.1-terra]=5
+  [gpt-6-luna]=0.5  [gpt-5.4-nano]=1.25  [gpt-5.3-codex]=14
+  [claude-fable-5.2]=40  [claude-opus-5.5]=20  [claude-sonnet-5.5]=10
+  [claude-haiku-5.5]=0.5  [gemini-4-argon]=10  [gemini-4-carbon]=10
+  [gemini-4-hydrogen]=7.5  [gemini-3.8-flash]=4.125  [gemini-3.5-flash-lite]=2.5  [gemma-4-31b-it]=0.4
+  [grok-4.7]=6  [sonar]=1  [sonar-pro]=15
+  [nemotron-3-ultra-550b-a55b]=2.2  [nemotron-3.5-super-vl]=0.5  [nemotron-3.5-lightning]=0.2
+  [deepseek-v4-pro-0813]=4.44  [deepseek-v4.1-flash]=1.2  [glm-5.3]=1.4
+  [glm-5.3-flash]=0.5  [kimi-k3.1-pro]=8.4023  [qwen4-max]=4.275
+  [qwen3.8-max-0902]=6  [qwen3-coder]=1  [seed-2-1-turbo]=2.5
+  [seed-2.0-lite]=2  [hy4-preview]=2.501  [mimo-v2.6-flash]=0.28
+  [minimax-m3]=1.2
+  [gemma-4-26b-a4b-it]=0.3
+  [gemma-3-27b-it]=0.35
+  [gemma-3-12b-it]=0.15
+  [gemma-3-4b-it]=0.1
+  [gpt-oss-120b]=0.6
+  [gpt-oss-20b]=0.09
+  [llama-3.3-70b-instruct]=0.71
+  [llama-4-maverick]=1.0
+  [llama-4-scout]=0.3
+  [mistral-large-4-0]=2.1
+  [mistral-medium-3-5]=7.5
+  [mistral-small-2603]=0.6
+  [ministral-14b-2512]=0.2
+  [ministral-8b-2512]=0.15
+  [ministral-3b-2512]=0.1
+  [codestral-2508]=0.9
+  [devstral-2512]=2.0
+  [mistral-nemo]=0.03
+  [qwen3.6-35b-a3b]=0.9
+  [qwen3.5-9b]=0.25
+  [qwen3.5-35b-a3b]=1.0
+  [qwen3-vl-235b-a22b-instruct]=1.9
+  [kimi-k3]=16.0
 )
 
-# OpenRouter twins of local models and the STT fallback, USD per 1M tokens,
+# OpenRouter twins of local models, USD per 1M tokens,
 # keyed by slug; or_price prefers the live figure
 declare -A OR_TWIN_PRICE_IN_PM=(
   [qwen/qwen3.8-27b]=0.42  [qwen/qwen3.8-flash]=0.15
-  [qwen/qwen3-coder-next]=0.12
-  [mistralai/voxtral-small-24b-2507]=0.10
 )
 declare -A OR_TWIN_PRICE_OUT_PM=(
   [qwen/qwen3.8-27b]=3.00  [qwen/qwen3.8-flash]=0.47
-  [qwen/qwen3-coder-next]=0.80
-  [mistralai/voxtral-small-24b-2507]=0.30
 )
 
 per_token_cost() { awk -v v="$1" 'BEGIN { printf "%.10f", v/1000000 }'; }
@@ -353,6 +440,38 @@ or_catalogue() {
     __OR_CATALOGUE_CACHE="$tmp"
   fi
   cat "$__OR_CATALOGUE_CACHE"
+}
+
+# model_info lines for a slug that takes an effort: supports_reasoning (without
+# it drop_params discards reasoning_effort) and the levels KloudChat reads.
+# Nothing when the catalogue is unreachable or the model takes no effort.
+or_reasoning_info() {
+  local slug="$1"
+  or_catalogue 2>/dev/null \
+    | jq -r --arg s "$slug" '
+        first(.data[] | select(.id == $s))
+        | select(.supported_parameters // [] | index("reasoning_effort"))
+        | (.reasoning // {}) as $r
+        | "      supports_reasoning: true",
+          (($r.supported_efforts // []) | select(length > 0)
+            | "      kchat_reasoning_efforts: [" + (map(tojson) | join(", ")) + "]"),
+          ($r.default_effort // empty | "      kchat_reasoning_default: " + tojson),
+          "      kchat_reasoning_mandatory: " + (($r.mandatory // false) | tostring)
+      ' 2>/dev/null || true
+}
+
+# model_info lines for a slug: context window, vision input, and
+# supports_function_calling: false when the model takes no tools. Nothing when
+# the catalogue is unreachable or the slug unknown.
+or_capability_info() {
+  local slug="$1"
+  or_catalogue 2>/dev/null \
+    | jq -r --arg s "$slug" '
+        first(.data[] | select(.id == $s))
+        | (if .context_length then "      max_input_tokens: \(.context_length)" else empty end),
+          (if (.architecture.input_modalities // [] | index("image")) then "      supports_vision: true" else empty end),
+          (if (.supported_parameters // [] | index("tools")) then empty else "      supports_function_calling: false" end)
+      ' 2>/dev/null || true
 }
 
 # Live price or the declared fallback, USD per 1M tokens
@@ -406,6 +525,15 @@ or_refresh_prices() {
 # OpenRouter's free chat models, one slug per line: zero price both ways, text
 # output, `:free` suffix, guardrail models excluded
 or_free_models() {
+  local m
+  while IFS= read -r m; do
+    [[ -n "$m" ]] && ! or_model_excluded "$m" && echo "$m"
+  done < <(or_free_models_all)
+  return 0
+}
+
+# The same before the provider and exclusion filters
+or_free_models_all() {
   has_openrouter || return 0
   command -v jq &>/dev/null || return 0
   or_catalogue 2>/dev/null \
@@ -416,6 +544,198 @@ or_free_models() {
         | select(.id | endswith(":free"))
         | select(.id | test("guard|safety|safeguard|moderation") | not)
         | .id' 2>/dev/null | sort
+}
+
+# Provider filter: OR_PROVIDER_ALLOW (shell environment first, then .env)
+or_provider_allowed() {  # $1=provider
+  local spec="${OR_PROVIDER_ALLOW-$(env_get OR_PROVIDER_ALLOW)}" p
+  spec="${spec//[[:space:]]/}"
+  spec="${spec:-$OR_PROVIDER_ALLOW_DEFAULT}"
+  [[ "$spec" == '*' ]] && return 0
+  local IFS=','
+  for p in $spec; do [[ "$p" == "$1" ]] && return 0; done
+  return 1
+}
+
+# Provider filter plus OR_MODEL_EXCLUDE (`provider/`, `provider/model` or glob)
+__or_filter_excluded() {  # $1=provider/model slug (free slugs keep their :free suffix)
+  local slug="$1" spec="${OR_MODEL_EXCLUDE-$(env_get OR_MODEL_EXCLUDE)}" pat
+  or_provider_allowed "${slug%%/*}" || return 0
+  [[ -n "$spec" ]] || return 1
+  local IFS=','
+  for pat in $spec; do
+    pat="${pat//[[:space:]]/}"
+    [[ -n "$pat" ]] || continue
+    [[ "$pat" == */ ]] && pat="${pat}*"
+    # shellcheck disable=SC2053
+    if [[ "$slug" == $pat || "${slug%:free}" == $pat ]]; then return 0; fi
+  done
+  return 1
+}
+
+# ── Run policy: which OpenRouter endpoints a model may run on (docs/models.md) ──
+# Settings read from the shell environment first, then .env: OR_OPEN_WEIGHT_POLICY,
+# OR_OPEN_WEIGHT (glob list; default below), OR_PROVIDER_PIN, OR_ZDR_ONLY,
+# OR_OPEN_WEIGHT_QUANTIZATIONS. Endpoint facts come from the public
+# /api/v1/models/<id>/endpoints and /api/v1/endpoints/zdr.
+OR_OPEN_WEIGHT_DEFAULT="openai/gpt-oss-*,google/gemma-*,meta-llama/*,nvidia/nemotron-*,deepseek/*,z-ai/*,moonshotai/*,qwen/qwen3-coder*,qwen/qwen3.5-*,qwen/qwen3.6-*,qwen/qwen3-vl-*,mistralai/mistral-nemo,mistralai/ministral-*,mistralai/mistral-small-*"
+
+__or_setting() {  # $1=NAME: shell environment first, then .env
+  local n="$1"
+  if [[ -n "${!n+set}" ]]; then echo "${!n}"; else env_get "$n"; fi
+}
+
+__or_policy_active() {
+  [[ "$(__or_setting OR_OPEN_WEIGHT_POLICY)" == strict \
+     || "$(__or_setting OR_ZDR_ONLY)" == 1 || -n "$(__or_setting OR_PROVIDER_PIN)" ]]
+}
+
+# Per-run scratch directory for fetched endpoint data and decisions
+__or_work() {
+  if [[ -z "${KC_OR_WORK:-}" || ! -d "${KC_OR_WORK}" ]]; then
+    KC_OR_WORK="$(mktemp -d -t kc-or-work.XXXXXX)"; export KC_OR_WORK
+    [[ -z "$(trap -p EXIT)" ]] && trap 'rm -rf "${KC_OR_WORK:-}"' EXIT
+  fi
+  echo "$KC_OR_WORK"
+}
+
+# Public OpenRouter GET into a file, cached per run; rc 1 when unreachable
+__or_fetch() {  # $1=api path  $2=cache file
+  [[ -s "$2" ]] && return 0
+  [[ -e "$2.fail" ]] && return 1
+  mkdir -p "$(dirname "$2")"
+  if curl -sf --max-time 20 "https://openrouter.ai/api/v1/$1" -o "$2" 2>/dev/null && [[ -s "$2" ]]; then
+    return 0
+  fi
+  rm -f "$2"; : > "$2.fail"; return 1
+}
+
+or_zdr_file() { local w; w="$(__or_work)"; __or_fetch endpoints/zdr "$w/zdr.json" && echo "$w/zdr.json"; }
+or_endpoints_file() {  # $1=slug (a :free suffix is dropped)
+  local w slug="${1%:free}"; w="$(__or_work)"
+  __or_fetch "models/${slug}/endpoints" "$w/ep/${slug//\//__}.json" && echo "$w/ep/${slug//\//__}.json"
+}
+
+# `pattern=Provider|Provider` entries of OR_PROVIDER_PIN that match $1; first match wins
+__or_pin_for() {
+  local slug="$1" spec pat val IFS=','
+  spec="$(__or_setting OR_PROVIDER_PIN)"
+  for pat in $spec; do
+    pat="${pat#"${pat%%[![:space:]]*}"}"
+    [[ "$pat" == *=* ]] || continue
+    val="${pat#*=}"; pat="${pat%%=*}"; pat="${pat//[[:space:]]/}"
+    # shellcheck disable=SC2053
+    if [[ "$slug" == $pat || "${slug%:free}" == $pat ]]; then echo "${val%"${val##*[![:space:]]}"}"; return 0; fi
+  done
+  return 0
+}
+
+__or_is_open_weight() {
+  local slug="${1%:free}" spec pat IFS=','
+  [[ "$(__or_setting OR_OPEN_WEIGHT_POLICY)" == strict ]] || return 1
+  spec="$(__or_setting OR_OPEN_WEIGHT)"; spec="${spec:-$OR_OPEN_WEIGHT_DEFAULT}"
+  for pat in $spec; do
+    pat="${pat//[[:space:]]/}"
+    # shellcheck disable=SC2053
+    [[ -n "$pat" && "$slug" == $pat ]] && return 0
+  done
+  return 1
+}
+
+# Decision JSON for one model (see scripts/or_policy.py), cached per run. Warnings print once.
+or_decision() {  # $1=provider/model slug
+  local slug="$1" w f ep zdr
+  __or_policy_active || { echo '{"policy":"none","exclude":false,"provider":null}'; return 0; }
+  w="$(__or_work)"; f="$w/dec/${slug//\//__}.json"
+  if [[ ! -s "$f" ]]; then
+    mkdir -p "$w/dec"
+    local args=(decide --slug "$slug" --pin "$(__or_pin_for "$slug")")
+    __or_is_open_weight "$slug" && args+=(--open-weight)
+    [[ "$(__or_setting OR_ZDR_ONLY)" == 1 ]] && args+=(--zdr-only)
+    local q; q="$(__or_setting OR_OPEN_WEIGHT_QUANTIZATIONS)"
+    [[ -n "$q" ]] && args+=(--quantizations "$q")
+    ep="$(or_endpoints_file "$slug" || true)"; zdr="$(or_zdr_file || true)"
+    [[ -n "$ep" && -n "$zdr" ]] && args+=(--endpoints "$ep" --zdr "$zdr")
+    python3 "${__PROJECT_DIR}/scripts/or_policy.py" "${args[@]}" > "$f.tmp" && mv "$f.tmp" "$f" \
+      || { rm -f "$f.tmp"; echo '{"policy":"none","exclude":false,"provider":null}'; return 0; }
+    jq -r '.warnings[]?' "$f" 2>/dev/null | while IFS= read -r line; do warn "$line"; done
+    if [[ "$(jq -r .exclude "$f")" == true ]]; then
+      echo "$slug ($(jq -r .reason "$f"))" >> "$w/excluded.txt"
+    fi
+  fi
+  cat "$f"
+}
+
+# True when the run policy leaves the model out of the registry
+or_policy_excluded() {
+  [[ "$(or_decision "$1" | jq -r '.exclude // false' 2>/dev/null)" == true ]]
+}
+
+# Whether the OpenRouter name carries a model the policy or the filters leave out
+or_model_excluded() {  # $1=provider/model slug (free slugs keep their :free suffix)
+  __or_filter_excluded "$1" && return 0
+  or_policy_excluded "$1"
+}
+
+# litellm_params lines for a model: `extra_body.provider` when the policy sets one
+or_provider_params() {  # $1=slug
+  local p; p="$(or_decision "$1" | jq -c '.provider // empty' 2>/dev/null)"
+  [[ -n "$p" ]] && echo "      extra_body: {\"provider\": ${p}}"
+  return 0
+}
+
+# Route suffix: a pinned model has its provider order, so no :floor sort on top
+or_route_variant() {  # $1=slug  $2=default suffix
+  if [[ -n "$(or_decision "$1" | jq -r '.pinned // empty' 2>/dev/null)" ]]; then return 0; fi
+  echo -n "$2"
+}
+
+# model_info lines for a model: what KloudChat shows in the picker
+or_policy_info() {  # $1=slug
+  or_decision "$1" | jq -r '
+    select(.policy != "none")
+    | "      kchat_run_policy: " + (.policy | tojson),
+      (if .pinned then "      kchat_provider_pinned: " + (.pinned | tojson) else empty end),
+      (if .quantization then "      kchat_quantization: " + (.quantization | tojson) else empty end),
+      (if .zdr != null then "      kchat_zdr: " + (.zdr | tostring) else empty end)' 2>/dev/null || true
+}
+
+# One slug per line: what the run policy takes out of the registered models
+or_policy_excluded_list() {
+  local m prov var
+  has_openrouter || return 0
+  __or_policy_active || return 0
+  for prov in "${OR_PROVIDERS[@]}"; do
+    var="${prov##*:}_MODELS[@]"
+    for m in "${!var}"; do
+      __or_filter_excluded "${prov%%:*}/$m" && continue
+      or_policy_excluded "${prov%%:*}/$m" && echo "${prov%%:*}/$m"
+    done
+  done
+  for m in "${OR_IMAGE_MODELS[@]}" "${OR_AUDIO_MODELS[@]}"; do
+    __or_filter_excluded "$m" && continue
+    or_policy_excluded "$m" && echo "$m"
+  done
+  return 0
+}
+
+# Every OpenRouter model the two filters remove, one slug per line
+or_excluded_list() {
+  local m prov var
+  has_openrouter || return 0
+  for prov in "${OR_PROVIDERS[@]}"; do
+    var="${prov##*:}_MODELS[@]"
+    for m in "${!var}"; do
+      __or_filter_excluded "${prov%%:*}/$m" && echo "${prov%%:*}/$m"
+    done
+  done
+  for m in "${OR_IMAGE_MODELS[@]}" "${OR_AUDIO_MODELS[@]}"; do
+    __or_filter_excluded "$m" && echo "$m"
+  done
+  while IFS= read -r m; do
+    [[ -n "$m" ]] && __or_filter_excluded "$m" && echo "$m"
+  done < <(or_free_models_all)
+  return 0
 }
 
 # Declared prices against the live catalogue; one line per mismatch, rc 1 if any
@@ -451,7 +771,7 @@ or_price_drift() {
       fi
     done
   done
-  # Twins and the STT fallback
+  # Twins of local models
   for slug in "${!OR_TWIN_PRICE_IN_PM[@]}"; do
     actual="$(jq -r --arg s "$slug" '
       .data[] | select(.id == $s)
@@ -471,11 +791,15 @@ or_price_drift() {
     fi
   done
 
-  # image_output per image token; audio/audio_output per audio token
-  local id declared actual_out actual_in
+  # image_output per image token; audio/audio_output per audio token. Image-only
+  # models appear only in the image listing
+  local id declared actual_out actual_in images
+  images="$(curl -sf --max-time 20 'https://openrouter.ai/api/v1/models?output_modalities=image' \
+             -H "Authorization: Bearer ${key}" 2>/dev/null)" || images='{"data":[]}'
   for id in "${OR_IMAGE_MODELS[@]}"; do
     declared="${MODEL_IMAGE_OUT_COST[$id]:-}"
-    actual_out="$(jq -r --arg s "$id" '.data[] | select(.id == $s) | .pricing.image_output // empty' <<<"$live" | head -1)"
+    actual_out="$(jq -r --arg s "$id" '.data[] | select(.id == $s) | .pricing.image_output // empty' \
+                  <<<"$images" | head -1)"
     if [[ -z "$actual_out" ]]; then
       echo "GONE      ${id} — image model not in the catalogue"; drift=1
     elif ! awk -v a="$actual_out" -v b="$declared" 'BEGIN { d=a-b; if (d<0) d=-d; exit !(d < 1e-9) }'; then
@@ -548,18 +872,6 @@ vllm_union_node_models() {
   done
 }
 
-# Whether any URL in the csv answers /v1/models with a model
-vllm_any_url_alive() {
-  local csv="$1" u
-  [[ -n "$csv" ]] || return 1
-  local IFS=,
-  for u in $csv; do
-    [[ -n "$u" ]] || continue
-    [[ -n "$(__vllm_node_models "$u")" ]] && return 0
-  done
-  return 1
-}
-
 # State of one URL:
 #   0 = ready   (/v1/models 200 with at least one model)
 #   1 = loading (HTTP answers but not ready: 503, empty model list)
@@ -598,10 +910,30 @@ vllm_discover_max_len() {
   return 1
 }
 
-# URL host → ssh target: the matching user@host from NODES_VLLM, else the host
+# What a running vLLM says about itself, one probe each (empty when unreachable or unsaid)
+__vllm_probe_url() {
+  local probe; probe="$(__vllm_normalize_url "$1")"
+  echo "${probe//host.docker.internal/localhost}"
+}
+vllm_discover_engine() {  # "vLLM 0.33.0" from /version
+  local v; v="$(curl -sf --max-time 5 "$(__vllm_probe_url "$1")/version" 2>/dev/null \
+                | jq -r '.version // empty' 2>/dev/null)"
+  [[ "$v" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] && echo "vLLM ${v#v}"
+  return 0
+}
+vllm_discover_kv_cache() {  # cache_dtype label of vllm:cache_config_info on /metrics; `auto` = unsaid.
+  # Only the exact label: mamba_cache_dtype and mamba_ssm_cache_dtype share the line.
+  local v; v="$(curl -sf --max-time 5 "$(__vllm_probe_url "$1")/metrics" 2>/dev/null \
+                | grep -m1 '^vllm:cache_config_info' \
+                | grep -o '[{,]cache_dtype="[^"]*"' | head -1 | sed 's/^[{,]cache_dtype="\(.*\)"$/\1/')"
+  [[ "$v" =~ ^[0-9A-Za-z_]+$ && "$v" != auto ]] && echo "$v"
+  return 0
+}
+
+# URL host → ssh target: the matching user@host from VLLM_NODES, else the host
 __vllm_ssh_target() {
   local host="$1" csv entry
-  csv="$(env_get NODES_VLLM 2>/dev/null)"
+  csv="$(env_get VLLM_NODES 2>/dev/null)"
   local IFS=,
   for entry in $csv; do
     entry="${entry// /}"
@@ -689,45 +1021,116 @@ vllm_wait_until_ready() {
   return 0
 }
 
+# scheduler/models.yaml, read once through the scheduler: CATALOG_IDS in file
+# order, CATALOG_<field>[id] per model
+CATALOG_IDS=()
+declare -gA CATALOG_API=() CATALOG_PREFIX=() CATALOG_OR=() CATALOG_TIMEOUT=() \
+  CATALOG_MAX_INFLIGHT=() CATALOG_PRESENCE=() CATALOG_TEMPERATURE=()
+load_model_catalog() {
+  (( ${#CATALOG_IDS[@]} )) && return 0
+  local rows id api prefix or tmo cap pres temp
+  rows="$(cd "$__PROJECT_DIR" && python3 -m scheduler catalog)" \
+    || { err "scheduler/models.yaml unreadable — python3 with PyYAML required"; return 1; }
+  while IFS=$'\t' read -r id api prefix or tmo cap pres temp; do
+    [[ "$pres" == - ]] && pres=""
+    [[ "$temp" == - ]] && temp=""
+    [[ -n "$id" ]] || continue
+    CATALOG_IDS+=("$id")
+    CATALOG_API[$id]="$api"
+    CATALOG_PREFIX[$id]="$prefix"
+    CATALOG_OR[$id]="${or/#-/}"
+    CATALOG_TIMEOUT[$id]="${tmo/#-/}"
+    CATALOG_MAX_INFLIGHT[$id]="$cap"
+    CATALOG_PRESENCE[$id]="$pres"
+    CATALOG_TEMPERATURE[$id]="$temp"
+  done <<<"$rows"
+}
+
+# Local models and where they are served, from VLLM_ENDPOINTS (hand-run; "id=url"
+# as given, a bare URL by the names its /v1/models lists), VLLM_PLACED (the
+# scheduler's, "id=url").
+# LOCAL_IDS: catalogue order, then models only the endpoint lists name;
+# LOCAL_URLS[id] a CSV; LOCAL_SERVED["id url"] vLLM's name for it on that server.
+LOCAL_IDS=()
+declare -gA LOCAL_URLS=() LOCAL_SERVED=()
+__local_add() {  # $1=id  $2=url  $3=served name
+  local id="$1" url
+  url="$(__vllm_normalize_url "$2")"
+  [[ -n "$id" && -n "$url" ]] || return 0
+  [[ -n "${LOCAL_URLS[$id]+set}" ]] || LOCAL_URLS[$id]=""
+  LOCAL_SERVED["$id $url"]="${3:-local/$id}"
+  [[ ",${LOCAL_URLS[$id]}," == *",${url},"* ]] && return 0
+  LOCAL_URLS[$id]="${LOCAL_URLS[$id]:+${LOCAL_URLS[$id]},}${url}"
+}
+# vLLM's name for model $1 on server $2
+local_served_at() { echo "${LOCAL_SERVED["$1 $(__vllm_normalize_url "$2")"]:-local/$1}"; }
+# Model id for a served name: without local/, else its last path segment
+__local_id() { local n="${1#local/}"; echo "${n##*/}"; }
+resolve_local_models() {
+  load_model_catalog || return 1
+  LOCAL_IDS=(); LOCAL_URLS=(); LOCAL_SERVED=()
+  local item id url served names extra=() IFS=, listed
+  listed="$(env_get VLLM_ENDPOINTS),$(env_get VLLM_PLACED)"
+  for item in $listed; do
+    item="${item//[[:space:]]/}"
+    [[ -n "$item" ]] || continue
+    if [[ "$item" == *=* ]]; then
+      id="${item%%=*}"; id="${id#local/}"; url="${item#*=}"
+      # The listed name when the server answers; local/<id> otherwise
+      served="$(IFS=$'\n'; for n in $(__vllm_node_models "$url"); do
+                  [[ "$(__local_id "$n")" == "$id" || "$(__local_id "${n,,}")" == "${id,,}" ]] && { echo "$n"; break; }
+                done)"
+      __local_add "$id" "$url" "$served"
+      extra+=("$id")
+    else
+      names="$(__vllm_node_models "$item")"
+      [[ -n "$names" ]] || { warn "vllm unreachable, skipped: ${item} (name it as id=url to register it anyway)"; continue; }
+      while IFS= read -r served; do
+        [[ -n "$served" ]] || continue
+        id="$(__local_id "$served")"
+        __local_add "$id" "$item" "$served"
+        extra+=("$id")
+      done <<<"$names"
+    fi
+  done
+  for id in "${CATALOG_IDS[@]}"; do
+    [[ -n "${LOCAL_URLS[$id]:-}" ]] && LOCAL_IDS+=("$id")
+  done
+  for id in "${extra[@]}"; do
+    [[ -n "${CATALOG_API[$id]:-}" || " ${LOCAL_IDS[*]} " == *" ${id} "* ]] && continue
+    LOCAL_IDS+=("$id")
+  done
+  return 0
+}
+
+# Route a local model registers under: its catalogue api, chat when unlisted
+local_api() { echo "${CATALOG_API[$1]:-chat}"; }
+
 # LiteLLM team allowlist: every chat model gen-litellm-config.sh registers
 litellm_chat_models_csv() {
-  local vllm_chat_url; vllm_chat_url="$(env_get VLLM_QWEN27B_URL 2>/dev/null || true)"
-  local vllm_judge_url; vllm_judge_url="$(env_get VLLM_QWENFLASH_URL 2>/dev/null || true)"
-  local vllm_coder_url; vllm_coder_url="$(env_get VLLM_CODERNEXT_URL 2>/dev/null || true)"
+  resolve_local_models >/dev/null || return 1
   local out=() m
   if has_openrouter; then
-    for m in "${OPENAI_MODELS[@]}";     do out+=("openai/$m");     done
-    for m in "${ANTHROPIC_MODELS[@]}";  do out+=("anthropic/$m");  done
-    for m in "${GOOGLE_MODELS[@]}";     do out+=("google/$m");     done
-    for m in "${DEEPSEEK_MODELS[@]}";   do out+=("deepseek/$m");   done
-    for m in "${XAI_MODELS[@]}";        do out+=("x-ai/$m");       done
-    for m in "${PERPLEXITY_MODELS[@]}"; do out+=("perplexity/$m"); done
-    for m in "${TENCENT_MODELS[@]}";    do out+=("tencent/$m");    done
-    for m in "${ZAI_MODELS[@]}";        do out+=("z-ai/$m");       done
-    for m in "${XIAOMI_MODELS[@]}";     do out+=("xiaomi/$m");     done
-    for m in "${MOONSHOTAI_MODELS[@]}"; do out+=("moonshotai/$m"); done
-    for m in "${QWEN_MODELS[@]}";       do out+=("qwen/$m");       done
-    for m in "${MINIMAX_MODELS[@]}";    do out+=("minimax/$m");    done
+    local prov var
+    for prov in "${OR_PROVIDERS[@]}"; do
+      var="${prov##*:}_MODELS[@]"
+      for m in "${!var}"; do
+        or_model_excluded "${prov%%:*}/$m" || out+=("${prov%%:*}/$m")
+      done
+    done
   fi
   # Same routes as gen-litellm-config.sh emit_brain
-  if [[ -n "$vllm_chat_url" ]]; then
-    out+=("local/qwen3.8-27b" "strict-local/qwen3.8-27b")
-  elif has_openrouter; then
-    out+=("qwen/qwen3.8-27b")
-  fi
-  if [[ -n "$vllm_judge_url" ]]; then
-    out+=("local/qwen3.8-flash" "strict-local/qwen3.8-flash")
-  elif has_openrouter; then
-    out+=("qwen/qwen3.8-flash")
-  fi
-  if [[ -n "$vllm_coder_url" ]]; then
-    out+=("local/qwen3-coder-next" "strict-local/qwen3-coder-next")
-  elif has_openrouter; then
-    out+=("qwen/qwen3-coder-next")
-  fi
-  if has_openrouter; then
-    for m in "${OPENAI_EMBED_CATALOG[@]}"; do out+=("$m"); done
-  fi
+  for m in "${CATALOG_IDS[@]}"; do
+    [[ "${CATALOG_API[$m]}" == chat ]] || continue
+    if [[ -n "${LOCAL_URLS[$m]:-}" ]]; then
+      out+=("local/$m" "strict-local/$m")
+    elif has_openrouter && [[ -n "${CATALOG_OR[$m]}" ]]; then
+      out+=("${CATALOG_OR[$m]}")
+    fi
+  done
+  for m in "${LOCAL_IDS[@]}"; do
+    [[ -z "${CATALOG_API[$m]:-}" ]] && out+=("local/$m" "strict-local/$m")
+  done
   local IFS=,
   echo "${out[*]:-}"
 }
@@ -775,7 +1178,7 @@ team_id_by_alias() {
 # Repository path on a remote node, relative to the login user's $HOME
 KLOUDCHAT_REMOTE_DIR="${KLOUDCHAT_REMOTE_DIR:-KloudChat-LLM}"
 
-# Whether a NODES_VLLM target is this host: localhost, loopback, $HOSTNAME, the
+# Whether a VLLM_NODES target is this host: localhost, loopback, $HOSTNAME, the
 # short hostname, a local IPv4 address, or a name resolving to one
 is_local_host() {
   local target="${1#*@}"
@@ -814,34 +1217,32 @@ rsync_push() {
   rsync -az --delete \
     --exclude='.git/' \
     --exclude='.env' \
+    --exclude='.env.bak*' \
     --exclude='data/' \
-    --exclude='whisper/.cache/' \
     --exclude='services/searxng/settings.yml' \
     --exclude='__pycache__/' \
     --exclude='*.pyc' \
-    --exclude='node_modules/' \
     --exclude='.venv/' \
-    --exclude='test-results/' \
-    --exclude='playwright-report/' \
     --rsync-path="mkdir -p '${KLOUDCHAT_REMOTE_DIR}' && rsync" \
     "${__PROJECT_DIR}/" "${host}:${KLOUDCHAT_REMOTE_DIR}/"
 }
 
+# Keys a GPU node reads; the orchestrator's other secrets stay off the node
+NODE_ENV_KEY_RE='^(VLLM_|HF_|KLOUDCHAT_IMAGE_|WHISPER_|GPU_EXPORTER_)[A-Z0-9_]*='
+
 # Seed a node's .env only when absent; the scheduler owns it afterwards
 rsync_push_env_if_absent() {
-  local host="$1"
+  local host="$1" tmp rc=0
   if ssh_run "$host" "test -f .env" 2>/dev/null; then
     echo "  → ${host}: .env exists, keeping node-local overrides"
     return 0
   fi
-  echo "  → ${host}: seeding .env (none present)"
-  rsync_push_file "$host" ".env"
-}
-
-rsync_push_file() {
-  local host="$1" path="$2"
-  echo "  → rsync ${path} → ${host}:${KLOUDCHAT_REMOTE_DIR}/${path}"
-  rsync -az "${__PROJECT_DIR}/${path}" "${host}:${KLOUDCHAT_REMOTE_DIR}/${path}"
+  echo "  → ${host}: seeding .env (none present; GPU keys only)"
+  tmp="$(umask 077; mktemp)"
+  grep -E "$NODE_ENV_KEY_RE" "${__PROJECT_DIR}/.env" > "$tmp" || true
+  rsync -az --chmod=F600 "$tmp" "${host}:${KLOUDCHAT_REMOTE_DIR}/.env" || rc=$?
+  rm -f "$tmp"
+  return "$rc"
 }
 
 # ssh, cd into the repo, run; -n leaves the caller's stdin alone (while-read loops)

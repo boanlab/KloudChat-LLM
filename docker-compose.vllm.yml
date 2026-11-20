@@ -1,24 +1,31 @@
 # GPU-node services. Started per node by the scheduler over SSH; LiteLLM reaches
-# them through VLLM_*_URL in the orchestrator's .env.
+# them through VLLM_PLACED in the orchestrator's .env.
 #
 #   vllm-qwen27b    default chat — Qwen3.8-27B (dense, vision, 262K)
 #   vllm-qwenflash  quality and judging — Qwen3.8-Flash-Next (MoE, NVFP4, a node to itself)
-#   vllm-codernext  coding — Qwen3-Coder-Next-80B (FP8, 262K)
 #   vllm-rerank     retrieval reranking — BAAI/bge-reranker-v2-m3
 #   vllm-bgem3      retrieval embeddings — BAAI/bge-m3
 #   vllm-whisper    transcription — openai/whisper-large-v3
 #
 # VLLM_<MODEL>_{MAX_LEN,GPU_UTIL,TP,DEVICES} are written by the scheduler.
-# Devices go through NVIDIA_VISIBLE_DEVICES; CUDA_VISIBLE_DEVICES has no "all"
-# value and fails engine init on GB10.
+# VLLM_<MODEL>_DEVICES feeds both NVIDIA_VISIBLE_DEVICES (CUDA_VISIBLE_DEVICES
+# has no "all" and fails on GB10) and the reservation's device_ids; the nvidia
+# driver overrides the environment with the reservation. "all" is count: all.
 name: kloudchat-vllm
+
+# Container logs rotated per service; the host's daemon settings do not matter
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 50m
+    max-file: "5"
 
 services:
   vllm-qwen27b:
     container_name: vllm-qwen27b
+    logging: *logging
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
-    # One image for every vLLM service; install-vllm.sh builds it and records
-    # VLLM_IMAGE and VLLM_BASE_IMAGE in .env
+    # One image for every vLLM service, built by install-vllm.sh
     build:
       context: ./services/vllm
       args:
@@ -58,6 +65,9 @@ services:
       # MTP speculative decoding from the checkpoint's own draft head
       - --speculative-config
       - '{"method":"mtp","num_speculative_tokens":${VLLM_QWEN27B_SPEC_TOKENS:-5}}'
+      # Prefix caching off: with hybrid attention, MTP and the fp8 KV cache, a
+      # reused prefix yields garbage tokens
+      - --no-enable-prefix-caching
       - --tensor-parallel-size
       - "${VLLM_QWEN27B_TP:-1}"
       - --trust-remote-code
@@ -73,7 +83,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${VLLM_QWEN27B_DEVICES:-all}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
@@ -86,6 +96,7 @@ services:
   # A pool node to itself.
   vllm-qwenflash:
     container_name: vllm-qwenflash
+    logging: *logging
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     restart: unless-stopped
     ipc: host
@@ -102,8 +113,8 @@ services:
       - "${VLLM_QWENFLASH_MAX_LEN:-131072}"
       - --gpu-memory-utilization
       - "${VLLM_QWENFLASH_GPU_UTIL:-0.81}"
-      # PLE table: mapped from the checkpoint on GB10 (vllm#58439); {} on a
-      # discrete card, pinned host RAM (install-vllm.sh)
+      # PLE table: mapped from the checkpoint on GB10; {} on a discrete card
+      # (pinned host RAM)
       - --engram-config
       - '${VLLM_QWENFLASH_ENGRAM:-{"checkpoint_mapped": true}}'
       - --kv-cache-dtype
@@ -124,6 +135,10 @@ services:
       # MTP from the checkpoint's single draft layer
       - --speculative-config
       - '{"method":"mtp","num_speculative_tokens":${VLLM_QWENFLASH_SPEC_TOKENS:-2}}'
+      # KV blocks spilled to host RAM, GiB; empty is off (GB10: host RAM is the
+      # card's memory)
+      - --kv-offloading-size
+      - "${VLLM_QWENFLASH_KV_OFFLOAD_GB:-}"
       - --tensor-parallel-size
       - "${VLLM_QWENFLASH_TP:-1}"
       - --trust-remote-code
@@ -139,7 +154,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${VLLM_QWENFLASH_DEVICES:-all}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
@@ -149,59 +164,10 @@ services:
       # About 15 minutes to load
       start_period: 1500s
 
-  # Coding, larger. Hybrid attention: KV on 12 of 48 layers, so 262K fits.
-  vllm-codernext:
-    container_name: vllm-codernext
-    image: ${VLLM_IMAGE:-kloudchat-vllm:local}
-    restart: unless-stopped
-    ipc: host
-    command:
-      - --model
-      - /model
-      - --served-model-name
-      - local/qwen3-coder-next
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --max-model-len
-      - "${VLLM_CODERNEXT_MAX_LEN:-262144}"
-      - --gpu-memory-utilization
-      - "${VLLM_CODERNEXT_GPU_UTIL:-0.85}"
-      - --kv-cache-dtype
-      - fp8
-      - --enable-auto-tool-choice
-      - --tool-call-parser
-      - qwen3_coder
-      - --tensor-parallel-size
-      - "${VLLM_CODERNEXT_TP:-1}"
-      - --trust-remote-code
-    volumes:
-      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_CODERNEXT_DIR:-qwen3-coder-next}:/model:ro
-    ports:
-      - "8008:8000"
-    environment:
-      HF_TOKEN: ${HF_TOKEN}
-      # 0 on GB10: DeepGEMM rejects this checkpoint's FP8 scale-factor layout
-      VLLM_USE_DEEP_GEMM: ${VLLM_CODERNEXT_DEEP_GEMM:-0}
-      NVIDIA_VISIBLE_DEVICES: ${VLLM_CODERNEXT_DEVICES:-all}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 600s
-
   # Retrieval reranking, /v1/rerank. Pooling runner; shares a card.
   vllm-rerank:
     container_name: vllm-rerank
+    logging: *logging
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     restart: unless-stopped
     ipc: host
@@ -233,7 +199,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${VLLM_RERANK_DEVICES:-all}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
@@ -245,6 +211,7 @@ services:
   # Retrieval embeddings, /v1/embeddings. Pooling runner; shares a card.
   vllm-bgem3:
     container_name: vllm-bgem3
+    logging: *logging
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     restart: unless-stopped
     ipc: host
@@ -275,7 +242,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${VLLM_BGEM3_DEVICES:-all}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
@@ -287,6 +254,7 @@ services:
   # Transcription, reached by whisper-shim through WHISPER_URLS
   vllm-whisper:
     container_name: vllm-whisper
+    logging: *logging
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
     restart: unless-stopped
     ipc: host
@@ -322,7 +290,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${VLLM_WHISPER_DEVICES:-all}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
@@ -333,16 +301,17 @@ services:
 
   # GPU utilisation, memory, temperature and power plus node memory and CPU for
   # KloudChat's performance page (gateway /metrics/gpu-*). One per node, outside
-  # the scheduler's vllm-* services; holds no GPU memory.
-  #   docker compose -f docker-compose.vllm.yml up -d gpu-exporter
+  # the scheduler's vllm-* services; holds no GPU memory. Started by
+  # install-vllm.sh and manage-vllm.sh up.
   gpu-exporter:
     container_name: gpu-exporter
+    logging: *logging
     image: ${KLOUDCHAT_IMAGE_NS:-boanlab}/kloudchat-gpu-exporter:${KLOUDCHAT_IMAGE_TAG:-latest}
     build:
       context: ./services/gpu-exporter
     restart: unless-stopped
     ports:
-      - "9835:9835"
+      - "${GPU_EXPORTER_PORT:-9835}:9835"
     volumes:
       # The node's name for the 성능 모니터링 card (the container's own hostname is its id)
       - /etc/hostname:/host/etc/hostname:ro
