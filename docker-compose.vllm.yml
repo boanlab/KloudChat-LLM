@@ -9,7 +9,11 @@
 #
 # VLLM_<MODEL>_{MAX_LEN,GPU_UTIL,TP,DEVICES} are written by the scheduler.
 # Devices go through NVIDIA_VISIBLE_DEVICES; CUDA_VISIBLE_DEVICES has no "all"
-# value and fails engine init on GB10.
+# value and fails engine init on GB10. The same VLLM_<MODEL>_DEVICES is the GPU
+# reservation's device_ids: Docker's nvidia driver sets NVIDIA_VISIBLE_DEVICES
+# from the reservation after the service's environment, so with count: all
+# every container would see every card. device_ids "all" is what count: all
+# sends, so an unpinned node is unchanged.
 name: kloudchat-vllm
 
 # Container logs rotated per service; the host's daemon settings do not matter
@@ -83,7 +87,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${VLLM_QWEN27B_DEVICES:-all}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
@@ -150,7 +154,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${VLLM_QWENFLASH_DEVICES:-all}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
@@ -195,7 +199,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${VLLM_RERANK_DEVICES:-all}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
@@ -238,7 +242,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${VLLM_BGEM3_DEVICES:-all}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]
@@ -286,7 +290,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${VLLM_WHISPER_DEVICES:-all}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8000/v1/models || exit 1"]

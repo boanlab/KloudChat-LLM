@@ -6,7 +6,7 @@
 #   manage-vllm-omni.sh down                     stop + remove containers
 #   manage-vllm-omni.sh restart [svc]            restart
 #   manage-vllm-omni.sh logs [svc]               follow logs
-#   manage-vllm-omni.sh status                   container + healthcheck status
+#   manage-vllm-omni.sh status                   container + healthcheck status, reserved cards
 #
 # Aliases (lib.sh::OMNI_MODELS):
 #   z-image-turbo         Tongyi-MAI/Z-Image-Turbo     31 GB  omni-z-image         :8091
@@ -14,7 +14,9 @@
 #   qwen-image-edit-2511  Qwen/Qwen-Image-Edit-2511    58 GB  omni-qwen-image-edit :8093
 #
 # Cards per service: VLLM_OMNI_ZIMAGE_DEVICES, VLLM_OMNI_QWENIMAGE_DEVICES,
-# VLLM_OMNI_QWENIMAGEEDIT_DEVICES in .env (default VLLM_OMNI_DEVICES, then all).
+# VLLM_OMNI_QWENIMAGEEDIT_DEVICES in .env (default VLLM_OMNI_DEVICES, then all),
+# reserved as the container's device_ids. After changing them: up --recreate;
+# status shows the cards each container holds.
 #
 # Per-node, outside the scheduler. Compose project: kloudchat-vllm-omni.
 # On the orchestrator, list what runs where in IMAGEGEN_BACKENDS, then
@@ -130,7 +132,7 @@ cmd_status() {
   for alias in "${OMNI_ALIASES[@]}"; do
     c="${OMNI_SERVICE[$alias]}"
     s="$(docker inspect "$c" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' 2>/dev/null)" || s=missing
-    printf "  %-24s %-10s :%s local/%s\n" "$c:" "$s" "${OMNI_PORT[$alias]}" "$alias"
+    printf "  %-24s %-10s :%s local/%-22s cards %s\n" "$c:" "$s" "${OMNI_PORT[$alias]}" "$alias" "$(reserved_cards "$c")"
   done
 }
 

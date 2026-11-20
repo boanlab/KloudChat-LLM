@@ -76,7 +76,7 @@ Do not set these by hand. The placement step of `setup.sh all` writes them; set
 | `VLLM_<PREFIX>_MAX_LEN` | node (`.env` under `KLOUDCHAT_REMOTE_DIR`) | Context decided for it |
 | `VLLM_<PREFIX>_GPU_UTIL` | node | `--gpu-memory-utilization` decided for it |
 | `VLLM_<PREFIX>_TP` | node | Cards to shard across, from `tensor_parallel` in models.yaml. Written only when it is not 1 |
-| `VLLM_<PREFIX>_DEVICES` | node | `NVIDIA_VISIBLE_DEVICES` for the container. Written only on multi-card nodes |
+| `VLLM_<PREFIX>_DEVICES` | node | Cards for the container: the `device_ids` of its GPU reservation and its `NVIDIA_VISIBLE_DEVICES`. Empty or unset: `all`. Written only on multi-card nodes |
 
 Set by hand on the compose host; the scheduler does not write these:
 
@@ -115,8 +115,8 @@ placement is skipped.
 | `VLLM_<PREFIX>_DIR` | model `dir` in models.yaml | Checkpoint directory under the root (`VLLM_QWEN27B_DIR`, `VLLM_QWENFLASH_DIR`, `VLLM_BGEM3_DIR`, `VLLM_RERANK_DIR`, `VLLM_WHISPER_DIR`) |
 | `VLLM_OMNI_IMAGE` | `vllm/vllm-omni:v0.30.0` | Image for `docker-compose.vllm-omni.yml` |
 | `VLLM_OMNI_ZIMAGE_DIR` / `VLLM_OMNI_QWENIMAGE_DIR` / `VLLM_OMNI_QWENIMAGEEDIT_DIR` | `z-image-turbo` / `qwen-image-2512` / `qwen-image-edit-2511` | Image-model checkpoint directories under `VLLM_MODELS_ROOT` |
-| `VLLM_OMNI_DEVICES` | `all` | `NVIDIA_VISIBLE_DEVICES` for the image models; the default for the three per-service variables below |
-| `VLLM_OMNI_ZIMAGE_DEVICES` / `VLLM_OMNI_QWENIMAGE_DEVICES` / `VLLM_OMNI_QWENIMAGEEDIT_DEVICES` | `VLLM_OMNI_DEVICES` | `NVIDIA_VISIBLE_DEVICES` for `omni-z-image` / `omni-qwen-image` / `omni-qwen-image-edit`, to place each image model on its own card (`0`, `1`, `0,1`) |
+| `VLLM_OMNI_DEVICES` | `all` | Cards for the image models (GPU reservation `device_ids` and `NVIDIA_VISIBLE_DEVICES`); the default for the three per-service variables below |
+| `VLLM_OMNI_ZIMAGE_DEVICES` / `VLLM_OMNI_QWENIMAGE_DEVICES` / `VLLM_OMNI_QWENIMAGEEDIT_DEVICES` | `VLLM_OMNI_DEVICES` | Cards for `omni-z-image` / `omni-qwen-image` / `omni-qwen-image-edit` (GPU reservation `device_ids` and `NVIDIA_VISIBLE_DEVICES`), to place each image model on its own card (`0`, `1`). Takes effect on `manage-vllm-omni.sh up --recreate` |
 | `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling for `vllm-whisper` (`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`) and for whisper-shim on the compose host |
 | `WHISPER_MAX_CONCURRENT` | `8` | Transcriptions whisper-shim runs at once; past it, 503 |
 

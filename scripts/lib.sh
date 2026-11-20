@@ -107,6 +107,12 @@ gpu_is_supported() {
   esac
 }
 
+# Cards a container's GPU reservation holds: device ids, or "all" for count: all
+# (what a container created before per-service device_ids still carries)
+reserved_cards() {
+  docker inspect "$1" --format '{{range .HostConfig.DeviceRequests}}{{if lt .Count 0}}all{{else}}{{join .DeviceIDs ","}}{{end}}{{end}}' 2>/dev/null || true
+}
+
 get_free_disk_gb() {
   df -BG "${1:-.}" 2>/dev/null | awk 'NR==2 {gsub("G",""); print $4; exit}'
 }

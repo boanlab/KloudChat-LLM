@@ -154,7 +154,8 @@ node     = per card × N
 
 Activation is paid per rank. KV shards by head: `kv_shards = min(N, kv_heads)`,
 and 1 for MLA. A sharded model takes a slice of each card it spans (emptiest
-cards first); the applier writes the device ordinals as `{env_prefix}_DEVICES`.
+cards first); the applier writes the device ordinals as `{env_prefix}_DEVICES`,
+which compose reserves as the container's `device_ids`.
 
 ## Output
 

@@ -52,6 +52,7 @@ sudo dmesg -T | grep -iE "nvrm|oom" | tail -10
 | `ModuleNotFoundError: 'pytest'` | The derived image is missing its pytest layer | `./scripts/install-vllm.sh --reinstall` |
 | `NVRM: Out of memory` (dmesg) | Unified memory (GB10): page cache plus co-resident vLLM | `sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'`. If it recurs, shrink that node's models and re-run [placement](../scheduler/README.md) |
 | OS killer during weight load | RAM smaller than the weights | Stop other containers |
+| `CUDA out of memory` on a two-card node, every container on GPU 0 in `nvidia-smi --query-compute-apps` | The container was created with a `count: all` reservation and sees every card, whatever `NVIDIA_VISIBLE_DEVICES` says | `manage-vllm.sh status` / `manage-vllm-omni.sh status` show `cards all`: recreate it (`up --recreate`) so the reservation takes `VLLM_<PREFIX>_DEVICES` |
 
 ## Placement apply reports failures
 
