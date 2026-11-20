@@ -119,8 +119,7 @@ step_wait_vllm() {
   return 0
 }
 
-# `whisper` profile (the transcription shim) once a backend is set: WHISPER_URLS,
-# or a whisper-large-v3 entry in VLLM_PLACED
+# `whisper` profile once a backend is set: WHISPER_URLS or a whisper-large-v3 entry in VLLM_PLACED
 step_enable_stt_profile() {
   [[ -n "$(env_get WHISPER_URLS)" || "$(env_get VLLM_PLACED)" == *whisper-large-v3=* ]] || return 0
   local profiles; profiles="$(env_get COMPOSE_PROFILES)"
@@ -130,7 +129,7 @@ step_enable_stt_profile() {
   echo "  [profile] COMPOSE_PROFILES=${profiles},whisper (transcription shim)"
 }
 
-# `imagegen` profile (the image shim) once IMAGEGEN_BACKENDS is set
+# `imagegen` profile once IMAGEGEN_BACKENDS is set
 step_enable_imagegen_profile() {
   [[ -n "$(env_get IMAGEGEN_BACKENDS)" ]] || return 0
   local profiles; profiles="$(env_get COMPOSE_PROFILES)"
@@ -220,9 +219,8 @@ capability_up() {
   case "$1" in 200|202|400|405|406) return 0 ;; *) return 1 ;; esac
 }
 
-# Capabilities behind the gateway: "<name>|<public path>|<probe>|<blocking>",
-# for the readiness wait and the URL table. blocking=0 for transcription: its
-# shim exists only under the `whisper` profile.
+# Capabilities behind the gateway: "<name>|<public path>|<probe>|<blocking>".
+# blocking=0 for transcription: its shim runs only under the `whisper` profile.
 CAPABILITIES=(
   "LiteLLM|/litellm|/litellm/health/liveliness|1"
   "Web search|/tools/search|/tools/search/healthz|1"
@@ -385,7 +383,7 @@ role_all() {
     run_scheduler apply -y || warn "placement failed — using the endpoints already in .env"
   fi
 
-  # 3) Transcription shim profile
+  # 3) Profiles for the transcription and image shims
   step_enable_stt_profile
   step_enable_imagegen_profile
 

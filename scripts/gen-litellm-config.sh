@@ -140,10 +140,8 @@ emit_or_image() {
   or_policy_info "$id"
 }
 
-# Self-hosted image models behind imagegen-shim; one entry per name in
-# IMAGEGEN_BACKENDS (name=url,...; a name repeats per node, a leading local/ is
-# dropped), registered as strict-local/<name> only: no OpenRouter twin and no
-# local/ alias, so a picture never leaves the boundary.
+# Self-hosted image models behind imagegen-shim, one entry per name in
+# IMAGEGEN_BACKENDS (a name repeats per node), as strict-local/<name> only
 emit_local_images() {
   local raw="$1" item name seen=","
   [[ -n "$raw" ]] || return 0
@@ -168,9 +166,8 @@ emit_local_images() {
   done
 }
 
-# Self-hosted transcription behind whisper-shim, registered as strict-local/<id>
-# only (the catalogue's transcription model) while WHISPER_URLS or VLLM_PLACED names a backend:
-# no OpenRouter twin and no local/ alias, so a recording never leaves the boundary.
+# Self-hosted transcription behind whisper-shim, as strict-local/<id> only, while
+# WHISPER_URLS or VLLM_PLACED names a backend
 emit_local_stt() {
   local id="" m
   for m in "${CATALOG_IDS[@]}"; do
@@ -210,8 +207,7 @@ emit_or_audio() {
   or_policy_info "$id"
 }
 
-# Local embedding and rerank deployments, registered as strict-local/<id> only: no
-# local/ alias and no external route (a document never leaves the boundary)
+# Local embedding and rerank deployments, as strict-local/<id> only
 emit_vllm_pooling() {  # $1=id  $2=url_csv  $3=embedding|rerank
   local m="$1" url_csv="$2" mode="$3" served urls
   [[ -n "$url_csv" ]] || return 0
@@ -267,11 +263,10 @@ temperature_for() {
   if [[ -n "${!var+set}" ]]; then echo "${!var}"; else echo "${CATALOG_TEMPERATURE[$1]:-}"; fi
 }
 
-# How a self-hosted model runs, for the model picker. Read from the server where it says
-# (engine from /version, KV cache dtype from /metrics); else declared in .env or the shell:
-#   KC_<PREFIX>_QUANTIZATION  weights, e.g. NVFP4      KC_<PREFIX>_KV_CACHE  e.g. fp8
-#   KC_<PREFIX>_ENGINE        e.g. "vLLM 0.33.0"
-# <PREFIX> is the model's env_prefix without VLLM_ (QWEN27B, QWENFLASH, ...). Nothing guessed.
+# How a self-hosted model runs, for the picker: the server's own answer (engine
+# from /version, KV cache dtype from /metrics), else KC_<PREFIX>_QUANTIZATION,
+# _KV_CACHE or _ENGINE from the shell or .env; <PREFIX> is the model's env_prefix
+# without VLLM_. Nothing guessed.
 run_info_for() {  # $1=model  $2=url  $3=QUANTIZATION|KV_CACHE|ENGINE
   local prefix="${CATALOG_PREFIX[$1]:-}" var found="" value
   [[ -n "$prefix" ]] || return 0
@@ -383,7 +378,7 @@ emit_brain() {  # $1=local-model  $2=url_csv  $3=or-slug  $4=or_in_pm  $5=or_out
   fi
 }
 
-# Live prices over the declared tables; one catalogue download, cached for the
+# Live prices over the declared tables; the catalogue download is cached for the
 # or_price command substitutions
 or_catalogue >/dev/null 2>&1 || true
 OR_PRICE_TOTAL=0; OR_PRICE_MOVED=0

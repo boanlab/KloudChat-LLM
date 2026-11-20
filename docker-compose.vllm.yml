@@ -8,12 +8,9 @@
 #   vllm-whisper    transcription — openai/whisper-large-v3
 #
 # VLLM_<MODEL>_{MAX_LEN,GPU_UTIL,TP,DEVICES} are written by the scheduler.
-# Devices go through NVIDIA_VISIBLE_DEVICES; CUDA_VISIBLE_DEVICES has no "all"
-# value and fails engine init on GB10. The same VLLM_<MODEL>_DEVICES is the GPU
-# reservation's device_ids: Docker's nvidia driver sets NVIDIA_VISIBLE_DEVICES
-# from the reservation after the service's environment, so with count: all
-# every container would see every card. device_ids "all" is what count: all
-# sends, so an unpinned node is unchanged.
+# VLLM_<MODEL>_DEVICES feeds both NVIDIA_VISIBLE_DEVICES (CUDA_VISIBLE_DEVICES
+# has no "all" and fails on GB10) and the reservation's device_ids; the nvidia
+# driver overrides the environment with the reservation. "all" is count: all.
 name: kloudchat-vllm
 
 # Container logs rotated per service; the host's daemon settings do not matter
@@ -28,8 +25,7 @@ services:
     container_name: vllm-qwen27b
     logging: *logging
     image: ${VLLM_IMAGE:-kloudchat-vllm:local}
-    # One image for every vLLM service; install-vllm.sh builds it and records
-    # VLLM_IMAGE and VLLM_BASE_IMAGE in .env
+    # One image for every vLLM service, built by install-vllm.sh
     build:
       context: ./services/vllm
       args:
@@ -117,8 +113,8 @@ services:
       - "${VLLM_QWENFLASH_MAX_LEN:-131072}"
       - --gpu-memory-utilization
       - "${VLLM_QWENFLASH_GPU_UTIL:-0.81}"
-      # PLE table: mapped from the checkpoint on GB10 (vllm#58439); {} on a
-      # discrete card, pinned host RAM (install-vllm.sh)
+      # PLE table: mapped from the checkpoint on GB10; {} on a discrete card
+      # (pinned host RAM)
       - --engram-config
       - '${VLLM_QWENFLASH_ENGRAM:-{"checkpoint_mapped": true}}'
       - --kv-cache-dtype
@@ -139,9 +135,8 @@ services:
       # MTP from the checkpoint's single draft layer
       - --speculative-config
       - '{"method":"mtp","num_speculative_tokens":${VLLM_QWENFLASH_SPEC_TOKENS:-2}}'
-      # KV blocks spilled to host RAM, in GiB, on a discrete card with RAM to
-      # spare. Empty (the default) is vLLM's None: off, as on GB10, where host
-      # RAM is the card's own memory
+      # KV blocks spilled to host RAM, GiB; empty is off (GB10: host RAM is the
+      # card's memory)
       - --kv-offloading-size
       - "${VLLM_QWENFLASH_KV_OFFLOAD_GB:-}"
       - --tensor-parallel-size

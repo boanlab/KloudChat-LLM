@@ -1,4 +1,4 @@
-"""Scheduler tests: memory arithmetic and placement policy. Runs with or without pytest."""
+"""Memory arithmetic, placement policy, registry and applier."""
 
 from __future__ import annotations
 
@@ -49,9 +49,6 @@ def _plan(specs, nodes, replicas=None, **kw):
     return planner.plan([_replace(s, replicas=replicas) for s in specs], nodes, **kw)
 
 
-# ── memory arithmetic ───────────────────────────────────────────────────
-
-
 def test_mla_kv_is_an_order_smaller_than_mha():
     """MLA KV per token is far below the MHA figure for the same layer count."""
     mha = kv_bytes_per_token(_meta(n_layers=47, n_kv_heads=20), Dtype.FP8)
@@ -85,7 +82,7 @@ def test_sliding_layers_are_read_from_the_config():
     ) == (0, 0)
 
 
-def test_a_hybrid_written_as_a_stride_is_still_a_hybrid():
+def test_a_hybrid_written_as_a_stride_is_a_hybrid():
     """A `full_attention_interval` stride counts as hybrid only alongside linear-attention keys."""
     from scheduler import model_metadata
 
@@ -131,9 +128,6 @@ def test_kv_bearing_layers_drive_cost():
 def test_fp8_kv_halves_bf16():
     assert (kv_bytes_per_token(_meta(), Dtype.FP8) * 2
             == kv_bytes_per_token(_meta(), Dtype.BF16))
-
-
-# ── placement policy ────────────────────────────────────────────────────
 
 
 def test_every_model_placed_before_any_replica():
@@ -438,9 +432,6 @@ def test_kv_is_replicated_when_ranks_outnumber_kv_heads():
     assert planner.kv_shards(mla) == 1
 
 
-# ── node roles ──────────────────────────────────────────────────────────
-
-
 def test_a_pool_model_leaves_the_head_node_alone():
     """A pool model is not placed on the head node even when it is roomier."""
     spec = _spec("big", weight=20 * GB, ctx_floor=16384, placement="pool")
@@ -517,8 +508,6 @@ def test_equal_shares_still_deepen_by_fewest_instances():
     assert counts == {"a": 2, "b": 2}, counts
 
 
-# ── across card sizes ───────────────────────────────────────────────────
-
 CARD_SIZES = [24, 32, 48, 80, 96]
 
 
@@ -529,7 +518,6 @@ def _narrow_kv_spec(*, sessions: int, weight: int = 21 * GB):
     return registry.replace(spec, concurrent_sessions=sessions)
 
 
-# Looped, not parametrized: the module also runs without pytest
 def test_headroom_never_eats_the_card():
     """Reserve plus activation stays under 45% of every card size."""
     spec = _spec("a", weight=1 * GB, ctx_floor=16384)
@@ -723,9 +711,6 @@ def test_node_reserve_is_respected():
     assert result.placements[0].charge <= node.planner_vram_bytes
 
 
-# ── registry ────────────────────────────────────────────────────────────
-
-
 def _write_yaml(text: str) -> Path:
     path = Path(tempfile.mkdtemp()) / "models.yaml"
     path.write_text(text, encoding="utf-8")
@@ -868,9 +853,6 @@ def test_size_suffixes():
     assert registry.parse_size(1024) == 1024
 
 
-# ── applier ─────────────────────────────────────────────────────────────
-
-
 def test_no_change_when_already_converged():
     """A converged node gets no start action."""
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
@@ -989,7 +971,7 @@ def test_an_unsharded_model_does_not_get_a_tp_line():
     assert any(a.kind == "recreate" for a in change.actions)
 
 
-def test_a_changed_option_still_recreates():
+def test_a_changed_option_recreates():
     """A changed option recreates the service exactly once."""
     spec = _spec("a", weight=20 * GB, ctx_floor=16384)
     nodes = [_node("n1", 96)]
@@ -1156,22 +1138,6 @@ def test_flash_next_seats_on_one_gb10_or_one_pro6000():
         assert result.placements[0].ctx == 131072
 
 
-if __name__ == "__main__":
-    import sys
-    failed = 0
-    for name, fn in sorted(globals().items()):
-        if not name.startswith("test_") or not callable(fn):
-            continue
-        try:
-            fn()
-            print(f"  ok   {name}")
-        except Exception as exc:  # noqa: BLE001
-            failed += 1
-            print(f"  FAIL {name}: {exc}")
-    print(f"\n{str(failed) + ' failed' if failed else 'all passed'}")
-    sys.exit(1 if failed else 0)
-
-
 def test_a_hand_run_model_needs_no_repo_and_cannot_be_deployed(tmp_path) -> None:
     from scheduler import registry
 
@@ -1192,6 +1158,7 @@ def test_a_hand_run_model_is_left_out_when_no_models_are_selected(monkeypatch, t
     (tmp_path / ".env").write_text("VLLM_MODELS=\n", encoding="utf-8")
     monkeypatch.setattr(cli, "ENV_FILE", tmp_path / ".env")
     monkeypatch.setattr(cli, "MODELS_YAML", tmp_path / "models.yaml")
+    monkeypatch.setattr(cli, "SITE_YAML", tmp_path / "site.yaml")
     (tmp_path / "models.yaml").write_text(
         "models:\n  - id: byhand\n    manual: true\n"
         "  - id: real\n    hf_repo: a/b\n",

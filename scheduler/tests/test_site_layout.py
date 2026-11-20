@@ -77,9 +77,6 @@ def site(tmp_path) -> Path:
     return path
 
 
-# ── site overrides ──────────────────────────────────────────────────────
-
-
 def test_the_site_file_lays_its_fields_over_the_catalogue(site):
     by_id = {s.id: s for s in registry.load(CATALOGUE, site=site)}
     big = by_id["qwen3.8-27b"]
@@ -105,9 +102,6 @@ def test_a_site_file_cannot_rename_move_or_oversize_a_model(tmp_path, body, mess
     path.write_text(body, encoding="utf-8")
     with pytest.raises(ValueError, match=message):
         registry.load(CATALOGUE, site=path)
-
-
-# ── declared gpu_util ───────────────────────────────────────────────────
 
 
 def test_a_declared_gpu_util_is_charged_as_is(site):
@@ -143,9 +137,6 @@ def test_a_share_too_small_for_the_floor_is_seated_with_a_note():
     result = planner.plan([spec], [_node("3")])
     assert result.placements and result.placements[0].gpu_util == 0.30
     assert any("gpu_util 0.30 is below" in n for n in result.notes)
-
-
-# ── the 2026-11 layout ──────────────────────────────────────────────────
 
 
 def _layout(result):
@@ -185,9 +176,6 @@ def test_without_the_site_file_the_pool_is_given_to_the_27b():
     assert len(flash) < 3
 
 
-# ── held nodes ──────────────────────────────────────────────────────────
-
-
 HOSTS = {n: f"solid@172.29.52.{n}" for n in ("2", "3", "4", "5", "7")}
 
 
@@ -225,9 +213,6 @@ def test_an_image_node_with_room_takes_nothing_once_held(site):
     assert _layout(planner.plan(_bound(site), pool, head="2")) == EXPECTED
 
 
-# ── VLLM_ENDPOINTS on a scheduled node ──────────────────────────────────
-
-
 def test_a_service_vllm_endpoints_points_at_is_never_stopped(env):
     env("VLLM_ENDPOINTS=qwen3.8-27b=http://172.29.52.2:8001,http://172.29.52.3:8004/\n")
     specs = registry.load(CATALOGUE)
@@ -240,9 +225,6 @@ def test_a_service_vllm_endpoints_points_at_is_never_stopped(env):
         specs=specs, nodes=[_node("2")], kept=kept,
     )
     assert [a.description for a in change.actions] == ["stop vllm-bgem3"]
-
-
-# ── containers started by docker run ───────────────────────────────────
 
 
 def test_start_and_recreate_take_over_a_container_compose_did_not_create():
@@ -291,9 +273,6 @@ def test_the_adoption_shell_only_removes_an_unlabelled_container(tmp_path):
     assert removed == ["rm -f vllm-hand"]
 
 
-# ── probing ─────────────────────────────────────────────────────────────
-
-
 class _Result:
     def __init__(self, rc, out=""):
         self.returncode, self.stdout, self.stderr = rc, out, ""
@@ -332,9 +311,6 @@ def test_a_node_answering_in_part_is_not_alive(monkeypatch, docker_ok, memory_ok
     monkeypatch.setattr(inventory, "_probe_foreign_vram", lambda h, m: (0, {}))
     probe = inventory.probe_node("2", "solid@172.29.52.2")
     assert not probe.alive and probe.raw_errors
-
-
-# ── compose ─────────────────────────────────────────────────────────────
 
 
 def test_flash_kv_offload_is_off_unless_set():

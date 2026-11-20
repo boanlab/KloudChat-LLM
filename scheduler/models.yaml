@@ -39,12 +39,12 @@ models:
     port: 8004
     # Resident size; PLE table off the GPU budget
     weight: 78.3GiB
-    # Measured on GB10; below the 10 GiB default, so one RTX PRO 6000 seats it
+    # Below the 10 GiB default, so one RTX PRO 6000 seats it
     activation: 6GiB
     # Half the native 262144; room spent on concurrency
     ctx_floor: 131072
     ctx_target: 131072
-    # util 0.81 on a GB10 (773K-token KV); 2 sessions on one RTX PRO 6000 (0.92)
+    # Halved to fit on a card without room (2 on one RTX PRO 6000)
     concurrent_sessions: 8
     priority: 30
     placement: pool
@@ -52,10 +52,9 @@ models:
     timeout: 3600
     # --max-num-seqs
     max_inflight: 16
-    # Callers that omit temperature sampled at the checkpoint's 1.0 and mixed
-    # Chinese/Japanese words into Korean answers (thinking on 35%→13%, off
-    # 50%→24% of answers at 0.4). A request's own temperature still wins.
-    # KC_QWENFLASH_TEMPERATURE overrides, empty sends none
+    # The checkpoint's 1.0 mixes Chinese/Japanese words into Korean answers; a
+    # request's own temperature wins. KC_QWENFLASH_TEMPERATURE overrides, empty
+    # sends none
     temperature: 0.4
 
   # Transcription, behind whisper-shim (/tools/stt). Audio stays inside the
@@ -97,7 +96,7 @@ models:
     # One chunk at a time
     ctx_floor: 8192
 
-# ── Derived values ──────────────────────────────────────────────────────────
+# Derived values
 #
 # Declaring a field of the same name on an entry overrides the derived value.
 #

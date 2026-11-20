@@ -36,6 +36,14 @@ def _load_gate_module():
     return importlib.import_module("services.litellm.callbacks.concurrency_gate")
 
 
+def _bare_gate(gate_module):
+    """A gate without config or poll thread; tests set `gate` and `_saturated`."""
+    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate._last_success = {}
+    gate._shim_models = set()
+    return gate
+
+
 def test_gate_map_separates_normal_spill_and_strict_rejection(
     tmp_path: Path,
     monkeypatch,
@@ -244,7 +252,7 @@ def test_strict_alias_starts_rejected_until_first_successful_poll(monkeypatch) -
 
 def test_saturated_strict_alias_fails_without_rewriting_model() -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "strict-local/qwen3.8-27b": {
             "metrics": ["http://qwen:8000/metrics"],
@@ -262,9 +270,9 @@ def test_saturated_strict_alias_fails_without_rewriting_model() -> None:
     assert data["model"] == "strict-local/qwen3.8-27b"
 
 
-def test_saturated_normal_alias_preserves_existing_openrouter_spill() -> None:
+def test_saturated_normal_alias_spills_to_openrouter() -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "local/qwen3.8-27b": {
             "metrics": ["http://qwen:8000/metrics"],
@@ -284,7 +292,7 @@ def test_saturated_normal_alias_preserves_existing_openrouter_spill() -> None:
 
 def test_unsaturated_strict_alias_stays_on_vllm() -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "strict-local/qwen3.8-27b": {
             "metrics": ["http://qwen:8000/metrics"],
@@ -305,10 +313,9 @@ def test_unsaturated_strict_alias_stays_on_vllm() -> None:
 
 def test_unregistered_strict_alias_is_rejected() -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {}
     gate._saturated = {}
-    gate._last_success = {}
     data = {"model": "strict-local/future-model"}
 
     result = asyncio.run(gate.async_pre_call_hook(None, None, data, "acompletion"))
@@ -318,7 +325,7 @@ def test_unregistered_strict_alias_is_rejected() -> None:
 
 def test_strict_backend_failure_is_normalized_to_service_unavailable() -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
 
     result = asyncio.run(
         gate.async_post_call_failure_hook(
@@ -337,7 +344,7 @@ def test_strict_backend_failure_is_normalized_to_service_unavailable() -> None:
 
 def test_normal_backend_failure_is_not_transformed() -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
 
     result = asyncio.run(
         gate.async_post_call_failure_hook(
@@ -352,7 +359,7 @@ def test_normal_backend_failure_is_not_transformed() -> None:
 
 def test_stale_strict_capacity_state_is_rejected(monkeypatch) -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "strict-local/qwen3.8-27b": {
             "metrics": ["http://qwen:8000/metrics"],
@@ -377,7 +384,7 @@ def test_stale_strict_capacity_state_is_rejected(monkeypatch) -> None:
 
 def test_metrics_failure_rejects_strict_but_keeps_normal_fail_open(monkeypatch) -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "local/qwen3.8-27b": {
             "metrics": ["http://qwen:8000/metrics"],
@@ -407,7 +414,7 @@ def test_poll_cycle_scrapes_shared_multi_node_endpoints_once_and_in_parallel(
     monkeypatch,
 ) -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     qwen_urls = [
         "http://qwen-1:8000/metrics",
         "http://qwen-2:8000/metrics",
@@ -460,7 +467,7 @@ def test_poll_cycle_scrapes_shared_multi_node_endpoints_once_and_in_parallel(
 
 def test_one_unknown_node_leaves_a_multi_node_strict_alias_on_the_other(monkeypatch) -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "strict-local/qwen3.8-27b": {
             "metrics": [
@@ -487,7 +494,7 @@ def test_one_unknown_node_leaves_a_multi_node_strict_alias_on_the_other(monkeypa
 
 def test_saturated_reachable_node_still_spills_while_its_peer_is_down(monkeypatch) -> None:
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {
         "local/qwen3.8-27b": {
             "metrics": [
@@ -608,10 +615,9 @@ def test_strict_picture_model_behind_the_shim_passes_the_gate(
 
     assert gate_module._load_shim_models() == {"strict-local/z-image-turbo"}
 
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {}
     gate._saturated = {}
-    gate._last_success = {}
     gate._shim_models = gate_module._load_shim_models()
     data = {"model": "strict-local/z-image-turbo"}
     result = asyncio.run(gate.async_pre_call_hook(None, None, data, "aimage_generation"))
@@ -652,10 +658,9 @@ def test_strict_transcription_behind_the_shim_passes_the_gate(tmp_path: Path, mo
     monkeypatch.setenv("CONFIG_FILE_PATH", str(config_path))
     assert gate_module._load_shim_models() == {"strict-local/whisper-large-v3"}
 
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {}
     gate._saturated = {}
-    gate._last_success = {}
     gate._shim_models = gate_module._load_shim_models()
     data = {"model": "strict-local/whisper-large-v3"}
     assert asyncio.run(gate.async_pre_call_hook(None, None, data, "atranscription")) is None
@@ -668,12 +673,11 @@ def test_strict_transcription_behind_the_shim_passes_the_gate(tmp_path: Path, mo
 def test_a_spilled_request_carries_the_fallback_headers() -> None:
     """The caller's usage record can tell the request left: same headers as a router fallback."""
     gate_module = _load_gate_module()
-    gate = gate_module.ConcurrencyGate.__new__(gate_module.ConcurrencyGate)
+    gate = _bare_gate(gate_module)
     gate.gate = {"local/m": {"metrics": ["http://a:8000/metrics"], "cap": 1,
                              "mode": "spill", "or": "org/m"}}
     gate._saturated = {"local/m": True}
     gate._last_success = {"local/m": 0.0}
-    gate._shim_models = set()
     data = {"model": "local/m"}
     out = asyncio.run(gate.async_pre_call_hook(None, None, data, "acompletion"))
     assert out["model"] == "org/m"

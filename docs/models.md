@@ -162,7 +162,7 @@ whether they are commercial, free, image or audio models. Local routes
 
 | Variable | Default | Effect |
 |---|---|---|
-| `OR_PROVIDER_ALLOW` | `qwen,deepseek,anthropic,google,moonshotai,nvidia,openai,perplexity,x-ai,z-ai,bytedance-seed,meta-llama,mistralai` | Providers that are registered. An empty value means this default, not "no limit"; `*` allows all |
+| `OR_PROVIDER_ALLOW` | default list in [env-reference](env-reference.md#10-litellm) | Providers that are registered. An empty value means the default, not "no limit"; `*` allows all |
 | `OR_MODEL_EXCLUDE` | (empty) | Removes items from the allowed set: `provider/` prefix, `provider/model`, or a glob |
 
 ```bash
@@ -193,7 +193,7 @@ OpenRouter default. Embeddings are unaffected.
 #### Run policy
 
 Off by default; turning an option on changes only the requests and the registry it names.
-Set in `.env` (or the shell) and regenerate with `scripts/gen-litellm-config.sh`.
+Set in `.env` (or the shell) and regenerate with `scripts/gen-litellm-config.sh`; variables are in [env-reference](env-reference.md#10-litellm).
 
 - `OR_OPEN_WEIGHT_POLICY=strict` limits open-weight models (`OR_OPEN_WEIGHT`) to endpoints that
   disclose their quantization **and** are ZDR (OpenRouter's `provider.zdr`). No provider is named:
@@ -238,8 +238,8 @@ A self-hosted model declares how it runs in `model_info`: `kchat_quantization` (
 `kchat_kv_cache` and `kchat_engine`. The generator reads the engine version from vLLM's
 `/version` and the KV cache dtype from `/metrics` and otherwise uses
 `KC_<PREFIX>_QUANTIZATION`, `KC_<PREFIX>_KV_CACHE` and `KC_<PREFIX>_ENGINE`
-(see `docs/env-reference.md`). Nothing is guessed. Qwen3.8-27B, as run today:
-`KC_QWEN27B_QUANTIZATION=NVFP4`, `KC_QWEN27B_KV_CACHE=fp8`.
+(see [env-reference](env-reference.md#10-litellm)). Nothing is guessed. Example for
+Qwen3.8-27B: `KC_QWEN27B_QUANTIZATION=NVFP4`, `KC_QWEN27B_KV_CACHE=fp8`.
 
 ### vLLM (local)
 
@@ -271,8 +271,8 @@ defaults.
 | `placement` | `any`, `head`, `head-first` or `pool` |
 | `gpu_util` | A fixed `--gpu-memory-utilization`: the planner charges this share of the card instead of sizing one, and the context stays at `ctx_floor` |
 
-A deployment changes placement and sizing without editing the catalogue in
-`scheduler/site.yaml` (untracked): see
+A deployment overrides placement and sizing in `scheduler/site.yaml`
+(untracked): see
 [scheduler](../scheduler/README.md#site-overrides).
 
 - **Registration**: a model with a URL registers under its `local/` name; each
@@ -387,28 +387,7 @@ retrieval.
 
 ## Commercial defaults
 
-```bash
-OPENAI_MODELS=(gpt-6-astra gpt-6.1-sol gpt-6.1-terra gpt-6-luna gpt-5.4-nano gpt-5.3-codex gpt-oss-120b gpt-oss-20b)
-ANTHROPIC_MODELS=(claude-fable-5.2 claude-opus-5.5 claude-sonnet-5.5 claude-haiku-5.5)
-GOOGLE_MODELS=(gemini-4-argon gemini-4-carbon gemini-4-hydrogen gemini-3.8-flash gemini-3.5-flash-lite gemma-4-31b-it gemma-4-26b-a4b-it gemma-3-27b-it gemma-3-12b-it
-              gemma-3-4b-it)
-XAI_MODELS=(grok-4.7)
-PERPLEXITY_MODELS=(sonar sonar-pro)
-MISTRALAI_MODELS=(mistral-large-4-0 mistral-medium-3-5 mistral-small-2603 ministral-14b-2512
-                  ministral-8b-2512 ministral-3b-2512 codestral-2508 devstral-2512 mistral-nemo
-                 )
-META_LLAMA_MODELS=(llama-4-maverick llama-4-scout llama-3.3-70b-instruct)
-NVIDIA_MODELS=(nemotron-3-ultra-550b-a55b nemotron-3.5-super-vl nemotron-3.5-lightning)
-DEEPSEEK_MODELS=(deepseek-v4-pro-0813 deepseek-v4.1-flash)
-ZAI_MODELS=(glm-5.3 glm-5.3-flash)
-MOONSHOTAI_MODELS=(kimi-k3.1-pro kimi-k3)
-QWEN_MODELS=(qwen4-max qwen3.8-max-0902 qwen3-coder qwen3.6-35b-a3b qwen3.5-9b qwen3.5-35b-a3b
-             qwen3-vl-235b-a22b-instruct)
-BYTEDANCE_SEED_MODELS=(seed-2-1-turbo seed-2.0-lite)
-TENCENT_MODELS=(hy4-preview)
-XIAOMI_MODELS=(mimo-v2.6-flash)
-MINIMAX_MODELS=(minimax-m3)
-```
+The commercial lists are the `*_MODELS` arrays in `scripts/lib.sh`. Picks by need:
 
 | Need | Model | Declared price /1M |
 |---|---|---|

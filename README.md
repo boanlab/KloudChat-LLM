@@ -26,14 +26,12 @@ one address in its admin screen. No backend address is compiled into the UI.
                                    └─────────────────────────────────────────┘
 ```
 
-`/tools/*` requires the shared key `TOOLS_GATEWAY_KEY` in an `X-Tools-Key`
-header (KloudChat's API sends it); without it the gateway answers 401. **The
-gateway port must still only be open inside a private network**: the code
-execution endpoint sits behind it. Each backing store (the two databases,
-MinIO, redis, valkey) is on an internal network shared only with the service
-that owns it. Internal service keys (code execution, document fetching) are
-injected by the gateway; the UI never learns them. Only `/litellm/*` and
-`/v1/*` pass the caller's key through.
+`/tools/*` and `/metrics/*` require the shared key `TOOLS_GATEWAY_KEY` in an
+`X-Tools-Key` header (KloudChat's API sends it); without it the gateway answers
+401. **The gateway port must only be open inside a private network**: the code
+execution endpoint sits behind it. Internal service keys are injected by the
+gateway; only `/litellm/*` and `/v1/*` pass the caller's key through. Details:
+[docs/tools.md](docs/tools.md#authentication), [SECURITY.md](SECURITY.md).
 
 ## Quick start
 
@@ -59,15 +57,14 @@ Print them again at any time:
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | optional | Hugging Face gated repositories, for weight downloads |
-| `VLLM_NODES` | `user@host,...` | GPU node SSH targets. The first is the head node (retrieval, transcription); the rest are the pool (Flash-Next, the coder) |
+| `VLLM_NODES` | `user@host,...` | GPU node SSH targets. The first is the head node (retrieval, transcription); the rest are the pool (Flash-Next) |
 | `VLLM_NODES_HOLD` | `user@host,...`, optional | Nodes in `VLLM_NODES` the scheduler leaves alone, such as an image-model node |
 | `VLLM_MODELS` | model id CSV | What the scheduler deploys, from `scheduler/models.yaml` |
 | `VLLM_ENDPOINTS` | CSV, optional | vLLM servers you run yourself: `http://host:port` (the generator asks what it serves) or `id=http://host:port`. Never written by the scheduler, which counts each entry as an instance of its model |
 
-`VLLM_PLACED` is written by the placement step inside `setup.sh all`; with
-`KLOUDCHAT_SKIP_SCHEDULER=1 ./scripts/setup.sh all` the scheduler writes
-nothing. Hand-run transcription servers go in `WHISPER_URLS` and self-hosted
-image models in `IMAGEGEN_BACKENDS`
+`VLLM_PLACED` is written by the placement step of `setup.sh all`
+(`KLOUDCHAT_SKIP_SCHEDULER=1` skips it). Hand-run transcription servers go in
+`WHISPER_URLS`, self-hosted image models in `IMAGEGEN_BACKENDS`
 ([env reference](docs/env-reference.md#4-placement-results-written-by-the-scheduler)).
 
 At least one of an OpenRouter key or a vLLM node is required.
@@ -107,7 +104,7 @@ services/                    one directory per service: Dockerfile, source, conf
 
 | Profile | Services |
 |---|---|
-| `tools` | gateway · web search · document fetch · code execution · deep research |
+| `tools` | gateway · web search · document fetch · code execution · deep research · GPU metrics |
 | `models` | LiteLLM and its database |
 | `whisper` | transcription shim. `setup.sh` enables it once the model is placed |
 | `index` | retrieval index (pgvector) and its shim |
@@ -150,13 +147,11 @@ script prints its usage when run without arguments.
 The default local lineup is `qwen3.8-27b` (chat, vision, coding, deep
 research), `qwen3.8-flash` (quality and judging, a GB10 or RTX PRO 6000 node to
 itself), `bge-m3` and `bge-reranker-v2-m3` (retrieval) and `whisper-large-v3`
-(transcription). See [docs/models.md](docs/models.md). Local serving is
-NVIDIA-only. Supported cards are GB10, RTX 5090, RTX PRO 5000 and RTX PRO 6000;
-the download and manage scripts refuse anything else and the scheduler places
-nothing there. 32 GiB usable is the floor. Where a chat model does not fit, the
-placement step says so and delegates it to OpenRouter; embedding, reranking,
-transcription and self-hosted image models have no external fallback (commercial
-image models are separate, explicitly chosen OpenRouter entries).
+(transcription); see [docs/models.md](docs/models.md). Local serving is
+NVIDIA-only; the download and manage scripts refuse any other card and the
+scheduler places nothing there. 32 GiB usable is the floor. A chat model that
+does not fit is delegated to OpenRouter; embedding, reranking, transcription
+and self-hosted image models have no external fallback.
 
 ## Documentation
 

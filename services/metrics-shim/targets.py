@@ -84,8 +84,6 @@ def discover(env: dict[str, str]) -> list[Target]:
     return list(found.values())
 
 
-# ── image servers as vLLM text ──────────────────────────────────────────
-
 _SAMPLE = re.compile(r"^([a-zA-Z_:][\w:]*)(?:\{([^}]*)\})?\s+(\S+)")
 _LABEL = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
 

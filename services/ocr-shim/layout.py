@@ -9,6 +9,7 @@ right, and the lines inside a ruled table joined as table rows.
 
 from __future__ import annotations
 
+import math
 from statistics import median
 from typing import Iterable
 
@@ -36,8 +37,7 @@ def sniff(data: bytes) -> str | None:
 
 
 def _height(line: dict) -> float:
-    x0, y0, x1, y1 = line["box"]
-    return max(1.0, y1 - y0)
+    return max(1.0, line["box"][3] - line["box"][1])
 
 
 def _center_y(line: dict) -> float:
@@ -55,8 +55,6 @@ def _left(line: dict) -> float:
 
 def level(lines: list[dict], angle: float, width: float, height: float) -> None:
     """Adds `at` to each line: its middle rotated by -`angle` (radians) about the page centre."""
-    import math
-
     cos, sin = math.cos(-angle), math.sin(-angle)
     cx, cy = width / 2, height / 2
     for line in lines:
@@ -186,5 +184,3 @@ def mean_confidence(lines: list[dict]) -> float | None:
         return None
     return sum(line["conf"] * len(line["text"].strip()) for line in lines) / weight
 
-
-__all__ = ["gutter", "inside", "mean_confidence", "page_text", "rows", "sniff"]

@@ -1,34 +1,26 @@
-# GPU-node vllm-omni models (image generation). Started by hand with
-# scripts/manage-vllm-omni.sh, not by the scheduler; LiteLLM reaches them through
-# imagegen-shim, which reads IMAGEGEN_BACKENDS in the orchestrator's .env:
+# GPU-node vllm-omni image models. Started by hand with scripts/manage-vllm-omni.sh;
+# LiteLLM reaches them through imagegen-shim (IMAGEGEN_BACKENDS in the
+# orchestrator's .env):
 #
-#   IMAGEGEN_BACKENDS=z-image-turbo=http://<node>:8091,qwen-image-2512=http://<node>:8092,qwen-image-edit-2511=http://<node>:8093
+#   omni-z-image          Z-Image-Turbo, ~25 GiB while serving
+#   omni-qwen-image       Qwen-Image-2512, ~55 GiB of weights
+#   omni-qwen-image-edit  Qwen-Image-Edit-2511 (edits a given picture), ~58 GiB of weights
 #
-#   omni-z-image          Z-Image-Turbo — fast, ~25 GiB while serving
-#   omni-qwen-image       Qwen-Image-2512 — slower, better layout, ~55 GiB of weights
-#   omni-qwen-image-edit  Qwen-Image-Edit-2511 — edits a given picture, ~58 GiB of weights
+# Each service reads VLLM_OMNI_<MODEL>_DEVICES (ZIMAGE, QWENIMAGE, QWENIMAGEEDIT),
+# defaulting to VLLM_OMNI_DEVICES (default all); it is the reservation's
+# device_ids, which the nvidia driver applies over the environment.
 #
-# Cards: each service reads its own VLLM_OMNI_<MODEL>_DEVICES (ZIMAGE, QWENIMAGE,
-# QWENIMAGEEDIT), defaulting to VLLM_OMNI_DEVICES (default all). On a two-card
-# node: ZIMAGE and QWENIMAGE on 0, QWENIMAGEEDIT on 1. The value is the GPU
-# reservation's device_ids: Docker's nvidia driver sets NVIDIA_VISIBLE_DEVICES
-# from the reservation after the service's environment, so the reservation
-# decides the card. device_ids "all" is what count: all sends.
-#
-# The scheduler neither places nor starts these; it charges the memory they
-# hold (nvidia-smi) to their card, so start them before `scheduler apply`.
-# Container names start with omni-, never vllm-: the scheduler owns vllm-* and
-# stops any it did not place.
+# The scheduler does not place or start these; it charges their nvidia-smi memory
+# to their card, so start them before `scheduler apply`. Names start with omni-:
+# the scheduler stops any vllm-* container it did not place.
 name: kloudchat-vllm-omni
 
 x-vllm-omni: &vllm-omni
-  # vllm-omni: diffusion serving behind the OpenAI chat API (modalities image).
-  # Pinned; arm64 and amd64.
+  # Pinned; arm64 and amd64
   image: ${VLLM_OMNI_IMAGE:-vllm/vllm-omni:v0.30.0}
   restart: unless-stopped
   ipc: host
   entrypoint: [vllm]
-  # environment and the GPU reservation are per service, below
 
 # Container logs rotated per service; the host's daemon settings do not matter
 x-logging: &logging
@@ -108,8 +100,7 @@ services:
       retries: 5
       start_period: 600s
 
-  # Image editing: an input picture plus an instruction (QwenImageEditPlusPipeline),
-  # answered on /v1/images/edits. On its own card when the node has two.
+  # Image editing on /v1/images/edits: input picture plus instruction
   omni-qwen-image-edit:
     <<: *vllm-omni
     container_name: omni-qwen-image-edit

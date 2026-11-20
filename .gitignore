@@ -1,5 +1,5 @@
 .env
-.env.bak.*
+.env.bak*
 # Editor swap and backup files: a swap of .env holds the same live credentials
 .*.sw[a-p]
 *.sw[a-p]
@@ -23,3 +23,4 @@ __pycache__/
 .pytest_cache/
 
 *.log
+services/litellm/config.yaml.bak*

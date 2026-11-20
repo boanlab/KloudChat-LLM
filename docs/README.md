@@ -10,17 +10,16 @@
 
 ## Structure
 
-One gateway port is exposed; behind it, LiteLLM and seven tools are split by
-path ([paths and profiles](tools.md#paths-and-the-calls-behind-them)). GPU
+One gateway port is exposed; behind it, LiteLLM, seven tools and GPU metrics
+are split by path ([paths and profiles](tools.md#paths-and-the-calls-behind-them)). GPU
 nodes live outside this stack: LiteLLM and whisper-shim reach them at the URLs
 the [scheduler](../scheduler/README.md) writes into `.env`, or the ones you list
 yourself. A chat model with no room on any node is served through OpenRouter;
 embedding, reranking, transcription and image models are local only, so
 documents, audio and pictures never leave the network.
 
-`/tools/*` requires the shared key `TOOLS_GATEWAY_KEY` (header
-`X-Tools-Key`). The gateway port must still only be open inside a private
-network.
+`/tools/*` requires `TOOLS_GATEWAY_KEY` ([authentication](tools.md#authentication)).
+The gateway port must only be open inside a private network.
 
 ## Documents
 

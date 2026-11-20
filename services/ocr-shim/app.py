@@ -259,8 +259,6 @@ def tables(image: Any) -> list[list[float]]:
 def recognise(image: Any) -> list[dict]:
     """Lines with their score and box, in no particular order; each also carries its
     position on the page turned level (`layout.level`), from the tilt of its long lines."""
-    import math
-
     import numpy as np
 
     result = engine()(np.asarray(image))
