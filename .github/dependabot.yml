@@ -19,7 +19,7 @@ updates:
     commit-message:
       prefix: deps
 
-  # local-deep-research requires Python < 3.15
+  # deep-research stays on the Python its local-deep-research pin is tested with
   - package-ecosystem: docker
     directory: /services/deep-research
     schedule:
@@ -28,4 +28,3 @@ updates:
       prefix: deps
     ignore:
       - dependency-name: python
-        versions: [">=3.15"]
