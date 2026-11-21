@@ -1,5 +1,5 @@
 # Playwright base: Chromium and its system dependencies
-FROM mcr.microsoft.com/playwright/python:v1.64.1-jammy
+FROM mcr.microsoft.com/playwright/python:v1.65.2-jammy
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
