@@ -215,7 +215,8 @@ The container as a whole is capped at 4 GB (`mem_limit`, no swap).
 Processes and CPU: each sandbox may hold `MAX_SANDBOX_PIDS` (256) processes, so
 a fork bomb stops at "Cannot fork", and `MAX_SANDBOX_CPU_MS` (1000) CPU
 milliseconds per second, one core. The container has `pids_limit: 2048` and
-`CODE_INTERPRETER_CPUS` (4) cores across every sandbox.
+`CODE_INTERPRETER_CPUS` (4) cores and `CODE_INTERPRETER_MEM_LIMIT` (4g)
+memory across every sandbox.
 
 There is no network at runtime, so no `pip install`; file skills can use only
 what the image has. Besides pandas, numpy, openpyxl, xlsxwriter, python-docx,

@@ -327,8 +327,8 @@ services:
       - seccomp:unconfined
     # Whole container: API (~100-300 MB), 2 warm REPLs (~260 MB each), a few
     # sandboxes at MAX_MEMORY_MB; no swap
-    mem_limit: 4g
-    memswap_limit: 4g
+    mem_limit: ${CODE_INTERPRETER_MEM_LIMIT:-4g}
+    memswap_limit: ${CODE_INTERPRETER_MEM_LIMIT:-4g}
     # Whole container: processes and cores across every sandbox
     pids_limit: 2048
     cpus: ${CODE_INTERPRETER_CPUS:-4}

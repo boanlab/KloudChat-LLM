@@ -41,7 +41,7 @@ vLLM node is present.
 | `GATEWAY_PORT` | `8080` | The only published port |
 | `COMPOSE_PROFILES` | `tools,models` | What to run. `setup.sh` appends `whisper` once the transcription model is placed and `imagegen` once `IMAGEGEN_BACKENDS` is set. Add `index` for the retrieval index, `ocr` for text from scanned pages |
 | `LITELLM_NUM_WORKERS` | `4` | LiteLLM workers, ~600 MB of RAM each |
-| `CODE_INTERPRETER_CPUS` | `4` | Cores the code-execution container may use across every sandbox |
+| `CODE_INTERPRETER_CPUS` / `CODE_INTERPRETER_MEM_LIMIT` | `4` / `4g` | Cores and memory (no swap) the code-execution container may use across every sandbox; one sandbox takes one core and up to 1 GiB |
 
 ## 3. Generated secrets
 
