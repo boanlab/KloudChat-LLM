@@ -174,6 +174,14 @@ def _estimate_weight_bytes(cfg: dict, dtype: Dtype) -> int:
     return int(total_params * dtype.bytes_per_elem)
 
 
+def image_metadata(model_id: str, weight_bytes: int) -> ModelMetadata:
+    """Metadata of a picture model: only its weight counts, there is no KV cache."""
+    return ModelMetadata(
+        model_id=model_id, n_layers=0, n_kv_heads=0, head_dim=0,
+        weight_dtype=Dtype.BF16, weight_bytes=weight_bytes,
+    )
+
+
 def fetch(
     model_id: str,
     *,

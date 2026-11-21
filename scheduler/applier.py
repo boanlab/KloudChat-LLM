@@ -4,9 +4,10 @@ Per placement:
     (a) ``{env_prefix}_{MAX_LEN,GPU_UTIL}`` (and TP/DEVICES where set) in the node's .env
     (b) compose services started, stopped or recreated on the node
     (c) ``VLLM_PLACED`` (``id=url`` per instance, the transcription model
-        included) in the orchestrator's .env, read by gen-litellm-config.sh.
-        ``VLLM_ENDPOINTS`` and ``WHISPER_URLS``, the hand-run servers, are never
-        written.
+        included) and ``IMAGEGEN_PLACED`` (``id=url`` per picture-model instance)
+        in the orchestrator's .env, read by gen-litellm-config.sh and the
+        shims. ``VLLM_ENDPOINTS``, ``WHISPER_URLS`` and ``IMAGEGEN_BACKENDS``,
+        the hand-run servers, are never written.
 
 A ChangePlan is built first and executed after confirmation. Re-applying an
 unchanged plan is a no-op. Failure contract: ``apply``.
@@ -21,17 +22,21 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional, Sequence
 
 from scheduler.planner import Placement, Plan
-from scheduler.registry import ModelSpec
+from scheduler.registry import VLLM_COMPOSE_FILE, VLLM_COMPOSE_PROJECT, ModelSpec
 from scheduler.types import NodeSpec
 
-#: Service-name prefix the scheduler manages; other containers are never stopped
+#: Service-name prefix the scheduler manages whatever the selection. A catalogued
+#: service of another prefix (the picture models' ``omni-*``) is managed while
+#: its model is selected; other containers are never stopped.
 MANAGED_SERVICE_PREFIX = "vllm-"
 
-#: Orchestrator .env key holding the scheduler's placements
+#: Orchestrator .env keys holding the scheduler's placements: vLLM models, picture models
 PLACED_KEY = "VLLM_PLACED"
+IMAGE_PLACED_KEY = "IMAGEGEN_PLACED"
+PLACED_KEYS = (PLACED_KEY, IMAGE_PLACED_KEY)
 
 #: Compose project of docker-compose.vllm.yml (its ``name:``)
-COMPOSE_PROJECT = "kloudchat-vllm"
+COMPOSE_PROJECT = VLLM_COMPOSE_PROJECT
 
 
 @dataclass(frozen=True)
@@ -39,7 +44,7 @@ class RemoteLayout:
     """Where compose runs on a node."""
 
     workdir: str = "KloudChat-LLM"
-    compose_file: str = "docker-compose.vllm.yml"
+    compose_file: str = VLLM_COMPOSE_FILE
     env_file: str = ".env"
 
 
@@ -79,7 +84,7 @@ def _env_set(path: str, key: str, value: str) -> str:
     )
 
 
-def _adopt(service: str) -> str:
+def _adopt(service: str, project: str = COMPOSE_PROJECT) -> str:
     """Shell removing a same-named container compose does not own (one started
     by ``docker run``), which would otherwise block ``compose up`` on the name.
     Runs only before a start or recreate, which replace the container anyway."""
@@ -87,7 +92,7 @@ def _adopt(service: str) -> str:
     label = "'{{index .Config.Labels \"com.docker.compose.project\"}}'"
     return (
         f"if docker inspect {q} >/dev/null 2>&1 && "
-        f"[ \"$(docker inspect -f {label} {q})\" != {COMPOSE_PROJECT} ]; then "
+        f"[ \"$(docker inspect -f {label} {q})\" != {shlex.quote(project)} ]; then "
         f"docker rm -f {q} >/dev/null; fi"
     )
 
@@ -111,19 +116,17 @@ def _read_env_keys(path: str, keys: Iterable[str]) -> dict[str, str]:
 
 def _url_csvs(target: Plan, specs: Sequence[ModelSpec],
               nodes: Sequence[NodeSpec]) -> dict[str, str]:
-    """VLLM_PLACED for the plan."""
+    """VLLM_PLACED and IMAGEGEN_PLACED for the plan."""
     host_of = {n.node_id: n.hostname.split("@")[-1] for n in nodes}
     by_id = {s.id: s for s in specs}
-    out: dict[str, str] = {}
-    placed: set[str] = set()
+    placed: dict[str, set[str]] = {key: set() for key in PLACED_KEYS}
     for p in target.placements:
         spec = by_id.get(p.model_id)
         if spec is None:
             continue
         url = f"http://{host_of.get(p.node_id, p.node_id)}:{spec.port}"
-        placed.add(f"{spec.id}={url}")
-    out[PLACED_KEY] = ",".join(sorted(placed))
-    return out
+        placed[IMAGE_PLACED_KEY if spec.is_image else PLACED_KEY].add(f"{spec.id}={url}")
+    return {key: ",".join(sorted(urls)) for key, urls in placed.items()}
 
 
 def compute_diff(
@@ -151,23 +154,32 @@ def compute_diff(
     host_of = {n.node_id: n.hostname for n in nodes}
 
     cd = f"cd {shlex.quote(layout.workdir)}"
-    compose = f"docker compose -f {shlex.quote(layout.compose_file)}"
     env_path = f"{layout.workdir}/{layout.env_file}"
+    by_service = {s.service: s for s in specs}
+
+    def compose(service: str) -> str:
+        """compose command of the file that defines ``service``."""
+        spec = by_service.get(service)
+        file = spec.compose_file if spec is not None else layout.compose_file
+        return f"docker compose -f {shlex.quote(file)}"
+
+    def project(service: str) -> str:
+        spec = by_service.get(service)
+        return spec.compose_project if spec is not None else COMPOSE_PROJECT
 
     target_by_node: dict[str, list[Placement]] = {}
     for p in target.placements:
         target_by_node.setdefault(p.node_id, []).append(p)
 
-    by_service = {s.service: s for s in specs}
     for node_id in sorted(set(target_by_node) | set(current)):
         host = host_of.get(node_id, node_id)
         bare_host = host.split("@")[-1]
         placements = target_by_node.get(node_id, [])
         want = {by_id[p.model_id].service for p in placements if p.model_id in by_id}
-        # Managed services only
+        # Managed services only: vllm-*, and the catalogued services of selected models
         have = {
             s for s in current.get(node_id, set())
-            if s.startswith(MANAGED_SERVICE_PREFIX) or s in want
+            if s.startswith(MANAGED_SERVICE_PREFIX) or s in want or s in by_service
         }
 
         # (a) .env options, before any service starts
@@ -177,13 +189,16 @@ def compute_diff(
             spec = by_id.get(p.model_id)
             if spec is None:
                 continue
-            options = [
+            # A picture model has no context or memory share: its cards only
+            options = [] if spec.is_image else [
                 (f"{spec.env_prefix}_MAX_LEN", str(p.ctx)),
                 (f"{spec.env_prefix}_GPU_UTIL", f"{p.gpu_util:.2f}"),
             ]
             # TP 1 is the compose default: written only to undo a sharded node
             tp_key = f"{spec.env_prefix}_TP"
-            if p.tp > 1 or (here or {}).get(tp_key) not in (None, "", "1"):
+            if not spec.is_image and (
+                p.tp > 1 or (here or {}).get(tp_key) not in (None, "", "1")
+            ):
                 options.append((tp_key, str(p.tp)))
 
             # NVIDIA_VISIBLE_DEVICES: multi-card nodes, or to clear a stale value
@@ -209,13 +224,14 @@ def compute_diff(
             # docker stop as well: compose stop skips a container it did not create
             change.actions.append(NodeAction(
                 node_id, host, "stop", f"stop {service}",
-                f"{cd} && {compose} stop {q} && "
+                f"{cd} && {compose(service)} stop {q} && "
                 f"{{ ! docker inspect {q} >/dev/null 2>&1 || docker stop {q} >/dev/null; }}",
             ))
         for service in sorted(want - have):
             change.actions.append(NodeAction(
                 node_id, host, "start", f"start {service}",
-                f"{cd} && {_adopt(service)} && {compose} up -d {shlex.quote(service)}",
+                f"{cd} && {_adopt(service, project(service))} && "
+                f"{compose(service)} up -d {shlex.quote(service)}",
                 url=_service_url(by_service.get(service), bare_host),
             ))
         # (b) Recreate only where an option moved
@@ -224,8 +240,8 @@ def compute_diff(
                 continue
             change.actions.append(NodeAction(
                 node_id, host, "recreate", f"recreate {service}",
-                f"{cd} && {_adopt(service)} && "
-                f"{compose} up -d --force-recreate {shlex.quote(service)}",
+                f"{cd} && {_adopt(service, project(service))} && "
+                f"{compose(service)} up -d --force-recreate {shlex.quote(service)}",
                 url=_service_url(by_service.get(service), bare_host),
             ))
 
@@ -303,7 +319,7 @@ def apply(
 
     if local_env_path:
         values = {
-            k: alive(v) if k == PLACED_KEY else v
+            k: alive(v) if k in PLACED_KEYS else v
             for k, v in change.local_env.items()
         }
         for k, v in change.local_urls.items():

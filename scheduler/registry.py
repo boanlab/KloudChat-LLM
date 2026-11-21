@@ -22,13 +22,23 @@ BASE_PORT = 8001
 DEFAULT_CONCURRENT_SESSIONS = 4
 
 #: "generate" | "pooling" (vLLM --runner names); "transcription" marks the STT
-#: backend behind whisper-shim.
-RUNNERS = ("generate", "pooling", "transcription")
+#: backend behind whisper-shim; "image" a vllm-omni picture model behind imagegen-shim.
+RUNNERS = ("generate", "pooling", "transcription", "image")
 
 #: Route LiteLLM registers: chat (local/ and strict-local/), embedding, rerank,
-#: transcription (strict-local only, through whisper-shim)
-APIS = ("chat", "embedding", "rerank", "transcription")
-_API_BY_RUNNER = {"generate": "chat", "pooling": "embedding", "transcription": "transcription"}
+#: transcription (strict-local only, through whisper-shim), image (strict-local
+#: only, through imagegen-shim)
+APIS = ("chat", "embedding", "rerank", "transcription", "image")
+_API_BY_RUNNER = {
+    "generate": "chat", "pooling": "embedding", "transcription": "transcription",
+    "image": "image",
+}
+
+#: Compose file and project of each runner's services on a node
+VLLM_COMPOSE_FILE = "docker-compose.vllm.yml"
+VLLM_COMPOSE_PROJECT = "kloudchat-vllm"
+OMNI_COMPOSE_FILE = "docker-compose.vllm-omni.yml"
+OMNI_COMPOSE_PROJECT = "kloudchat-vllm-omni"
 
 #: In-flight cap for a chat model that declares none: spill or refuse only once vLLM queues
 DEFAULT_MAX_INFLIGHT = 256
@@ -46,7 +56,7 @@ MIN_GPU_UTIL = 0.05
 SITE_FIELDS = (
     "placement", "replicas", "share", "priority", "ctx_floor", "ctx_target",
     "concurrent_sessions", "tensor_parallel", "activation", "weight", "arches",
-    "gpu_util",
+    "gpu_util", "nodes", "cards",
 )
 
 _SIZE = re.compile(r"^\s*([\d.]+)\s*([KMGT]i?B)?\s*$", re.I)
@@ -110,6 +120,10 @@ class ModelSpec:
     temperature: Optional[float] = None
     #: Run by hand (VLLM_ENDPOINTS), never placed; listed for its LiteLLM routes
     manual: bool = False
+    #: Nodes it may run on, by node id or host; empty means any the placement allows
+    nodes: tuple[str, ...] = ()
+    #: CUDA device ordinals it may take on a node; empty means any card
+    cards: tuple[int, ...] = ()
     #: Filled by bind()
     metadata: Optional[ModelMetadata] = None
     #: Native context; 0 before probing
@@ -127,6 +141,19 @@ class ModelSpec:
     def is_pooling(self) -> bool:
         return self.runner == "pooling"
 
+    @property
+    def is_image(self) -> bool:
+        """A vllm-omni picture model: sized by weights and activation, no context or KV."""
+        return self.runner == "image"
+
+    @property
+    def compose_file(self) -> str:
+        return OMNI_COMPOSE_FILE if self.is_image else VLLM_COMPOSE_FILE
+
+    @property
+    def compose_project(self) -> str:
+        return OMNI_COMPOSE_PROJECT if self.is_image else VLLM_COMPOSE_PROJECT
+
     def runs_on(self, arch: str) -> bool:
         """Servable on ``arch``; an unknown arch ("") is never excluded."""
         return not self.arches or not arch or arch in self.arches
@@ -139,6 +166,8 @@ class ModelSpec:
 
     def bind(self, metadata: ModelMetadata, native_ctx: int) -> "ModelSpec":
         """Copy with probe results bound."""
+        if self.is_image:
+            return replace(self, metadata=metadata, ctx_target=0, ctx_floor=0)
         target = self.ctx_target_override or native_ctx
         floor = self.ctx_floor or max(CTX_FLOOR_MIN, target // CTX_FLOOR_DIVISOR)
         # Clamped for short-context models
@@ -196,18 +225,26 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
             f"{model_id}: gpu_util must be within {MIN_GPU_UTIL}-{MAX_GPU_UTIL}, not {gpu_util}"
         )
 
+    nodes = tuple(str(n).strip() for n in (entry.get("nodes") or ()) if str(n).strip())
+    cards = tuple(int(c) for c in (entry.get("cards") or ()))
+    if any(c < 0 for c in cards):
+        raise ValueError(f"{model_id}: cards are CUDA ordinals, not {list(cards)}")
+
     env_prefix = str(entry.get("env_prefix") or _env_prefix_from_id(model_id))
     return ModelSpec(
         id=model_id,
         hf_repo=str(entry.get("hf_repo") or ""),
         manual=manual,
+        nodes=nodes,
+        cards=cards,
         dir=str(entry.get("dir") or model_id),
         # Derived from env_prefix so the .env key and compose service agree
         service=str(entry.get("service") or env_prefix.lower().replace("_", "-")),
         port=int(entry.get("port") or BASE_PORT + index),
         env_prefix=env_prefix,
         ctx_floor=int(entry["ctx_floor"]) if entry.get("ctx_floor") else 0,
-        concurrent_sessions=int(
+        # A picture model serves one request at a time; no KV to size
+        concurrent_sessions=1 if runner == "image" else int(
             entry.get("concurrent_sessions") or DEFAULT_CONCURRENT_SESSIONS
         ),
         priority=int(entry.get("priority") or 0),

@@ -438,7 +438,8 @@ On the GPU node:
 ./scripts/manage-vllm-omni.sh status
 ```
 
-On the orchestrator, name each backend in `.env` and regenerate:
+Run by hand, name each backend on the orchestrator in `.env` and regenerate
+(with the scheduler, `IMAGEGEN_PLACED` is written for you):
 
 ```bash
 IMAGEGEN_BACKENDS=z-image-turbo=http://<node>:8091,qwen-image-2512=http://<node>:8092,qwen-image-edit-2511=http://<node>:8093
@@ -467,10 +468,19 @@ The variable is the `device_ids` of the container's GPU reservation; change it,
 then `manage-vllm-omni.sh up --recreate`, and `manage-vllm-omni.sh status`
 shows the cards each container holds.
 
-The scheduler does not place or start these models. Like any process outside
-the `vllm-*` containers, the memory they hold is measured from `nvidia-smi`
-and charged to their card ([GPU memory](gpu-memory.md)), so start them before
-`scheduler apply`. Z-Image-Turbo holds about 25 GiB while serving.
+The scheduler places them when they are in `VLLM_MODELS`: each takes a card by
+its weights and activation (no context or KV; the catalogue's `weight` is what it
+holds while serving), `scheduler apply` starts it on the node from
+`docker-compose.vllm-omni.yml` and writes `VLLM_OMNI_<MODEL>_DEVICES` into the
+node's `.env`, and the orchestrator's `IMAGEGEN_PLACED` (read like
+`IMAGEGEN_BACKENDS`) lists where it answers. A picture model has no external
+route: with no seat it is simply not served (`plan` prints "Not placed"). A
+site file pins where: `nodes` (ids or hosts) and `cards` (CUDA ordinals), for
+example the edit model on card 1 of the image node and the other two on card 0.
+Models not in `VLLM_MODELS`, or hand-run ones in `IMAGEGEN_BACKENDS`, stay as
+before: the memory they hold is measured from `nvidia-smi` and charged to their
+card ([GPU memory](gpu-memory.md)), so start them before `scheduler apply`.
+Z-Image-Turbo holds about 25 GiB while serving.
 
 ## Retrieval
 

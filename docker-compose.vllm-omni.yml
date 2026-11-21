@@ -1,6 +1,7 @@
-# GPU-node vllm-omni image models. Started by hand with scripts/manage-vllm-omni.sh;
-# LiteLLM reaches them through imagegen-shim (IMAGEGEN_BACKENDS in the
-# orchestrator's .env):
+# GPU-node vllm-omni image models. Started by the scheduler (the models in
+# VLLM_MODELS) or by hand with scripts/manage-vllm-omni.sh; LiteLLM reaches them
+# through imagegen-shim (IMAGEGEN_PLACED, or IMAGEGEN_BACKENDS for hand-run ones,
+# in the orchestrator's .env):
 #
 #   omni-z-image          Z-Image-Turbo, ~25 GiB while serving
 #   omni-qwen-image       Qwen-Image-2512, ~55 GiB of weights
@@ -10,9 +11,10 @@
 # defaulting to VLLM_OMNI_DEVICES (default all); it is the reservation's
 # device_ids, which the nvidia driver applies over the environment.
 #
-# The scheduler does not place or start these; it charges their nvidia-smi memory
-# to their card, so start them before `scheduler apply`. Names start with omni-:
-# the scheduler stops any vllm-* container it did not place.
+# A model in VLLM_MODELS is placed and started by the scheduler (it writes the
+# device variable); the others are charged to their card from nvidia-smi, so
+# start them before `scheduler apply`. Names start with omni-: the scheduler stops
+# any vllm-* container it did not place, never an omni-* one of an unselected model.
 name: kloudchat-vllm-omni
 
 x-vllm-omni: &vllm-omni

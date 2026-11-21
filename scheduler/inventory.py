@@ -28,7 +28,7 @@ from scheduler.types import GB, NodeSpec
 #: lib.sh::UNIFIED_RESERVE_GB
 _UNIFIED_RESERVE_BYTES: int = 12 * GB
 
-#: Containers this stack owns; must equal applier.MANAGED_SERVICE_PREFIX
+#: Containers this stack owns whatever the selection; must equal applier.MANAGED_SERVICE_PREFIX
 MANAGED_PREFIX: str = "vllm-"
 
 
@@ -96,11 +96,11 @@ def _probe_running_containers(host: str) -> Optional[set[str]]:
 
 
 def _probe_checkpoints(host: str, models_root: str) -> Optional[frozenset[str]]:
-    """Checkpoint directories (those holding a config.json), or None if the root cannot be read."""
+    """Checkpoint directories (a config.json, or a diffusers model_index.json), or None if the root cannot be read."""
     rc, out, _ = _ssh(
         host,
         f"for d in {shlex.quote(models_root)}/*/; do "
-        '[ -f "$d/config.json" ] && basename "$d"; done; true',
+        '{ [ -f "$d/config.json" ] || [ -f "$d/model_index.json" ]; } && basename "$d"; done; true',
     )
     if rc != 0:
         return None
@@ -234,6 +234,7 @@ def _probe_node_once(
     models_root: Optional[str] = None,
 ) -> NodeProbe:
     errors: list[str] = []
+    services = frozenset(services)
     listed = _probe_running_containers(host)
     if listed is None:
         errors.append("docker ps failed")
@@ -267,7 +268,9 @@ def _probe_node_once(
             "capacity is not all usable"
         )
 
-    managed = frozenset(c for c in running if c.startswith(MANAGED_PREFIX))
+    # vllm-* always; a catalogued service of another prefix (omni-*) only while
+    # its model is selected, so an unselected hand-run container stays foreign
+    managed = frozenset(c for c in running if c.startswith(MANAGED_PREFIX) or c in services)
     foreign, by_card = _probe_foreign_vram(host, managed)
     foreign_by_card = tuple(by_card.get(i, 0) for i in range(max(1, gpu_count)))
 

@@ -6,8 +6,9 @@ KloudChat asks for a picture the OpenRouter way: `/v1/chat/completions` with
 with the image in `content` and takes the size as `WIDTHxHEIGHT`, so this shim
 calls its `/v1/images/generations` instead and reshapes the reply.
 
-IMAGEGEN_BACKENDS is comma-separated `name=url` pairs, a name repeated once per
-node: `z-image-turbo=http://gpu-1:8091,z-image-turbo=http://gpu-2:8091,
+IMAGEGEN_BACKENDS (hand-run) and IMAGEGEN_PLACED (the scheduler's) are
+comma-separated `name=url` pairs, a name repeated once per node:
+`z-image-turbo=http://gpu-1:8091,z-image-turbo=http://gpu-2:8091,
 qwen-image-2512=http://gpu-1:8092`.
 An editing model (`qwen-image-edit-2511`) takes the picture to edit as an
 `image_url` data URL in the last user message and is called on
@@ -33,7 +34,8 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 GENERATE_TIMEOUT_SEC = float(os.getenv("GENERATE_TIMEOUT_SEC", "600"))
 HEALTH_PROBE_TIMEOUT_SEC = float(os.getenv("HEALTH_PROBE_TIMEOUT_SEC", "2.0"))
 
-BACKENDS: dict[str, list[str]] = parse_backends(os.getenv("IMAGEGEN_BACKENDS", ""))
+BACKENDS: dict[str, list[str]] = parse_backends(
+    f"{os.getenv('IMAGEGEN_BACKENDS', '')},{os.getenv('IMAGEGEN_PLACED', '')}")
 POOLS: dict[str, Pool] = {name: Pool(urls) for name, urls in BACKENDS.items()}
 LOG.info("Image backends: %s",
          ", ".join(f"{k}={'|'.join(v)}" for k, v in BACKENDS.items()) or "none")

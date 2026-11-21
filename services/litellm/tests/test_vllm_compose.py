@@ -18,16 +18,23 @@ def services() -> dict:
     return doc.get("services") or {}
 
 
-def test_every_model_in_the_catalogue_has_a_service_here(services: dict) -> None:
+@pytest.fixture(scope="module")
+def omni_services() -> dict:
+    doc = yaml.safe_load((ROOT / "docker-compose.vllm-omni.yml").read_text()) or {}
+    return doc.get("services") or {}
+
+
+def test_every_model_in_the_catalogue_has_a_service_here(services: dict, omni_services: dict) -> None:
     """Every models.yaml entry has the compose service the applier will start."""
     from scheduler import registry
 
     for spec in registry.load(MODELS_YAML):
         if spec.manual:
             continue
-        assert spec.service in services, (
+        defined = omni_services if spec.is_image else services
+        assert spec.service in defined, (
             f"{spec.id} is in the catalogue but {spec.service} is not a service "
-            "in docker-compose.vllm.yml — the scheduler would place it and the "
+            f"in {spec.compose_file} — the scheduler would place it and the "
             "node would have nothing to start"
         )
 

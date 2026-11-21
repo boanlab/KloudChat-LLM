@@ -84,8 +84,8 @@ Set by hand on the compose host; the scheduler does not write these:
 | Variable | Contents |
 |---|---|
 | `WHISPER_URLS` | Transcription servers (`vllm-whisper`) you run by hand, CSV of URLs. The scheduler lists its own as `whisper-large-v3` in `VLLM_PLACED`. With neither, dictation is off; audio is never sent to OpenRouter |
-| `IMAGEGEN_BACKENDS` | Self-hosted image models as `name=URL` pairs without `/v1`, one per node serving the name. Set: `setup.sh` enables the `imagegen` profile and `gen-litellm-config.sh` registers each name as `strict-local/<name>` only. See [models.md](models.md#self-hosted-image-models) |
-| `GPU_EXPORTER_PORT` | gpu-exporter port on every GPU node, default `9835`. metrics-shim finds the nodes from `VLLM_ENDPOINTS`, `VLLM_PLACED`, `WHISPER_URLS`, `IMAGEGEN_BACKENDS` and `VLLM_NODES`. See [tools.md](tools.md#metrics-vllm-and-gpu-exporter) |
+| `IMAGEGEN_BACKENDS` | Self-hosted image models you run by hand, as `name=URL` pairs without `/v1`, one per node serving the name. Set: `setup.sh` enables the `imagegen` profile and `gen-litellm-config.sh` registers each name as `strict-local/<name>` only. See [models.md](models.md#self-hosted-image-models) |
+| `GPU_EXPORTER_PORT` | gpu-exporter port on every GPU node, default `9835`. metrics-shim finds the nodes from `VLLM_ENDPOINTS`, `VLLM_PLACED`, `WHISPER_URLS`, `IMAGEGEN_BACKENDS`, `IMAGEGEN_PLACED` and `VLLM_NODES`. See [tools.md](tools.md#metrics-vllm-and-gpu-exporter) |
 
 ## 5. Images
 

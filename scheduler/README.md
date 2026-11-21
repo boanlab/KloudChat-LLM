@@ -30,6 +30,7 @@ KLOUDCHAT_REMOTE_DIR=KloudChat-LLM   # compose workdir on each node (env or .env
 VLLM_ENDPOINTS=http://gpu-9:8001     # servers you run yourself; counted as instances
 WHISPER_URLS=http://gpu-9:9000       # hand-run transcription backends; never written
 VLLM_PLACED=...                      # written by `apply`; do not edit
+IMAGEGEN_PLACED=...                  # picture models, written by `apply`; do not edit
 ```
 
 `VLLM_ENDPOINTS` entries (`id=url`, or a bare URL asked at `/v1/models`) count as
@@ -54,8 +55,10 @@ no context length, is delegated.
 fields over the catalogue entries by id without editing `models.yaml`. It sets
 where and how large a model runs, never what it is or where it answers:
 `placement`, `replicas`, `share`, `priority`, `ctx_floor`, `ctx_target`,
-`concurrent_sessions`, `tensor_parallel`, `activation`, `weight`, `arches` and
-`gpu_util`. Any other field, or an id the catalogue lacks, is an error.
+`concurrent_sessions`, `tensor_parallel`, `activation`, `weight`, `arches`,
+`gpu_util`, `nodes` and `cards`. Any other field, or an id the catalogue lacks,
+is an error. `nodes` limits a model to the nodes named by id or host and
+`cards` to the CUDA ordinals it may take on one.
 
 `gpu_util` fixes `--gpu-memory-utilization`: the planner charges that share of
 the card as is instead of sizing one, narrows `concurrent_sessions` to what the
@@ -144,15 +147,48 @@ the head node. A single-node cluster has no pool, and `placement` is ignored.
 A `head-first` model's extra instances (replication, `replicas`) go to any node, the
 head included.
 
+### Image models
+
+`z-image-turbo`, `qwen-image-2512` and `qwen-image-edit-2511` (`runner: image`,
+compose services `omni-*` in `docker-compose.vllm-omni.yml`) are placed like any
+model when `VLLM_MODELS` lists them, with two differences. They are sized by the
+declared `weight` plus `activation` on one card (no context, KV or
+`gpu_util`), and `apply` writes only `{env_prefix}_DEVICES` to the node's `.env`.
+Where they answer goes to `IMAGEGEN_PLACED` in the orchestrator's `.env`
+(`IMAGEGEN_BACKENDS` stays the hand-run list). They have no OpenRouter route:
+without a seat `plan` prints them under "Not placed". A site file pins them with
+`nodes` (node ids or hosts) and `cards` (CUDA ordinals), for example:
+
+```yaml
+models:
+  - id: qwen-image-edit-2511
+    nodes: [7]
+    cards: [1]
+  - id: qwen-image-2512
+    nodes: [7]
+    cards: [0]
+  - id: z-image-turbo
+    nodes: [7]
+    cards: [0]
+```
+
+Containers of image models not in `VLLM_MODELS` are neither stopped nor started:
+their memory counts as foreign, as before.
+
+A node's options are read from `KLOUDCHAT_REMOTE_DIR/.env` like any other. A node
+that runs its omni containers from another directory with its own `.env` has no
+`VLLM_OMNI_*_DEVICES` there, so the first `apply` writes them and recreates those
+containers (a picture model takes minutes to come back); check `plan` and the
+action list first.
+
 ### Held nodes
 
 A target in `VLLM_NODES_HOLD` is probed and shown by `inventory` as `held`, and
 nothing else: no placement, no start, stop or recreate, no `.env` write, and
 `setup.sh vllm` installs nothing there. It is for a node in `VLLM_NODES` that
-runs something else, such as the image models (`docker-compose.vllm-omni.yml`,
-outside the scheduler): left in the pool, the room on its second card would
-draw extra embedding and transcription instances, and while its omni
-containers are down it would look empty. An entry is the target as written in
+runs something else, such as hand-run image models: left in the pool, the room
+on its second card would draw extra embedding and transcription instances, and
+while its omni containers are down it would look empty. An entry is the target as written in
 `VLLM_NODES`, its host, or its node id; one that `VLLM_NODES` does not list, or
 the head node, is an error. Listing the node in `VLLM_NODES` at all keeps it in
 metrics-shim's node list and in the `inventory`.
@@ -253,8 +289,10 @@ running untouched; the first recreate brings it under compose.
 be read it applies nothing rather than take every option as changed.
 
 In the orchestrator's `.env` it writes `VLLM_PLACED` (a CSV of
-`id=http://host:port`, one per instance, the transcription model included).
-`VLLM_ENDPOINTS` and `WHISPER_URLS`, the servers you run by hand, are never written. Only changed
+`id=http://host:port`, one per instance, the transcription model included) and
+`IMAGEGEN_PLACED` (the same for picture models).
+`VLLM_ENDPOINTS`, `WHISPER_URLS` and `IMAGEGEN_BACKENDS`, the servers you run by
+hand, are never written. Only changed
 keys are written. Re-applying an unchanged plan does nothing.
 
 `python3 -m scheduler catalog` prints the catalogue as TSV (id, api, env prefix,

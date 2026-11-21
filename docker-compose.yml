@@ -7,7 +7,7 @@
 #   whisper   transcription shim; setup.sh adds it once a backend is placed
 #   index     retrieval index (pgvector) and its shim
 #   ocr       text from scanned pages (CPU)
-#   imagegen  shim for self-hosted image models; setup.sh adds it once IMAGEGEN_BACKENDS is set
+#   imagegen  shim for self-hosted image models; setup.sh adds it once IMAGEGEN_BACKENDS or IMAGEGEN_PLACED is set
 name: kloudchat-llm
 
 # Container logs rotated per service; the host's daemon settings do not matter
@@ -56,6 +56,7 @@ services:
       VLLM_PLACED: ${VLLM_PLACED:-}
       WHISPER_URLS: ${WHISPER_URLS:-}
       IMAGEGEN_BACKENDS: ${IMAGEGEN_BACKENDS:-}
+      IMAGEGEN_PLACED: ${IMAGEGEN_PLACED:-}
       VLLM_NODES: ${VLLM_NODES:-}
       GPU_EXPORTER_PORT: ${GPU_EXPORTER_PORT:-9835}
       LOG_LEVEL: INFO
@@ -419,6 +420,7 @@ services:
     restart: always
     environment:
       IMAGEGEN_BACKENDS: ${IMAGEGEN_BACKENDS:-}
+      IMAGEGEN_PLACED: ${IMAGEGEN_PLACED:-}
       LOG_LEVEL: INFO
     healthcheck:
       # "ok" while at least one backend answers

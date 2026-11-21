@@ -115,6 +115,18 @@ def _bind(specs, probes, models_root: str):
     for spec in specs:
         metadata: Optional[ModelMetadata] = None
         weight: Optional[int] = spec.weight_override
+        if spec.is_image:
+            # No config.json, no KV: the weight is declared, or measured on a node
+            for probe in alive:
+                if weight is None and probe.spec.checkpoints is not None \
+                        and spec.dir in probe.spec.checkpoints:
+                    weight = model_metadata.measure_weight_bytes(
+                        probe.spec.hostname, f"{models_root}/{spec.dir}")
+            if not weight:
+                failed.append((spec.id, "its weight size is neither declared nor measurable"))
+                continue
+            bound.append(spec.bind(model_metadata.image_metadata(spec.id, weight), 0))
+            continue
         for probe in alive:
             host = probe.spec.hostname
             path = f"{models_root}/{spec.dir}"
@@ -205,9 +217,11 @@ def _build_plan(args):
         head=head,
         external=external,
     )
+    image_ids = {s.id for s in specs if s.is_image}
     for model_id, reason in failed:
         if not external.get(model_id):
-            result.delegations.append(planner.Delegation(model_id, reason))
+            result.delegations.append(
+                planner.Delegation(model_id, reason, model_id not in image_ids))
     for node_id in sorted(held):
         result.notes.append(f"{node_id}: held (VLLM_NODES_HOLD) — nothing placed, nothing stopped")
     for probe in probes:
@@ -227,15 +241,25 @@ def _print_plan(result, head: Optional[str] = None) -> None:
                 extra += f"  gpu {','.join(str(d) for d in p.devices)}"
             if p.tp > 1:
                 extra += f"  TP{p.tp}"
+            if p.ctx == 0:
+                print(f"  {p.node_id:<8} {p.model_id:<20} image"
+                      f"{'':<17}{p.charge / GB:>5.1f} GiB{extra}")
+                continue
             ctx = f"{p.ctx // 1024}K" if p.ctx >= 1024 else str(p.ctx)
-            print(f"  {p.node_id:<8} {p.model_id:<18} ctx {ctx:>5}  "
+            print(f"  {p.node_id:<8} {p.model_id:<20} ctx {ctx:>5}  "
                   f"util {p.gpu_util:<5.2f} {p.charge / GB:>5.1f} GiB{extra}")
     else:
         print("no model could be placed")
-    if result.delegations:
+    delegated = [d for d in result.delegations if d.fallback]
+    if delegated:
         print("\nDelegated to OpenRouter")
-        for d in result.delegations:
-            print(f"  {d.model_id:<18} {d.reason}")
+        for d in delegated:
+            print(f"  {d.model_id:<20} {d.reason}")
+    unserved = [d for d in result.delegations if not d.fallback]
+    if unserved:
+        print("\nNot placed (no external fallback)")
+        for d in unserved:
+            print(f"  {d.model_id:<20} {d.reason}")
     for note in result.notes:
         print(f"\nNote: {note}")
 

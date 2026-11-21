@@ -4,8 +4,8 @@ What fits on which GPU, and how much VRAM each model occupies. Read this when
 sizing a node or diagnosing an OOM.
 
 > Figures cover every placeable model in `scheduler/models.yaml`, deployed or not. The
-> self-hosted image models (vllm-omni) are outside the scheduler; see
-> [models](models.md#self-hosted-image-models).
+> self-hosted image models (vllm-omni) are sized by weights and activation, with no
+> context; see [models](models.md#self-hosted-image-models).
 
 ## The lineup
 
@@ -108,10 +108,11 @@ Sessions are the planner's sizing assumption (`concurrent_sessions`, default
 
 ## Image models (vllm-omni)
 
-The self-hosted image models run outside the scheduler
-(`docker-compose.vllm-omni.yml`), but the scheduler sees the memory they hold
-and charges it to their card. Each omni container pins its own cards, so a
-two-card 96 GiB node can be split by hand:
+The self-hosted image models (`docker-compose.vllm-omni.yml`) are catalogued like
+the rest: a model in `VLLM_MODELS` is placed by the scheduler, charged its
+`weight` plus activation on one card; one run by hand is charged from the memory
+`nvidia-smi` shows. Each omni container pins its own cards, so a two-card 96 GiB
+node can be split by `cards` in `site.yaml` or by hand:
 
 | Model | Weights | Role |
 |---|---:|---|

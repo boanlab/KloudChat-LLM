@@ -94,3 +94,10 @@ def test_an_image_server_without_counts_still_names_its_model():
         'vllm:num_requests_running{model_name="local/qwen-image-2512"} 0\n'
     )
     assert "running" in image_text("m", "", 0) and "waiting{" in image_text("m", "", 0)
+
+
+def test_picture_models_the_scheduler_placed_are_targets_too():
+    found = discover({"IMAGEGEN_PLACED": "qwen-image-edit-2511=http://172.29.52.7:8093"})
+    (image,) = [t for t in found if t.kind == "image"]
+    assert image.model == "local/qwen-image-edit-2511"
+    assert image.url == "http://172.29.52.7:8093"
