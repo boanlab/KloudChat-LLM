@@ -276,8 +276,9 @@ class ConcurrencyGate(CustomLogger):
                     raise results[0]
                 running = sum(sample[0] for sample in samples)
                 waiting = sum(sample[1] for sample in samples)
-                # Any saturated deployment saturates the alias
-                sat = any(
+                # Saturated only when every reachable deployment is: LiteLLM's
+                # least-busy routing sends new calls to a free replica
+                sat = all(
                     node_running >= g["cap"] or node_waiting > 0
                     for node_running, node_waiting in samples
                 )

@@ -520,6 +520,49 @@ def test_saturated_reachable_node_still_spills_while_its_peer_is_down(monkeypatc
     assert gate._saturated["local/qwen3.8-27b"] is True
 
 
+def test_one_busy_replica_leaves_a_strict_alias_on_its_free_peers(monkeypatch) -> None:
+    gate_module = _load_gate_module()
+    gate = _bare_gate(gate_module)
+    urls = [f"http://flash-{n}:8000/metrics" for n in (1, 2, 3)]
+    gate.gate = {
+        "strict-local/qwen3.8-flash": {"metrics": urls, "cap": 16, "mode": "reject"},
+        "local/qwen3.8-flash": {
+            "metrics": urls,
+            "cap": 16,
+            "mode": "spill",
+            "or": "qwen/qwen3.8-flash",
+        },
+    }
+    gate._saturated = {model: False for model in gate.gate}
+    gate._last_success = {model: 0.0 for model in gate.gate}
+
+    def one_queueing(url: str) -> tuple[float, float]:
+        return (8.0, 2.0) if "flash-1" in url else (0.0, 0.0)
+
+    monkeypatch.setattr(gate_module, "_scrape", one_queueing)
+    gate._poll_once()
+
+    assert gate._saturated["strict-local/qwen3.8-flash"] is False
+    assert gate._saturated["local/qwen3.8-flash"] is False
+
+
+def test_every_replica_busy_saturates_the_alias(monkeypatch) -> None:
+    gate_module = _load_gate_module()
+    gate = _bare_gate(gate_module)
+    urls = [f"http://flash-{n}:8000/metrics" for n in (1, 2)]
+    gate.gate = {"strict-local/qwen3.8-flash": {"metrics": urls, "cap": 16, "mode": "reject"}}
+    gate._saturated = {"strict-local/qwen3.8-flash": False}
+    gate._last_success = {"strict-local/qwen3.8-flash": 0.0}
+
+    def all_busy(url: str) -> tuple[float, float]:
+        return (16.0, 0.0) if "flash-1" in url else (5.0, 1.0)
+
+    monkeypatch.setattr(gate_module, "_scrape", all_busy)
+    gate._poll_once()
+
+    assert gate._saturated["strict-local/qwen3.8-flash"] is True
+
+
 def test_http_200_without_vllm_capacity_metrics_is_a_scrape_failure(monkeypatch) -> None:
     gate_module = _load_gate_module()
 
