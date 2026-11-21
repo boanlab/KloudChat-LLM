@@ -90,9 +90,11 @@ models:
     gpu_util: 0.14
 ```
 
-Without the caps, the catalogue's unlimited `replicas` hand spare nodes to
-whichever model is furthest below its share, so a 27B replica can take a pool
-node Flash was meant to hold.
+The catalogue already keeps the 27B to one instance on the head node
+(`placement: head`, `replicas: 1`) and leaves Flash's `replicas` unlimited, so a
+spare pool node takes one more Flash. A site file only pins what a deployment
+runs differently, such as the context or a fixed `gpu_util`. Models with
+unlimited `replicas` (retrieval, transcription) take whatever room Flash leaves.
 
 ### Node ids
 
@@ -137,7 +139,7 @@ packing:
 
 | `placement` | Nodes | Models |
 |---|---|---|
-| `head` | the head node only | (none by default) |
+| `head` | the head node only | the 27B |
 | `head-first` | the first instance on the head node, extra instances on any node | embeddings, reranking, transcription |
 | `pool` | every node but the head | Flash-Next |
 | unset | any | chat |

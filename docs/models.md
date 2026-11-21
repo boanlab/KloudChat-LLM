@@ -94,8 +94,10 @@ attention (16 of 64 layers hold KV, 32 KiB per token in fp8), native 262144
 context, and MTP speculative decoding from the checkpoint's own draft head
 (`VLLM_QWEN27B_SPEC_TOKENS`, default 5). Its context floor is the native
 262144: a card that cannot hold that delegates rather than serving a shorter
-window. It is unplaced, so every node with room gets a replica, all registered
-under `local/qwen3.8-27b`; LiteLLM spreads requests across them (`least-busy`).
+window. It runs once, on the head node beside retrieval and transcription
+(`placement: head`, `replicas: 1`); the pool is left to `qwen3.8-flash`. With
+more than one instance (`VLLM_ENDPOINTS`, or `replicas` raised in `site.yaml`)
+they register under `local/qwen3.8-27b` and LiteLLM spreads requests across them (`least-busy`).
 Each deployment carries a 3600 s request timeout and a concurrency-gate cap of
 128 in-flight requests, and a default `presence_penalty` of 1.0 that a
 request's own value replaces: without it the 27B repeats list items until the

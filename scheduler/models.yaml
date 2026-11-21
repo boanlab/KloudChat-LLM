@@ -10,7 +10,8 @@
 models:
   # Chat: conversation, vision, coding, deep research, titles, memory
   # extraction. Dense, hybrid attention (16 of 64 layers hold KV), NVFP4.
-  # Replicated onto every node with room.
+  # One instance, on the head node beside retrieval and transcription; every
+  # other node goes to Flash-Next.
   - id: qwen3.8-27b
     hf_repo: unsloth/Qwen3.8-27B-NVFP4
     dir: qwen3.8-27b-nvfp4
@@ -19,6 +20,8 @@ models:
     # Native context as the floor: no shorter window
     ctx_floor: 262144
     priority: 20
+    placement: head
+    replicas: 1
     openrouter: qwen/qwen3.8-27b
     # Deep research runs for minutes
     timeout: 3600
@@ -31,7 +34,8 @@ models:
   # Quality and judging: hard questions, review, grading. MoE (512 experts, 10
   # active), hybrid attention (12 of 48 layers hold KV), NVFP4 body, FP8 PLE
   # table (48 GiB; page cache on GB10, pinned system RAM on a discrete card). A
-  # pool node to itself; seated before the 27B.
+  # pool node to itself, seated before the 27B; each further pool node takes one
+  # more instance, so Flash grows with the cluster.
   - id: qwen3.8-flash
     hf_repo: nvidia/Qwen3.8-Flash-Next-NVFP4
     dir: qwen3.8-flash-next-nvfp4
@@ -67,6 +71,7 @@ models:
     port: 9000
     runner: transcription
     placement: head-first
+    replicas: 1
     # Below bge-m3
     priority: 4
     # 448-token decoder context; longer audio split server-side
@@ -83,6 +88,7 @@ models:
     ctx_floor: 8192
     priority: 2
     placement: head-first
+    replicas: 1
 
   # Retrieval embeddings
   - id: bge-m3
@@ -93,6 +99,7 @@ models:
     # Above whisper and the reranker: the whole retrieval path
     priority: 5
     placement: head-first
+    replicas: 1
     # One chunk at a time
     ctx_floor: 8192
 

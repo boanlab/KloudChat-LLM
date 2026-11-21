@@ -103,8 +103,8 @@ Sessions are the planner's sizing assumption (`concurrent_sessions`, default
   every container whatever the environment says. Not `CUDA_VISIBLE_DEVICES`:
   it has no value meaning "every card", and on GB10 it fails engine init. An
   unpinned node gets `all`, which as `device_ids` is what `count: all` sends.
-- `qwen3.8-flash` needs a node to itself and is a pool model: the head node
-  holds retrieval, transcription and a 27B replica.
+- `qwen3.8-flash` needs a node to itself and is a pool model, one instance per
+  pool node: the head node holds the 27B, retrieval and transcription.
 
 ## Image models (vllm-omni)
 

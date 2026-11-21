@@ -168,12 +168,24 @@ def test_the_layout_does_not_depend_on_what_is_running(site):
     assert _layout(planner.plan(_bound(site), nodes, head="2")) == EXPECTED
 
 
-def test_without_the_site_file_the_pool_is_given_to_the_27b():
-    """Why the site file is needed: the catalogue alone replicates the 27B onto a Flash node."""
+def test_the_catalogue_alone_runs_one_27b_on_the_head_and_flash_on_every_pool_node():
+    """The default policy: 27B and the retrieval models once, Flash on each pool node."""
     nodes = [_node(n) for n in ("2", "3", "4", "5")]
     result = planner.plan(_bound(Path("/nonexistent")), nodes, head="2")
-    flash = [p.node_id for p in result.placements if p.model_id == "qwen3.8-flash"]
-    assert len(flash) < 3
+    where = {m: sorted(p.node_id for p in result.placements if p.model_id == m)
+             for m in {p.model_id for p in result.placements}}
+    assert where["qwen3.8-27b"] == ["2"]
+    assert where["qwen3.8-flash"] == ["3", "4", "5"]
+    for once in ("bge-m3", "whisper-large-v3"):
+        assert where[once] == ["2"]
+
+
+def test_each_further_pool_node_takes_one_more_flash():
+    for pool in (2, 3, 4, 5, 6):
+        nodes = [_node(str(n)) for n in range(2, 3 + pool)]
+        result = planner.plan(_bound(Path("/nonexistent")), nodes, head="2")
+        flash = [p.node_id for p in result.placements if p.model_id == "qwen3.8-flash"]
+        assert len(flash) == pool, (pool, flash)
 
 
 HOSTS = {n: f"solid@172.29.52.{n}" for n in ("2", "3", "4", "5", "7")}
@@ -202,9 +214,9 @@ def test_a_held_node_must_be_listed_and_cannot_be_the_head(env):
         cli._held_nodes(HOSTS)
 
 
-def test_an_image_node_with_room_takes_nothing_once_held(site):
-    """Without the hold, spare room on the image node's second card draws small models."""
-    image = _node("7", cards=2, foreign=(int(75.3 * GB), int(56.9 * GB)))
+def test_an_image_node_takes_nothing_once_held(site):
+    """While its omni containers are down the image node looks empty and would take a Flash."""
+    image = _node("7", cards=2)
     pool = [_node(n) for n in ("2", "3", "4", "5")]
     catalogue_only = _bound(Path("/nonexistent"))
     assert any(p.node_id == "7" for p in planner.plan(catalogue_only, pool + [image],
