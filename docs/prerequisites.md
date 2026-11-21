@@ -40,7 +40,7 @@ URL.
 |---|---|
 | NVIDIA GPU | GB10, RTX 5090, RTX PRO 5000 Blackwell or RTX PRO 6000 Blackwell. 32 GiB usable |
 | NVIDIA Container Toolkit | every model, transcription included, is a vLLM container |
-| Model disk | 150 GB on a Flash-Next node (124 GB checkpoint), 50 GB otherwise; plus about 35 GB for the vLLM image |
+| Model disk | 150 GB on a Flash node (124 GB checkpoint), 50 GB otherwise; plus about 35 GB for the vLLM image |
 
 **Four cards.** `detect_gpu_class` (`lib.sh`) and `scheduler/inventory.py`
 recognise those four; any other card is `unsupported`,
@@ -58,6 +58,7 @@ VRAM per model, as the planner sizes it:
 | Chat, default (`qwen3.8-27b`, 21.3 GiB, 262144 context floor) | RTX PRO 5000 (48 GB) or larger. An RTX 5090 cannot hold it at the floor and delegates it |
 | Quality and judging (`qwen3.8-flash`, 78.3 GiB resident, 131072 context floor) | GB10 or RTX PRO 6000, alone on the node (on an RTX PRO 6000, 64 GiB of system memory: its 48 GiB PLE table is pinned there; the downloader refuses the checkpoint below that); a second GPU node beside the 27B's |
 | Retrieval and transcription | Any supported card |
+| Image models (opt-in via `VLLM_MODELS`) | Sized by weights, 24 to 56 GiB; see [models.md](models.md) and the [GPU memory guide](gpu-memory.md) |
 
 Occupancy figures are in the [GPU memory guide](gpu-memory.md).
 
@@ -107,7 +108,7 @@ Base images and the derived `kloudchat-vllm:local` are described in
 1. Append the SSH target to `VLLM_NODES` in `.env`
 2. `./scripts/setup.sh vllm`
 3. `./scripts/setup.sh all`: placement, LiteLLM config and the transcription
-   profile are refreshed together
+   and image profiles are refreshed together
 
 **One-time setup on each remote node**
 

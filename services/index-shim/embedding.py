@@ -16,8 +16,7 @@ Request = Callable[[str, list[str], Optional[float]], Awaitable[list[list[float]
 
 
 def gateway_name(model: str) -> str:
-    """The gateway's strict-local name for a model: a collection embedded as
-    local/<id> keeps working, since the gateway registers only strict-local/<id>."""
+    """Gateway name of a model: `local/<id>` maps to `strict-local/<id>`, the only prefix the gateway registers."""
     return "strict-local/" + model.removeprefix("local/") if model.startswith("local/") else model
 
 

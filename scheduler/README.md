@@ -90,11 +90,10 @@ models:
     gpu_util: 0.14
 ```
 
-The catalogue already keeps the 27B to one instance on the head node
-(`placement: head`, `replicas: 1`) and leaves Flash's `replicas` unlimited, so a
-spare pool node takes one more Flash. A site file only pins what a deployment
-runs differently, such as the context or a fixed `gpu_util`. Models with
-unlimited `replicas` (retrieval, transcription) take whatever room Flash leaves.
+The catalogue keeps the 27B, retrieval and transcription to one instance
+(`replicas: 1`) and leaves Flash's `replicas` unlimited, so every pool node
+takes a Flash. A site file only pins what a deployment runs differently, such
+as the context or a fixed `gpu_util`.
 
 ### Node ids
 
@@ -175,7 +174,7 @@ models:
 ```
 
 Containers of image models not in `VLLM_MODELS` are neither stopped nor started:
-their memory counts as foreign, as before.
+their memory counts as foreign.
 
 A node's options are read from `KLOUDCHAT_REMOTE_DIR/.env` like any other. A node
 that runs its omni containers from another directory with its own `.env` has no
@@ -188,10 +187,10 @@ action list first.
 A target in `VLLM_NODES_HOLD` is probed and shown by `inventory` as `held`, and
 nothing else: no placement, no start, stop or recreate, no `.env` write, and
 `setup.sh vllm` installs nothing there. It is for a node in `VLLM_NODES` that
-runs something else, such as hand-run image models: left in the pool, the room
-on its second card would draw extra embedding and transcription instances, and
-while its omni containers are down it would look empty. An entry is the target as written in
-`VLLM_NODES`, its host, or its node id; one that `VLLM_NODES` does not list, or
+runs something else, such as hand-run image models: left in the pool, its spare
+room would draw replicas, and while its omni containers are down it would look
+empty. An entry is the target as written in `VLLM_NODES`, its host, or its node
+id; one that `VLLM_NODES` does not list, or
 the head node, is an error. Listing the node in `VLLM_NODES` at all keeps it in
 metrics-shim's node list and in the `inventory`.
 
@@ -201,8 +200,8 @@ metrics-shim's node list and in the `inventory`.
    plan notes it and the node drops out of every step below. With no node left,
    every model is delegated.
 1. **Coverage** — one instance of each model without an external instance (see
-   Input) at its context floor, ordered by
-   `priority` (highest first, ties largest first), onto the eligible node with
+   Input) at its context floor, models pinned by `nodes` or `cards` first, then
+   by `priority` (highest first, ties largest first), onto the eligible node with
    the most free memory summed over its cards. Differences under 1 GiB do not
    decide; within that band the node already running the model (per
    `docker ps`) wins, then the lowest node id. On the node, the model takes the
@@ -212,8 +211,7 @@ metrics-shim's node list and in the `inventory`.
 3. **Replication** — remaining capacity takes extra instances at the context
    floor, one per round to the model furthest below its `share:`
    (`instances / share`, ties by priority; external instances count), on a node
-   not already running it;
-   then restoration runs again. Shares are weights among models competing for
+   not already running it; then restoration runs again. Shares are weights among models competing for
    the same nodes.
 
 A node is eligible for a model when `placement` allows it, its architecture is
@@ -232,8 +230,8 @@ KV = (bytes/token × context + sliding bytes/sequence) × concurrent sessions ×
 - `activation` is 10 GiB for a generate runner and 2 GiB for a pooling one,
   capped at 12% of the card (never below 1 GiB). See
   [gpu-memory.md](../docs/gpu-memory.md).
-- Node capacity: on discrete cards, `cards × VRAM` (the smallest card) less one
-  reserve of 8% of a card clamped to 1–8 GiB; on a unified-memory node (GB10),
+- Node capacity: on discrete cards, `cards × (VRAM − reserve)`, VRAM being the
+  smallest card's and the reserve 8% of it clamped to 1–8 GiB; on a unified-memory node (GB10),
   system RAM less 12 GiB. The node capacity is split evenly across its cards;
   each card's free memory is its share less the foreign memory held on that
   card.
@@ -294,8 +292,7 @@ In the orchestrator's `.env` it writes `VLLM_PLACED` (a CSV of
 `id=http://host:port`, one per instance, the transcription model included) and
 `IMAGEGEN_PLACED` (the same for picture models).
 `VLLM_ENDPOINTS`, `WHISPER_URLS` and `IMAGEGEN_BACKENDS`, the servers you run by
-hand, are never written. Only changed
-keys are written. Re-applying an unchanged plan does nothing.
+hand, are never written. Only changed keys are written. Re-applying an unchanged plan does nothing.
 
 `python3 -m scheduler catalog` prints the catalogue as TSV (id, api, env prefix,
 OpenRouter slug, timeout, max in flight, presence penalty, temperature) for the shell scripts.

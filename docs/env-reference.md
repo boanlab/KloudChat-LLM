@@ -51,7 +51,7 @@ Filled in by `gen-env.sh`. If you create them yourself, keep the formats below.
 |---|---|---|
 | `LITELLM_MASTER_KEY` | `sk-` + 64 hex | LiteLLM admin API, entered in the UI admin screen. Also the password for LiteLLM's admin UI at `http://<host>:<GATEWAY_PORT>/litellm/ui/` |
 | `LITELLM_DB_PASSWORD` | 32 hex | LiteLLM's postgres |
-| `LITELLM_DB_USER` | string | `kloudchat-litellm` by default |
+| `LITELLM_DB_USER` | string | `kloudchat-litellm` in `.env.example`; compose falls back to `litellm` |
 | `SEARXNG_SECRET_KEY` | 32 hex | SearXNG session signing |
 | `TOOLS_GATEWAY_KEY` | 64 hex | Required by the gateway on every `/tools/*` request as `X-Tools-Key`; 401 otherwise. Set the same value in KloudChat's `.env` as `KCHAT_TOOLS_GATEWAY_KEY`. Compose refuses to start the gateway without it, and a value under 32 characters denies all of `/tools`. Hex only. Rotation: [tools.md](tools.md#authentication) |
 | `CODE_INTERPRETER_API_KEY` | 32 hex | Injected by the gateway into code execution requests |
