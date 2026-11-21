@@ -434,8 +434,8 @@ async def render(
 
 
 def warm() -> None:
-    """Load every model by reading a drawn line: RapidOCR opens (and on a first run
-    fetches) each model only when a page first needs it."""
+    """Load every model by reading a drawn line: RapidOCR opens each model only when a
+    page first needs it."""
     from PIL import Image, ImageDraw, ImageFont
 
     sample = Image.new("RGB", (480, 96), "white")

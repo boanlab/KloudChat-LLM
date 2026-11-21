@@ -57,15 +57,17 @@ Print them again at any time:
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | optional | Hugging Face gated repositories, for weight downloads |
-| `VLLM_NODES` | `user@host,...` | GPU node SSH targets. The first is the head node (27B, retrieval, transcription); the rest are the pool (Flash-Next, one per node) |
+| `VLLM_NODES` | `user@host,...` | GPU node SSH targets. The first is the head node (27B, retrieval, transcription); the rest are the pool (Flash, one per node) |
 | `VLLM_NODES_HOLD` | `user@host,...`, optional | Nodes in `VLLM_NODES` the scheduler leaves alone, such as an image-model node |
 | `VLLM_MODELS` | model id CSV | What the scheduler deploys, from `scheduler/models.yaml` |
 | `VLLM_ENDPOINTS` | CSV, optional | vLLM servers you run yourself: `http://host:port` (the generator asks what it serves) or `id=http://host:port`. Never written by the scheduler, which counts each entry as an instance of its model |
 
-`VLLM_PLACED` is written by the placement step of `setup.sh all`
-(`KLOUDCHAT_SKIP_SCHEDULER=1` skips it). Hand-run transcription servers go in
-`WHISPER_URLS`, self-hosted image models in `IMAGEGEN_BACKENDS`
+`VLLM_PLACED` and `IMAGEGEN_PLACED` are written by the placement step of
+`setup.sh all` (`KLOUDCHAT_SKIP_SCHEDULER=1` skips it). Hand-run transcription
+servers go in `WHISPER_URLS`, hand-run image models in `IMAGEGEN_BACKENDS`
 ([env reference](docs/env-reference.md#4-placement-results-written-by-the-scheduler)).
+`.env` belongs to the orchestrator; GPU nodes read their own `.env`, seeded
+from [`.env.node.example`](.env.node.example).
 
 At least one of an OpenRouter key or a vLLM node is required.
 
@@ -75,7 +77,7 @@ At least one of an OpenRouter key or a vLLM node is required.
 ./scripts/install-vllm.sh          # vLLM image, GPU runtime check, gpu-exporter
 ./scripts/download-vllm-models.sh  # weights this card can serve
 ./scripts/download-vllm-models.sh bge-m3 bge-reranker-v2-m3  # head node
-./scripts/download-vllm-models.sh qwen3.8-flash-next-nvfp4   # pool node
+./scripts/download-vllm-models.sh qwen3.8-flash-next-nvfp4   # pool node (Flash)
 ./scripts/manage-vllm-omni.sh download z-image-turbo  # optional: a strict-local image model
 ```
 
@@ -91,7 +93,9 @@ card has, or a card outside the supported set, are refused with the reason.
 ```
 docker-compose.yml           gateway + tools + LiteLLM (composed by profiles)
 docker-compose.vllm.yml      what a GPU node serves: every vLLM service
-docker-compose.vllm-omni.yml self-hosted image models (vllm-omni), started by hand
+docker-compose.vllm-omni.yml self-hosted image models (vllm-omni)
+.env.example                 orchestrator settings (copied to .env by gen-env.sh)
+.env.node.example            GPU node settings (the node's .env)
 docs/                        operator documentation
 scheduler/                   model placement (its own README inside)
 scripts/                     setup · config generation · node install · operations
@@ -147,7 +151,9 @@ script prints its usage when run without arguments.
 The default local lineup is `qwen3.8-27b` (chat, vision, coding, deep
 research), `qwen3.8-flash` (quality and judging, a GB10 or RTX PRO 6000 node to
 itself), `bge-m3` and `bge-reranker-v2-m3` (retrieval) and `whisper-large-v3`
-(transcription); see [docs/models.md](docs/models.md). Local serving is
+(transcription). Image models (`z-image-turbo`, `qwen-image-2512`,
+`qwen-image-edit-2511`) are opt-in through `VLLM_MODELS`; see
+[docs/models.md](docs/models.md). Local serving is
 NVIDIA-only; the download and manage scripts refuse any other card and the
 scheduler places nothing there. 32 GiB usable is the floor. A chat model that
 does not fit is delegated to OpenRouter; embedding, reranking, transcription

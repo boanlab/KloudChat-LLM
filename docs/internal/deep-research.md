@@ -8,7 +8,8 @@ Research, LDR).
 Deep research is an MCP server that runs as a sidecar container and speaks
 HTTP.
 
-- Image built from `python:3.12-slim-bookworm` (`services/deep-research/Dockerfile`),
+- Image built from `python:3.12-slim-bookworm` (`services/deep-research/Dockerfile`;
+  the other shims use 3.15, which `local-deep-research` does not support),
   with `local-deep-research[mcp]==1.6.11` and `mcp-proxy`.
 - `mcp-proxy --pass-environment` wraps the stdio `ldr-mcp` server as
   streamable-http on port 8081; the gateway exposes it at `/tools/research/mcp`.

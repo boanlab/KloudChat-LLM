@@ -21,7 +21,7 @@ curl -sf -H "Authorization: Bearer $KEY" http://localhost:8080/litellm/v1/models
 - Every container `running (healthy)` means normal.
 - `health: starting` past the service's `start_period` needs diagnosis: 120 s
   for pooling and transcription, 600 s for the chat models, 1500 s for
-  Flash-Next.
+  Flash.
 
 ## Container restart loop
 
