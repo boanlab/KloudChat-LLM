@@ -349,8 +349,10 @@ independent fail-closed controls:
 Embedding, reranking, transcription and image models have no OpenRouter route
 at all; they are `strict-local/*` only.
 
-A node whose `/metrics` cannot be scraped is left out, and the remaining nodes
-decide. With no node reachable, strict capacity is unavailable and the request
+With several replicas of one model, the alias is saturated only when every
+reachable replica is at its cap or queueing; while one replica is free, LiteLLM's
+least-busy routing sends the call there. A node whose `/metrics` cannot be
+scraped is left out, and the remaining nodes decide. With no node reachable, strict capacity is unavailable and the request
 is rejected; normal aliases fail open.
 
 `./scripts/manage.sh team add-strict` adds a strict alias to each team's
