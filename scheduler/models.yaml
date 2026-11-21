@@ -10,7 +10,8 @@
 models:
   # Chat: conversation, vision, coding, deep research, titles, memory
   # extraction. Dense, hybrid attention (16 of 64 layers hold KV), NVFP4.
-  # Replicated onto every node with room.
+  # One instance, on the head node beside retrieval and transcription; every
+  # other node goes to Flash-Next.
   - id: qwen3.8-27b
     hf_repo: unsloth/Qwen3.8-27B-NVFP4
     dir: qwen3.8-27b-nvfp4
@@ -19,6 +20,8 @@ models:
     # Native context as the floor: no shorter window
     ctx_floor: 262144
     priority: 20
+    placement: head
+    replicas: 1
     openrouter: qwen/qwen3.8-27b
     # Deep research runs for minutes
     timeout: 3600
@@ -31,7 +34,8 @@ models:
   # Quality and judging: hard questions, review, grading. MoE (512 experts, 10
   # active), hybrid attention (12 of 48 layers hold KV), NVFP4 body, FP8 PLE
   # table (48 GiB; page cache on GB10, pinned system RAM on a discrete card). A
-  # pool node to itself; seated before the 27B.
+  # pool node to itself, seated before the 27B; each further pool node takes one
+  # more instance, so Flash grows with the cluster.
   - id: qwen3.8-flash
     hf_repo: nvidia/Qwen3.8-Flash-Next-NVFP4
     dir: qwen3.8-flash-next-nvfp4
@@ -67,6 +71,7 @@ models:
     port: 9000
     runner: transcription
     placement: head-first
+    replicas: 1
     # Below bge-m3
     priority: 4
     # 448-token decoder context; longer audio split server-side
@@ -83,6 +88,7 @@ models:
     ctx_floor: 8192
     priority: 2
     placement: head-first
+    replicas: 1
 
   # Retrieval embeddings
   - id: bge-m3
@@ -93,8 +99,46 @@ models:
     # Above whisper and the reranker: the whole retrieval path
     priority: 5
     placement: head-first
+    replicas: 1
     # One chunk at a time
     ctx_floor: 8192
+
+  # Image generation (vllm-omni, docker-compose.vllm-omni.yml) behind
+  # imagegen-shim: strict-local only, no external route. Sized by weights and
+  # activation, with no context or KV; `weight` is what the model holds while
+  # serving. One instance each; site.yaml pins them with `nodes` and `cards`.
+  - id: qwen-image-edit-2511
+    runner: image
+    hf_repo: Qwen/Qwen-Image-Edit-2511
+    env_prefix: VLLM_OMNI_QWENIMAGEEDIT
+    service: omni-qwen-image-edit
+    port: 8093
+    weight: 56GiB
+    activation: 2GiB
+    priority: 1
+    replicas: 1
+
+  - id: qwen-image-2512
+    runner: image
+    hf_repo: Qwen/Qwen-Image-2512
+    env_prefix: VLLM_OMNI_QWENIMAGE
+    service: omni-qwen-image
+    port: 8092
+    weight: 53GiB
+    activation: 2GiB
+    priority: 1
+    replicas: 1
+
+  - id: z-image-turbo
+    runner: image
+    hf_repo: Tongyi-MAI/Z-Image-Turbo
+    env_prefix: VLLM_OMNI_ZIMAGE
+    service: omni-z-image
+    port: 8091
+    weight: 24GiB
+    activation: 2GiB
+    priority: 1
+    replicas: 1
 
 # Derived values
 #
@@ -106,12 +150,16 @@ models:
 #   ctx_floor       ctx_target / 4, never below 32768
 #   concurrent_sessions 4                    full-length sessions KV is sized for;
 #                                            halved on a card without room
-#   service         env_prefix lowercased    service in docker-compose.vllm.yml
+#   service         env_prefix lowercased    service in docker-compose.vllm.yml (the
+#                                            picture models declare theirs, omni-*)
 #   port            sequential from 8001     declared on every entry so an
 #                                            insertion does not shift the rest
 #   arches          all                      declare only to exclude one
 #   runner          generate                 "pooling" for embedding and reranking,
-#                                            "transcription" for the STT backend
+#                                            "transcription" for the STT backend,
+#                                            "image" for a vllm-omni picture model
+#                                            (compose service in docker-compose.vllm-omni.yml,
+#                                            sized by weight + activation, no KV)
 #   tensor_parallel 1                        cards to shard across on one node
 #   activation      10 GiB (2 GiB pooling),  runtime headroom per card
 #                   at most 12% of the card
@@ -127,6 +175,8 @@ models:
 #
 #   gpu_util        sized                    fixed --gpu-memory-utilization (0.05-0.95):
 #                                            charged as is, context kept at ctx_floor
+#   nodes           any                      node ids or hosts it may run on (site.yaml)
+#   cards           any                      CUDA ordinals it may take on a node (site.yaml)
 #
 #   manual          false                    run by hand: no hf_repo needed, never
 #                                            placed, and VLLM_MODELS cannot select it

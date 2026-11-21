@@ -141,7 +141,8 @@ emit_or_image() {
 }
 
 # Self-hosted image models behind imagegen-shim, one entry per name in
-# IMAGEGEN_BACKENDS (a name repeats per node), as strict-local/<name> only
+# IMAGEGEN_BACKENDS and IMAGEGEN_PLACED (a name repeats per node), as
+# strict-local/<name> only
 emit_local_images() {
   local raw="$1" item name seen=","
   [[ -n "$raw" ]] || return 0
@@ -448,7 +449,7 @@ SECTION=$(
     or_model_excluded "$m" && continue
     emit_or_image "$m" "${MODEL_IMAGE_OUT_COST[$m]}" "${MODEL_IMAGE_IN_PM[$m]}"
   done
-  emit_local_images "$(env_get IMAGEGEN_BACKENDS)"
+  emit_local_images "$(env_get IMAGEGEN_BACKENDS),$(env_get IMAGEGEN_PLACED)"
   emit_local_stt "$(env_get WHISPER_URLS)"
   # --- audio generation (speech + music), same transport ---
   for m in "${OR_AUDIO_MODELS[@]}"; do

@@ -25,7 +25,7 @@ secrets last. The sections below group the same variables by who sets them.
 |---|---|---|
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` | Commercial models and local fallback. Required without a GPU |
 | `HF_TOKEN` | token | Hugging Face gated repositories. Weight downloads only |
-| `VLLM_NODES` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (retrieval, transcription); the rest are the pool (Flash-Next); chat replicas land on any node with room. See [models.md](models.md#where-models-are-defined) |
+| `VLLM_NODES` | `user@host,...` | GPU node SSH targets. Empty means no local models. **Order matters**: the first target is the head node (27B, retrieval, transcription); the rest are the pool (Flash-Next, one per node); chat replicas land on any node with room. See [models.md](models.md#where-models-are-defined) |
 | `VLLM_NODES_HOLD` | `user@host,...`, optional | Targets in `VLLM_NODES` the scheduler leaves alone: probed and listed by `scheduler inventory`, nothing placed, started or stopped there, and `setup.sh vllm` installs nothing. For a node that runs something else, such as the image models. An entry is the target, its host or its node id; the head node cannot be held. See [scheduler](../scheduler/README.md#held-nodes) |
 | `VLLM_MODELS` | `id,id` | Models to deploy. Defined in `scheduler/models.yaml`. Default `qwen3.8-27b,qwen3.8-flash,bge-m3,bge-reranker-v2-m3,whisper-large-v3`; `qwen3.8-flash` needs a GB10 or RTX PRO 6000 pool node to itself (drop it on a single node) |
 | `VLLM_ENDPOINTS` | `http://host:port,id=http://host:port` | vLLM servers you run yourself: a bare URL is asked what it serves, `id=URL` is registered even while down. Never written by the scheduler, which counts each entry as an instance of its model: a model served here is not placed again for coverage, and the model's `replicas` in `models.yaml` caps the total. A scheduled node's service an entry points at is never stopped. See [models.md](models.md#vllm-local) |
@@ -84,8 +84,8 @@ Set by hand on the compose host; the scheduler does not write these:
 | Variable | Contents |
 |---|---|
 | `WHISPER_URLS` | Transcription servers (`vllm-whisper`) you run by hand, CSV of URLs. The scheduler lists its own as `whisper-large-v3` in `VLLM_PLACED`. With neither, dictation is off; audio is never sent to OpenRouter |
-| `IMAGEGEN_BACKENDS` | Self-hosted image models as `name=URL` pairs without `/v1`, one per node serving the name. Set: `setup.sh` enables the `imagegen` profile and `gen-litellm-config.sh` registers each name as `strict-local/<name>` only. See [models.md](models.md#self-hosted-image-models) |
-| `GPU_EXPORTER_PORT` | gpu-exporter port on every GPU node, default `9835`. metrics-shim finds the nodes from `VLLM_ENDPOINTS`, `VLLM_PLACED`, `WHISPER_URLS`, `IMAGEGEN_BACKENDS` and `VLLM_NODES`. See [tools.md](tools.md#metrics-vllm-and-gpu-exporter) |
+| `IMAGEGEN_BACKENDS` | Self-hosted image models you run by hand, as `name=URL` pairs without `/v1`, one per node serving the name. Set: `setup.sh` enables the `imagegen` profile and `gen-litellm-config.sh` registers each name as `strict-local/<name>` only. See [models.md](models.md#self-hosted-image-models) |
+| `GPU_EXPORTER_PORT` | gpu-exporter port on every GPU node, default `9835`. metrics-shim finds the nodes from `VLLM_ENDPOINTS`, `VLLM_PLACED`, `WHISPER_URLS`, `IMAGEGEN_BACKENDS`, `IMAGEGEN_PLACED` and `VLLM_NODES`. See [tools.md](tools.md#metrics-vllm-and-gpu-exporter) |
 
 ## 5. Images
 

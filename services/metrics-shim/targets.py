@@ -40,7 +40,7 @@ def _base(raw: str) -> tuple[str, str, int] | None:
 
 
 def _images(raw: str) -> list[tuple[str, str]]:
-    """(served name, URL) pairs of IMAGEGEN_BACKENDS."""
+    """(served name, URL) pairs of IMAGEGEN_BACKENDS and IMAGEGEN_PLACED."""
     out = []
     for item in raw.split(","):
         name, sep, url = item.strip().partition("=")
@@ -68,7 +68,8 @@ def discover(env: dict[str, str]) -> list[Target]:
             if parsed := _base(raw.rpartition("=")[2]):
                 url, host, port = parsed
                 add(Target(f"vllm-{_slug(host)}-{port}", "vllm", url, host))
-    for model, raw in _images(env.get("IMAGEGEN_BACKENDS", "")):
+    images = f"{env.get('IMAGEGEN_BACKENDS', '')},{env.get('IMAGEGEN_PLACED', '')}"
+    for model, raw in _images(images):
         if parsed := _base(raw):
             url, host, port = parsed
             add(Target(f"image-{_slug(host)}-{port}", "image", url, host, f"local/{model.removeprefix('local/')}"))

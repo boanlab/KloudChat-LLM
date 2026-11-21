@@ -129,9 +129,9 @@ step_enable_stt_profile() {
   echo "  [profile] COMPOSE_PROFILES=${profiles},whisper (transcription shim)"
 }
 
-# `imagegen` profile once IMAGEGEN_BACKENDS is set
+# `imagegen` profile once IMAGEGEN_BACKENDS or IMAGEGEN_PLACED is set
 step_enable_imagegen_profile() {
-  [[ -n "$(env_get IMAGEGEN_BACKENDS)" ]] || return 0
+  [[ -n "$(env_get IMAGEGEN_BACKENDS)$(env_get IMAGEGEN_PLACED)" ]] || return 0
   local profiles; profiles="$(env_get COMPOSE_PROFILES)"
   profiles="${profiles:-tools,models}"
   [[ ",${profiles}," == *",imagegen,"* ]] && return 0
