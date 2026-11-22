@@ -3,8 +3,8 @@
 ## Reporting a vulnerability
 
 Report privately through
-[GitHub Security Advisories](https://github.com/boanlab/KloudChat-LLM/security/advisories/new),
-or by email to the maintainers. Do not open a public issue.
+[GitHub Security Advisories](https://github.com/boanlab/KloudChat-LLM/security/advisories/new).
+Do not open a public issue.
 
 Include the affected component, the impact you were able to demonstrate, and
 the steps to reproduce it. Reports are acknowledged within five working days.

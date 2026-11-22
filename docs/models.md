@@ -74,13 +74,13 @@ OpenRouter.
 **Node** is `placement` in `models.yaml`: `head` is the first target in
 `VLLM_NODES`, `pool` is every other node, `any` is wherever it fits, and
 `head-first` puts the first instance on the head and lets extra ones go
-anywhere. Ports, env prefixes and priorities are in `models.yaml`; the default
+anywhere. Placement is ignored on a single-node cluster. Ports, env prefixes and priorities are in `models.yaml`; the default
 `VLLM_MODELS` is in `.env.example`.
 
 | Registered as | Service | Quant | Node | Role |
 |---|---|---|---|---|
-| `local/qwen3.8-27b` | `vllm-qwen27b` | NVFP4 | any | Chat: conversation, vision, coding, deep research, titles, memory extraction. One replica per node with room |
-| `local/qwen3.8-flash` | `vllm-qwenflash` | NVFP4 | pool | Quality and judging: hard questions, review, grading. Qwen3.8-Flash-Next, MoE, context floor 131072. A GB10 or RTX PRO 6000 node to itself |
+| `local/qwen3.8-27b` | `vllm-qwen27b` | NVFP4 | head | Chat: conversation, vision, coding, deep research, titles, memory extraction. One instance |
+| `local/qwen3.8-flash` | `vllm-qwenflash` | NVFP4 | pool | Quality and judging: hard questions, review, grading. Qwen3.8-Flash-Next, MoE, context floor 131072. A GB10 or RTX PRO 6000 node to itself; one instance per pool node |
 | `strict-local/bge-m3` | `vllm-bgem3` | BF16 | head-first | Retrieval embeddings. Pooling runner |
 | `strict-local/bge-reranker-v2-m3` | `vllm-rerank` | BF16 | head-first | Retrieval reranking. Pooling runner |
 | `strict-local/whisper-large-v3` | `vllm-whisper` | FP16 | head-first | Transcription, through whisper-shim (`/tools/stt`) |
@@ -95,9 +95,9 @@ context, and MTP speculative decoding from the checkpoint's own draft head
 (`VLLM_QWEN27B_SPEC_TOKENS`, default 5). Its context floor is the native
 262144: a card that cannot hold that delegates rather than serving a shorter
 window. It runs once, on the head node beside retrieval and transcription
-(`placement: head`, `replicas: 1`); the pool is left to `qwen3.8-flash`. With
-more than one instance (`VLLM_ENDPOINTS`, or `replicas` raised in `site.yaml`)
-they register under `local/qwen3.8-27b` and LiteLLM spreads requests across them (`least-busy`).
+(`placement: head`, `replicas: 1`); the pool is left to `qwen3.8-flash`. Extra
+instances (`VLLM_ENDPOINTS`, or `replicas` raised in `site.yaml`) register
+under `local/qwen3.8-27b` and LiteLLM spreads requests across them (`least-busy`).
 Each deployment carries a 3600 s request timeout and a concurrency-gate cap of
 128 in-flight requests, and a default `presence_penalty` of 1.0 that a
 request's own value replaces: without it the 27B repeats list items until the
@@ -111,13 +111,13 @@ out. The OpenRouter twin is not given one.
 `nvidia/Qwen3.8-Flash-Next-NVFP4`, an NVFP4 body with an FP8 PLE n-gram table.
 On GB10 the table (48 GiB) is read in place from the checkpoint files
 (`--engram-config '{"checkpoint_mapped": true}'`), which needs unified memory;
-the option is vllm#58439, and a vLLM without it rejects the flag at startup. On
+a vLLM without the option rejects the flag at startup. On
 a discrete card `install-vllm.sh` sets `VLLM_QWENFLASH_ENGRAM={}` and the table
 sits in pinned host RAM. It declares a 6 GiB `activation` (the planner default
 is 10) so that one RTX PRO 6000 seats it. It serves 131072 context with MTP (2
 draft tokens) and at most 16 concurrent sequences: a whole node. It is
-pool-placed with priority 30, so it seats before the 27B, which takes the
-remaining nodes. A single-node cluster cannot hold both; leave
+pool-placed with priority 30, so it seats before the 27B and grows by one
+instance per pool node. A single-node cluster cannot hold both; leave
 `qwen3.8-flash` out of `VLLM_MODELS` there (it stays reachable as
 `qwen/qwen3.8-flash`). It is registered as `local/qwen3.8-flash` and
 `strict-local/qwen3.8-flash`, with a 3600 s timeout, a concurrency-gate cap
@@ -130,8 +130,8 @@ research all run on the 27B.
 
 **Quantisation.** Chat is NVFP4 (Flash-Next's PLE table FP8),
 retrieval BF16, transcription FP16. The supported cards (GB10, RTX 5090,
-RTX PRO 5000, RTX PRO 6000) execute all of them. 32 GiB usable is the floor; `manage-vllm.sh up` without a service
-name refuses below it.
+RTX PRO 5000, RTX PRO 6000) execute all of them. 32 GiB usable is the floor;
+`manage-vllm.sh up` without a service name refuses below it.
 
 **Parsers** (set in `docker-compose.vllm.yml`):
 
@@ -226,13 +226,13 @@ scripts/gen-litellm-config.sh && docker compose restart litellm
 The helper is read-only and needs no key. It matches an endpoint to the ZDR list by provider
 tag and model name; check one result against the OpenRouter model page before relying on it.
 The model_info the picker shows (`kchat_run_policy`, `kchat_provider_pinned`,
-`kchat_quantization`, `kchat_zdr`) is written at generation time, so regenerate after the
-provider's own change of quantization.
+`kchat_quantization`, `kchat_zdr`) is written at generation time, so regenerate after a provider
+changes its quantization.
 
 **Provider in streamed answers.** OpenRouter names the provider that answered in each response,
 but LiteLLM's streaming parser drops it. `callbacks/provider_echo.py` (listed under
-`litellm_settings.callbacks` in `config.yaml.example`; add it to an existing `config.yaml`)
-carries it through, and KloudChat shows it under 「이번 답」.
+`litellm_settings.callbacks` in `config.yaml.example`) carries it through, and
+KloudChat shows it under 「이번 답」.
 
 ### Self-hosted run information
 
@@ -354,8 +354,8 @@ at all; they are `strict-local/*` only.
 With several replicas of one model, the alias is saturated only when every
 reachable replica is at its cap or queueing; while one replica is free, LiteLLM's
 least-busy routing sends the call there. A node whose `/metrics` cannot be
-scraped is left out, and the remaining nodes decide. With no node reachable, strict capacity is unavailable and the request
-is rejected; normal aliases fail open.
+scraped is left out, and the remaining nodes decide. With no node reachable,
+strict aliases are rejected and normal aliases fail open.
 
 `./scripts/manage.sh team add-strict` adds a strict alias to each team's
 allowlist only where that team already has the matching `local/*` model.
@@ -377,8 +377,8 @@ prompt and response bodies are not.
 `qwen3.8-27b` serves 262144 wherever it is placed (its floor is the native
 context). `qwen3.8-flash` serves 131072 (`ctx_target` caps it below the
 native 262144) and sizes KV for 8 sessions (2 on an RTX PRO 6000), leaving the
-rest of a GB10 to the page cache that holds its PLE table. The scheduler writes the per-node value
-as `VLLM_<PREFIX>_MAX_LEN`.
+rest of a GB10 to the page cache that holds its PLE table. The scheduler writes
+the per-node value as `VLLM_<PREFIX>_MAX_LEN`.
 
 ### Embeddings
 
@@ -481,10 +481,9 @@ node's `.env`, and the orchestrator's `IMAGEGEN_PLACED` (read like
 route: with no seat it is simply not served (`plan` prints "Not placed"). A
 site file pins where: `nodes` (ids or hosts) and `cards` (CUDA ordinals), for
 example the edit model on card 1 of the image node and the other two on card 0.
-Models not in `VLLM_MODELS`, or hand-run ones in `IMAGEGEN_BACKENDS`, stay as
-before: the memory they hold is measured from `nvidia-smi` and charged to their
+Models not in `VLLM_MODELS`, or hand-run ones in `IMAGEGEN_BACKENDS`, are not
+placed: the memory they hold is measured from `nvidia-smi` and charged to their
 card ([GPU memory](gpu-memory.md)), so start them before `scheduler apply`.
-Z-Image-Turbo holds about 25 GiB while serving.
 
 ## Retrieval
 

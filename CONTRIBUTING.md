@@ -107,14 +107,9 @@ CI fails when the four disagree.
 
 ## Commit and pull request style
 
-Short imperative subject, body explaining the reasoning:
-
-```
-scheduler: keep resident services out of the stop set
-
-docker ps returns every container on a node, including ones the planner
-never placed. Stopping those takes the node's STT backend down.
-```
+One short subject saying what the change does (the history writes them in
+Korean), then a body explaining the reasoning when it is not obvious. Dependency
+bumps use the `deps:` prefix and workflow bumps `ci:`.
 
 Pull requests say how the change was verified. For anything that only runs on
 GPU hardware, say plainly when it was not verified there.
