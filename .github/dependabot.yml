@@ -14,10 +14,23 @@ updates:
       - /services/search-shim
       - /services/index-shim
       - /services/code-interpreter
+      - /services/imagegen-shim
+      - /services/metrics-shim
+      - /services/gpu-exporter
     schedule:
       interval: monthly
     commit-message:
       prefix: deps
+
+  # ocr-shim stays on the Python onnxruntime has wheels for
+  - package-ecosystem: docker
+    directory: /services/ocr-shim
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: deps
+    ignore:
+      - dependency-name: python
 
   # deep-research stays on the Python its local-deep-research pin is tested with
   - package-ecosystem: docker

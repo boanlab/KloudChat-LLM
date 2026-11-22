@@ -1,3 +1,4 @@
+# onnxruntime ships no wheel for newer Python
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
