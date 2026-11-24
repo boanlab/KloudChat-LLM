@@ -6,8 +6,10 @@
 #   omni-z-image          Z-Image-Turbo, ~25 GiB while serving
 #   omni-qwen-image       Qwen-Image-2512, ~55 GiB of weights
 #   omni-qwen-image-edit  Qwen-Image-Edit-2511 (edits a given picture), ~58 GiB of weights
+#   omni-qwen3-tts        Qwen3-TTS-12Hz-1.7B-CustomVoice (speech, /v1/audio/speech), ~9.5 GiB
+#                         across its two stages; LiteLLM reaches it directly, no shim
 #
-# Each service reads VLLM_OMNI_<MODEL>_DEVICES (ZIMAGE, QWENIMAGE, QWENIMAGEEDIT),
+# Each service reads VLLM_OMNI_<MODEL>_DEVICES (ZIMAGE, QWENIMAGE, QWENIMAGEEDIT, QWEN3TTS),
 # defaulting to VLLM_OMNI_DEVICES (default all); it is the reservation's
 # device_ids, which the nvidia driver applies over the environment.
 #
@@ -133,6 +135,49 @@ services:
       - "8093:8093"
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8093/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+
+  # Speech on /v1/audio/speech (OpenAI-shaped). Two vllm-omni stages (talker,
+  # code2wav); each takes its own share of the card, set below the bundled
+  # 0.3 each, which would claim 57 GiB of a 95 GiB card. enforce_eager: Blackwell
+  # (sm_120) graph capture is untested here.
+  omni-qwen3-tts:
+    <<: *vllm-omni
+    container_name: omni-qwen3-tts
+    logging: *logging
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_OMNI_QWEN3TTS_DEVICES:-${VLLM_OMNI_DEVICES:-all}}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${VLLM_OMNI_QWEN3TTS_DEVICES:-${VLLM_OMNI_DEVICES:-all}}"]
+              capabilities: [gpu]
+    command:
+      - serve
+      - /model
+      - --omni
+      - --trust-remote-code
+      - --enforce-eager
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8094"
+      - --served-model-name
+      - local/qwen3-tts
+      - --stage-overrides
+      - '{"0":{"max_num_seqs":8,"gpu_memory_utilization":${VLLM_OMNI_QWEN3TTS_STAGE0_UTIL:-0.06}},"1":{"max_num_seqs":8,"gpu_memory_utilization":${VLLM_OMNI_QWEN3TTS_STAGE1_UTIL:-0.04}}}'
+    volumes:
+      - ${VLLM_MODELS_ROOT:-/var/lib/vllm/models}/${VLLM_OMNI_QWEN3TTS_DIR:-qwen3-tts}:/model:ro
+    ports:
+      - "8094:8094"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8094/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5

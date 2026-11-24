@@ -31,7 +31,7 @@ def test_every_model_in_the_catalogue_has_a_service_here(services: dict, omni_se
     for spec in registry.load(MODELS_YAML):
         if spec.manual:
             continue
-        defined = omni_services if spec.is_image else services
+        defined = omni_services if spec.is_omni else services
         assert spec.service in defined, (
             f"{spec.id} is in the catalogue but {spec.service} is not a service "
             f"in {spec.compose_file} — the scheduler would place it and the "

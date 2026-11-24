@@ -84,6 +84,7 @@ anywhere. Placement is ignored on a single-node cluster. Ports, env prefixes and
 | `strict-local/bge-m3` | `vllm-bgem3` | BF16 | head-first | Retrieval embeddings. Pooling runner |
 | `strict-local/bge-reranker-v2-m3` | `vllm-rerank` | BF16 | head-first | Retrieval reranking. Pooling runner |
 | `strict-local/whisper-large-v3` | `vllm-whisper` | FP16 | head-first | Transcription, through whisper-shim (`/tools/stt`) |
+| `strict-local/qwen3-tts` | `omni-qwen3-tts` | BF16 | any (vllm-omni) | Speech synthesis, called by LiteLLM directly; see [Self-hosted speech model](#self-hosted-speech-model) |
 
 Every chat model is also registered as `strict-local/<id>` over the same
 backend: a privacy alias that fails rather than leaving vLLM. Embedding,
@@ -416,6 +417,31 @@ in the UI.
 | Transcription (STT) | `whisper-shim` to the GPU nodes' `vllm-whisper` only, registered in LiteLLM as `strict-local/whisper-large-v3` (no `local/` alias, no OpenRouter route), so audio never leaves the network |
 
 Per-tool paths are in [tools.md](tools.md).
+
+### Self-hosted speech model
+
+`qwen3-tts` (Qwen3-TTS-12Hz-1.7B-CustomVoice, Apache-2.0, Korean and English among ten
+languages, nine preset voices including `sohee`) runs under vllm-omni as the
+`omni-qwen3-tts` service (port 8094, `docker-compose.vllm-omni.yml`). There is no
+shim: LiteLLM registers it as `strict-local/qwen3-tts` (`mode: audio_speech`, no
+`local/` alias, no OpenRouter twin) and calls the node's `/v1/audio/speech`
+directly, so text sent for synthesis never leaves the network. The scheduler
+(`runner: speech`) sizes it like a picture model, weights plus activation and
+no KV, and lists where it answers in `VLLM_PLACED`; a node run by hand is listed
+in `VLLM_ENDPOINTS` as `qwen3-tts=http://<node>:8094`. Placement for the
+current layout: [qwen3-tts-placement.md](qwen3-tts-placement.md).
+
+```bash
+./scripts/manage-vllm-omni.sh download qwen3-tts   # about 4.2 GB under VLLM_MODELS_ROOT/qwen3-tts
+./scripts/manage-vllm-omni.sh up qwen3-tts
+curl -s http://localhost:8094/v1/audio/speech -H 'Content-Type: application/json' \
+  -d '{"input":"안녕하세요.","voice":"sohee","language":"Korean"}' --output out.wav
+```
+
+Request fields follow OpenAI's: `input`, `voice` (`vivian`, `ryan`, `aiden`, `dylan`,
+`eric`, `ono_anna`, `serena`, `sohee`, `uncle_fu`), `response_format` (`wav` default,
+`mp3`, `flac`, `pcm`, `opus`), plus `language`, `instructions` (style) and
+`stream_format` (`sse` or `audio`).
 
 ### Self-hosted image models
 

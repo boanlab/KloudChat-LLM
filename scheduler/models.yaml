@@ -140,6 +140,25 @@ models:
     priority: 1
     replicas: 1
 
+  # Speech synthesis (vllm-omni, docker-compose.vllm-omni.yml): strict-local
+  # only. LiteLLM calls its /v1/audio/speech directly (no shim); the URL is in
+  # VLLM_PLACED. Sized by weights and activation, no KV. weight: talker 3.57 GiB
+  # + speech tokenizer 0.64 GiB on disk, rounded up. activation: the two stage
+  # budgets of the compose service (gpu_memory_utilization 0.06 + 0.04 of a
+  # 95.6 GiB card = 9.5 GiB) less the weight. Cards under ~48 GiB need other
+  # VLLM_OMNI_QWEN3TTS_STAGE*_UTIL values.
+  - id: qwen3-tts
+    runner: speech
+    hf_repo: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+    env_prefix: VLLM_OMNI_QWEN3TTS
+    service: omni-qwen3-tts
+    port: 8094
+    weight: 4.5GiB
+    activation: 5GiB
+    # Like the picture models: below retrieval and transcription
+    priority: 1
+    replicas: 1
+
 # Derived values
 #
 # Declaring a field of the same name on an entry overrides the derived value.

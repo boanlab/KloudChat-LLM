@@ -153,6 +153,17 @@ node that also takes scheduled models, start the omni containers before
 `scheduler apply`; a node given to the image models is listed in
 `VLLM_NODES_HOLD` and the scheduler leaves it alone.
 
+### Speech model (qwen3-tts)
+
+`qwen3-tts` (`omni-qwen3-tts`, `runner: speech`) is charged like a picture model:
+`weight` 4.5 GiB (talker 3.57 GiB plus the 0.64 GiB speech tokenizer on disk, rounded
+up) and `activation` 5 GiB, 9.5 GiB on one card. The activation figure is the budget
+of its two vllm-omni stages: the service passes `gpu_memory_utilization` 0.06 and 0.04
+(`VLLM_OMNI_QWEN3TTS_STAGE0_UTIL` / `_STAGE1_UTIL`) through `--stage-overrides`, which
+on a 95.6 GiB card is 5.7 + 3.8 GiB. The bundled 0.3 per stage would claim 57 GiB, and
+the fractions are of the card, so on a smaller card raise them. Worked placement:
+[qwen3-tts-placement.md](qwen3-tts-placement.md).
+
 ## Tuning knobs
 
 Normally nobody sets these. The placement step of `setup.sh all`

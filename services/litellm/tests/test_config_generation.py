@@ -836,3 +836,21 @@ def test_the_kv_cache_label_is_exactly_cache_dtype(tmp_path: Path, labels: str, 
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == expected
+
+
+def test_a_self_hosted_speech_model_is_registered_strict_local_straight_to_the_node(tmp_path: Path) -> None:
+    """qwen3-tts: audio_speech to the node's /v1, no shim, no local/ alias, no OpenRouter twin."""
+    result, _ = _run_generator(
+        tmp_path, with_vllm=True, with_openrouter=True,
+        env_values={"VLLM_ENDPOINTS": "qwen3.8-27b=http://qwen.test:8000,qwen3-tts=http://tts.test:8094"},
+    )
+    models, _ = _parse_dry_run(result.stdout)
+    speech = [m for m in models if m["model_name"] == "strict-local/qwen3-tts"]
+    assert len(speech) == 1
+    params, info = speech[0]["litellm_params"], speech[0]["model_info"]
+    assert params["model"] == "openai/local/qwen3-tts"
+    assert params["api_base"] == "http://tts.test:8094/v1"
+    assert info["mode"] == "audio_speech"
+    assert info["kchat_data_boundary"] == "self_hosted" and info["kchat_strict_local"] is True
+    assert info["kchat_privacy_only"] is True
+    assert not [m for m in models if m["model_name"] == "local/qwen3-tts"]

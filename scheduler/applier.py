@@ -190,13 +190,13 @@ def compute_diff(
             if spec is None:
                 continue
             # A picture model has no context or memory share: its cards only
-            options = [] if spec.is_image else [
+            options = [] if spec.is_omni else [
                 (f"{spec.env_prefix}_MAX_LEN", str(p.ctx)),
                 (f"{spec.env_prefix}_GPU_UTIL", f"{p.gpu_util:.2f}"),
             ]
             # TP 1 is the compose default: written only to undo a sharded node
             tp_key = f"{spec.env_prefix}_TP"
-            if not spec.is_image and (
+            if not spec.is_omni and (
                 p.tp > 1 or (here or {}).get(tp_key) not in (None, "", "1")
             ):
                 options.append((tp_key, str(p.tp)))

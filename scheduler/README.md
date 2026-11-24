@@ -173,6 +173,10 @@ models:
     cards: [0]
 ```
 
+`qwen3-tts` (`runner: speech`, `omni-qwen3-tts`, port 8094) is sized and pinned the
+same way (9.5 GiB, no KV), with one difference in routing: it has no shim, so its
+URL goes to `VLLM_PLACED` and LiteLLM calls `/v1/audio/speech` on the node itself.
+
 Containers of image models not in `VLLM_MODELS` are neither stopped nor started:
 their memory counts as foreign.
 

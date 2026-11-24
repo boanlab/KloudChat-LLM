@@ -251,29 +251,34 @@ declare -A VLLM_MODEL_WEIGHT_GB=(
 # GiB over the weights: activations plus KV for one request
 VLLM_RUNTIME_HEADROOM_GB=6
 
-# Image models (docker-compose.vllm-omni.yml): download alias → HF repo, diffusers
+# vllm-omni models (docker-compose.vllm-omni.yml): download alias → HF repo; picture models in diffusers
 # layout, weights under VLLM_MODELS_ROOT/<alias>
 declare -A OMNI_MODELS=(
   [z-image-turbo]="Tongyi-MAI/Z-Image-Turbo"
   [qwen-image-2512]="Qwen/Qwen-Image-2512"
   [qwen-image-edit-2511]="Qwen/Qwen-Image-Edit-2511"
+  # Speech (talker plus speech_tokenizer/), not a diffusers layout
+  [qwen3-tts]="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 )
 # Download size (GiB), for the disk check
 declare -A OMNI_MODEL_DISK_GB=(
   [z-image-turbo]=31
   [qwen-image-2512]=54
   [qwen-image-edit-2511]=58
+  [qwen3-tts]=5
 )
 # Compose service and served port per alias
 declare -A OMNI_SERVICE=(
   [z-image-turbo]=omni-z-image
   [qwen-image-2512]=omni-qwen-image
   [qwen-image-edit-2511]=omni-qwen-image-edit
+  [qwen3-tts]=omni-qwen3-tts
 )
 declare -A OMNI_PORT=(
   [z-image-turbo]=8091
   [qwen-image-2512]=8092
   [qwen-image-edit-2511]=8093
+  [qwen3-tts]=8094
 )
 
 # Download set for a node without an explicit model list

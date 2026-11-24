@@ -229,6 +229,28 @@ emit_vllm_pooling() {  # $1=id  $2=url_csv  $3=embedding|rerank
   done <<< "$urls"
 }
 
+# Local speech deployments (vllm-omni /v1/audio/speech), as strict-local/<id> only.
+# LiteLLM's openai provider calls the node directly: no shim, one entry per node.
+emit_vllm_speech() {  # $1=id  $2=url_csv
+  local m="$1" url_csv="$2" served urls
+  [[ -n "$url_csv" ]] || return 0
+  urls="$(__vllm_resolved_urls "$m" "$url_csv")"
+  while IFS= read -r url; do
+    [[ -n "$url" ]] || continue
+    served="$(local_served_at "$m" "$url")"
+    echo "  - model_name: strict-local/${m}"
+    echo "    litellm_params:"
+    echo "      model: openai/${served}"
+    echo "      api_base: ${url%/}/v1"
+    echo "      api_key: none"
+    echo "    model_info:"
+    echo "      mode: audio_speech"
+    echo "      input_cost_per_token: 0.0000000000"
+    echo "      output_cost_per_token: 0.0000000000"
+    emit_kchat_boundary self_hosted true true
+  done <<< "$urls"
+}
+
 # URLs from the csv that serve model $1 under its served name, deduplicated; the
 # whole csv when none answer yet (LiteLLM's cooldown recovers once they do)
 __vllm_resolved_urls() {
@@ -427,6 +449,7 @@ SECTION=$(
   for m in "${LOCAL_IDS[@]}"; do
     case "$(local_api "$m")" in
       embedding|rerank) emit_vllm_pooling "$m" "${LOCAL_URLS[$m]}" "$(local_api "$m")" ;;
+      speech) emit_vllm_speech "$m" "${LOCAL_URLS[$m]}" ;;
     esac
   done
   # --- commercial (OpenRouter) ---

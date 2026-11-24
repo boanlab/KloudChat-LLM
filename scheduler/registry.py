@@ -22,16 +22,17 @@ BASE_PORT = 8001
 DEFAULT_CONCURRENT_SESSIONS = 4
 
 #: "generate" | "pooling" (vLLM --runner names); "transcription" marks the STT
-#: backend behind whisper-shim; "image" a vllm-omni picture model behind imagegen-shim.
-RUNNERS = ("generate", "pooling", "transcription", "image")
+#: backend behind whisper-shim; "image" a vllm-omni picture model behind imagegen-shim;
+#: "speech" a vllm-omni text-to-speech model, routed by LiteLLM straight to /v1/audio/speech.
+RUNNERS = ("generate", "pooling", "transcription", "image", "speech")
 
 #: Route LiteLLM registers: chat (local/ and strict-local/), embedding, rerank,
 #: transcription (strict-local only, through whisper-shim), image (strict-local
-#: only, through imagegen-shim)
-APIS = ("chat", "embedding", "rerank", "transcription", "image")
+#: only, through imagegen-shim), speech (strict-local only, /v1/audio/speech)
+APIS = ("chat", "embedding", "rerank", "transcription", "image", "speech")
 _API_BY_RUNNER = {
     "generate": "chat", "pooling": "embedding", "transcription": "transcription",
-    "image": "image",
+    "image": "image", "speech": "speech",
 }
 
 #: Compose file and project of each runner's services on a node
@@ -147,12 +148,23 @@ class ModelSpec:
         return self.runner == "image"
 
     @property
+    def is_speech(self) -> bool:
+        """A vllm-omni speech model: sized like a picture model (weights and activation, no KV)."""
+        return self.runner == "speech"
+
+    @property
+    def is_omni(self) -> bool:
+        """Served by vllm-omni (docker-compose.vllm-omni.yml) and sized by weights and
+        activation, with no context window or KV cache: picture and speech models."""
+        return self.runner in ("image", "speech")
+
+    @property
     def compose_file(self) -> str:
-        return OMNI_COMPOSE_FILE if self.is_image else VLLM_COMPOSE_FILE
+        return OMNI_COMPOSE_FILE if self.is_omni else VLLM_COMPOSE_FILE
 
     @property
     def compose_project(self) -> str:
-        return OMNI_COMPOSE_PROJECT if self.is_image else VLLM_COMPOSE_PROJECT
+        return OMNI_COMPOSE_PROJECT if self.is_omni else VLLM_COMPOSE_PROJECT
 
     def runs_on(self, arch: str) -> bool:
         """Servable on ``arch``; an unknown arch ("") is never excluded."""
@@ -166,7 +178,7 @@ class ModelSpec:
 
     def bind(self, metadata: ModelMetadata, native_ctx: int) -> "ModelSpec":
         """Copy with probe results bound."""
-        if self.is_image:
+        if self.is_omni:
             return replace(self, metadata=metadata, ctx_target=0, ctx_floor=0)
         target = self.ctx_target_override or native_ctx
         floor = self.ctx_floor or max(CTX_FLOOR_MIN, target // CTX_FLOOR_DIVISOR)
@@ -243,8 +255,8 @@ def _spec_from_entry(entry: dict, index: int) -> ModelSpec:
         port=int(entry.get("port") or BASE_PORT + index),
         env_prefix=env_prefix,
         ctx_floor=int(entry["ctx_floor"]) if entry.get("ctx_floor") else 0,
-        # A picture model serves one request at a time; no KV to size
-        concurrent_sessions=1 if runner == "image" else int(
+        # An omni model has no KV to size
+        concurrent_sessions=1 if runner in ("image", "speech") else int(
             entry.get("concurrent_sessions") or DEFAULT_CONCURRENT_SESSIONS
         ),
         priority=int(entry.get("priority") or 0),

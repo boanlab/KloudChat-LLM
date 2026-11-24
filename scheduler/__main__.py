@@ -115,7 +115,7 @@ def _bind(specs, probes, models_root: str):
     for spec in specs:
         metadata: Optional[ModelMetadata] = None
         weight: Optional[int] = spec.weight_override
-        if spec.is_image:
+        if spec.is_omni:
             # No config.json, no KV: the weight is declared, or measured on a node
             for probe in alive:
                 if weight is None and probe.spec.checkpoints is not None \
@@ -217,7 +217,7 @@ def _build_plan(args):
         head=head,
         external=external,
     )
-    image_ids = {s.id for s in specs if s.is_image}
+    image_ids = {s.id for s in specs if s.is_omni}
     for model_id, reason in failed:
         if not external.get(model_id):
             result.delegations.append(
