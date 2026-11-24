@@ -359,6 +359,11 @@ def test_adding_speech_moves_nothing_that_is_already_placed():
     nodes = [_node("2", cards=1), _node("7", cards=2, gib=140)]
     before = planner.plan(_images(**pins), nodes, head="2")
     after = planner.plan([*_images(**pins), replace(_speech(), nodes=("7",))], nodes, head="2")
-    keep = lambda r: sorted((p.model_id, p.node_id, p.devices) for p in r.placements if p.model_id != "qwen3-tts")
+
+    def keep(r):
+        return sorted(
+            (p.model_id, p.node_id, p.devices) for p in r.placements if p.model_id != "qwen3-tts"
+        )
+
     assert keep(after) == keep(before)
     assert any(p.model_id == "qwen3-tts" for p in after.placements)
