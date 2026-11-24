@@ -713,6 +713,35 @@ def test_strict_transcription_behind_the_shim_passes_the_gate(tmp_path: Path, mo
     assert isinstance(refused, gate_module.StrictLocalUnavailableError)
 
 
+def test_strict_speech_from_its_own_server_passes_the_gate(tmp_path: Path, monkeypatch) -> None:
+    """Speech has no chat metrics and no twin: it reaches its omni server or nothing."""
+    gate_module = _load_gate_module()
+    config = {
+        "model_list": [
+            {
+                "model_name": "strict-local/qwen3-tts",
+                "litellm_params": {
+                    "model": "openai/local/qwen3-tts",
+                    "api_base": "http://172.29.52.7:8094/v1",
+                },
+                "model_info": {"mode": "audio_speech", "kchat_strict_local": True},
+            },
+        ],
+        "router_settings": {"fallbacks": []},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    monkeypatch.setenv("CONFIG_FILE_PATH", str(config_path))
+    assert gate_module._load_shim_models() == {"strict-local/qwen3-tts"}
+
+    gate = _bare_gate(gate_module)
+    gate.gate = {}
+    gate._saturated = {}
+    gate._shim_models = gate_module._load_shim_models()
+    data = {"model": "strict-local/qwen3-tts"}
+    assert asyncio.run(gate.async_pre_call_hook(None, None, data, "aspeech")) is None
+
+
 def test_a_spilled_request_carries_the_fallback_headers() -> None:
     """The caller's usage record can tell the request left: same headers as a router fallback."""
     gate_module = _load_gate_module()

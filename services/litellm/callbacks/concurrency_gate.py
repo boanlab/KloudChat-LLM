@@ -159,7 +159,7 @@ def _load_gate_map() -> dict:
 
 def _load_shim_models() -> set:
     """Strict models with no capacity gate: pictures and transcription through
-    their shim, embedding and rerank straight to vLLM.
+    their shim, embedding and rerank straight to vLLM, speech straight to its omni server.
 
     None has vLLM chat metrics to gate on or a fallback to spill to, so each can
     only ever reach the local backend: it passes the gate.
@@ -184,6 +184,8 @@ def _load_shim_models() -> set:
                 (prefix is not None and str(lp.get("api_base", "")).startswith(prefix))
                 or (mi.get("mode") in _POOLING_MODES
                     and str(lp.get("model", "")).startswith("hosted_vllm/"))
+                # Speech from a self-hosted omni server: no vLLM chat metrics, no twin
+                or mi.get("mode") == "audio_speech"
             )
             deployments.setdefault(name, []).append(through_shim)
         twinned = {
