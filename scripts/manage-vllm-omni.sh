@@ -12,9 +12,10 @@
 #   z-image-turbo         Tongyi-MAI/Z-Image-Turbo     31 GB  omni-z-image         :8091
 #   qwen-image-2512       Qwen/Qwen-Image-2512         54 GB  omni-qwen-image      :8092
 #   qwen-image-edit-2511  Qwen/Qwen-Image-Edit-2511    58 GB  omni-qwen-image-edit :8093
+#   qwen3-tts             Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice  4.2 GB  omni-qwen3-tts :8094 (speech)
 #
 # Cards per service: VLLM_OMNI_ZIMAGE_DEVICES, VLLM_OMNI_QWENIMAGE_DEVICES,
-# VLLM_OMNI_QWENIMAGEEDIT_DEVICES in .env (default VLLM_OMNI_DEVICES, then all),
+# VLLM_OMNI_QWENIMAGEEDIT_DEVICES, VLLM_OMNI_QWEN3TTS_DEVICES in .env (default VLLM_OMNI_DEVICES, then all),
 # reserved as the container's device_ids. After changing them: up --recreate;
 # status shows the cards each container holds.
 #
@@ -32,7 +33,7 @@ source "${SCRIPT_DIR}/lib.sh"
 [[ -f "$COMPOSE_FILE" ]] || { err "$COMPOSE_FILE not found"; exit 1; }
 
 # `up` and `status` order
-OMNI_ALIASES=(z-image-turbo qwen-image-2512 qwen-image-edit-2511)
+OMNI_ALIASES=(z-image-turbo qwen-image-2512 qwen-image-edit-2511 qwen3-tts)
 
 usage() {
   sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'
@@ -52,12 +53,17 @@ weight_dir() {
     z-image-turbo)   d="$(env_get VLLM_OMNI_ZIMAGE_DIR)" ;;
     qwen-image-2512) d="$(env_get VLLM_OMNI_QWENIMAGE_DIR)" ;;
     qwen-image-edit-2511) d="$(env_get VLLM_OMNI_QWENIMAGEEDIT_DIR)" ;;
+    qwen3-tts)       d="$(env_get VLLM_OMNI_QWEN3TTS_DIR)" ;;
   esac
   echo "${VLLM_MODELS_ROOT}/${d:-$1}"
 }
 
 has_weights() {
   local dest; dest="$(weight_dir "$1")"
+  if [[ "$1" == qwen3-tts ]]; then
+    [[ -f "$dest/config.json" && -f "$dest/model.safetensors" && -f "$dest/speech_tokenizer/model.safetensors" ]]
+    return
+  fi
   [[ -f "$dest/model_index.json" ]] && compgen -G "$dest/transformer/*.safetensors" >/dev/null
 }
 
@@ -86,7 +92,7 @@ cmd_download() {
     uv tool run --from "huggingface_hub[hf_xet]" hf download \
       "${OMNI_MODELS[$alias]}" --local-dir "$dest" --max-workers 4 \
       --exclude "*.jpg" --exclude "*.png" --exclude "*.gguf" --exclude "*.pth"
-    has_weights "$alias" || { err "$alias: no transformer weights after download"; exit 1; }
+    has_weights "$alias" || { err "$alias: weights incomplete after download"; exit 1; }
     ok "received $(du -sh "$dest" | cut -f1)"
   done
 }
@@ -123,6 +129,7 @@ cmd_up() {
   echo "  → ./scripts/manage-vllm-omni.sh status"
   echo "  → on the orchestrator: IMAGEGEN_BACKENDS in .env, then"
   echo "    ./scripts/gen-litellm-config.sh && docker compose up -d imagegen-shim && docker compose up -d --force-recreate litellm"
+  echo "  → speech (qwen3-tts): VLLM_ENDPOINTS=qwen3-tts=http://<node>:8094 (hand-run), then gen-litellm-config.sh and recreate litellm"
 }
 
 cmd_status() {

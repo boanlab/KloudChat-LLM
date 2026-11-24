@@ -119,6 +119,9 @@ placement is skipped.
 | `VLLM_OMNI_ZIMAGE_DIR` / `VLLM_OMNI_QWENIMAGE_DIR` / `VLLM_OMNI_QWENIMAGEEDIT_DIR` | `z-image-turbo` / `qwen-image-2512` / `qwen-image-edit-2511` | Image-model checkpoint directories under `VLLM_MODELS_ROOT` |
 | `VLLM_OMNI_DEVICES` | `all` | Cards for the image models (GPU reservation `device_ids` and `NVIDIA_VISIBLE_DEVICES`); the default for the three per-service variables below |
 | `VLLM_OMNI_ZIMAGE_DEVICES` / `VLLM_OMNI_QWENIMAGE_DEVICES` / `VLLM_OMNI_QWENIMAGEEDIT_DEVICES` | `VLLM_OMNI_DEVICES` | Cards for `omni-z-image` / `omni-qwen-image` / `omni-qwen-image-edit` (GPU reservation `device_ids` and `NVIDIA_VISIBLE_DEVICES`), to place each image model on its own card (`0`, `1`). Takes effect on `manage-vllm-omni.sh up --recreate` |
+| `VLLM_OMNI_QWEN3TTS_DIR` | `qwen3-tts` | Speech-model checkpoint directory under `VLLM_MODELS_ROOT` |
+| `VLLM_OMNI_QWEN3TTS_DEVICES` | `VLLM_OMNI_DEVICES` | Cards for `omni-qwen3-tts` (GPU reservation `device_ids`) |
+| `VLLM_OMNI_QWEN3TTS_STAGE0_UTIL` / `_STAGE1_UTIL` | `0.06` / `0.04` | `gpu_memory_utilization` of the talker and code2wav stages, as fractions of one card (5.7 + 3.8 GiB on 95.6 GiB). Raise on a smaller card |
 | `WHISPER_MAX_UPLOAD_MB` | `100` | Upload ceiling for `vllm-whisper` (`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`) and for whisper-shim on the compose host |
 | `WHISPER_MAX_CONCURRENT` | `8` | Transcriptions whisper-shim runs at once; past it, 503 |
 

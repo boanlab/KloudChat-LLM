@@ -254,3 +254,116 @@ def test_a_pinned_picture_model_is_seated_before_a_higher_priority_chat_model_ta
     assert {m: placed[m] for m in IMAGES} == {m: "7" for m in IMAGES}
     assert placed["chat"] in {"2", "3"}
     assert not result.delegations
+
+
+# --- speech (vllm-omni /v1/audio/speech): qwen3-tts ---
+
+def _speech() -> registry.ModelSpec:
+    spec = next(s for s in registry.load(CATALOGUE) if s.id == "qwen3-tts")
+    return spec.bind(model_metadata.image_metadata(spec.id, spec.weight_bytes), 0)
+
+
+def _free(node_id: str, *free_gib: float) -> NodeSpec:
+    """A 96 GiB-per-card node whose cards have ``free_gib`` left for this plan."""
+    probe = _node(node_id, cards=len(free_gib))
+    budget = probe.card_budget_bytes()
+    return replace(probe, foreign_vram_by_card=tuple(max(0, budget - int(f * GB)) for f in free_gib))
+
+
+def test_the_catalogue_lists_the_speech_model_on_the_omni_compose_file_without_a_fallback():
+    spec = next(s for s in registry.load(CATALOGUE) if s.id == "qwen3-tts")
+    assert (spec.runner, spec.api, spec.service, spec.port) == ("speech", "speech", "omni-qwen3-tts", 8094)
+    assert spec.is_speech and spec.is_omni and not spec.is_image
+    assert spec.compose_file == "docker-compose.vllm-omni.yml"
+    assert spec.compose_project == "kloudchat-vllm-omni"
+    assert spec.openrouter == "" and spec.priority == 1 and spec.replicas == 1
+    assert spec.weight_override == int(4.5 * 2**30) and spec.activation_override == 5 * 2**30
+
+
+def test_a_speech_model_is_charged_weight_plus_activation_with_no_kv_and_no_gpu_share():
+    spec = _speech()
+    util, per_card = planner.charge(spec, 0, _node("7"), 90 * GB)
+    assert util == 0.0 and per_card == spec.weight_override + spec.activation_override
+    assert planner.kv_bytes(spec, 4096) == 0
+    assert spec.ctx_floor == spec.ctx_target == 0
+
+
+def test_a_speech_model_takes_the_card_with_room_beside_the_picture_models():
+    """Card 0 holds Z-Image and the 2512 (79 GiB of 96); the TTS goes to the emptier card 1."""
+    pins = {
+        "qwen-image-2512": {"nodes": ("7",), "cards": (0,)},
+        "z-image-turbo": {"nodes": ("7",), "cards": (0,)},
+    }
+    images = [s for s in _images(**pins) if s.id != "qwen-image-edit-2511"]
+    tts = replace(_speech(), nodes=("7",))
+    result = planner.plan([*images, tts], [_node("7")], head=None)
+    placed = {p.model_id: p for p in result.placements}
+    assert placed["qwen3-tts"].devices == (1,)
+    assert placed["qwen3-tts"].ctx == 0 and placed["qwen3-tts"].gpu_util == 0.0
+    assert placed["qwen3-tts"].charge == 9.5 * GB
+    assert not result.delegations
+
+
+def test_a_speech_model_is_not_placed_where_no_card_has_room_and_has_no_fallback():
+    """A 9 GiB card cannot take 9.5 GiB; the reason says so and nothing is delegated to OpenRouter."""
+    result = planner.plan([_speech()], [_node("3", cards=1, gib=9)], head=None)
+    assert not result.placements
+    (d,) = result.delegations
+    assert d.model_id == "qwen3-tts" and not d.fallback
+    assert "weights and activation" in d.reason
+
+
+def test_speech_urls_go_to_vllm_placed_so_litellm_reaches_the_node_directly(tmp_path):
+    spec = _speech()
+    env = tmp_path / ".env"
+    env.write_text("VLLM_PLACED=\nIMAGEGEN_PLACED=\n")
+    placement = planner.Placement(spec.id, "7", 0, 0.0, int(9.5 * GB), 1, 1, (1,))
+    change = applier.compute_diff(
+        target=planner.Plan(placements=[placement]), current={}, specs=[spec], nodes=[_node("7")],
+        local_env_path=str(env), node_env={"7": {}},
+    )
+    assert change.local_env == {"VLLM_PLACED": "qwen3-tts=http://10.0.0.7:8094"}
+    kinds = {(a.kind, a.description) for a in change.actions}
+    assert kinds == {("env", "VLLM_OMNI_QWEN3TTS_DEVICES=1"), ("start", "start omni-qwen3-tts")}
+    start = next(a for a in change.actions if a.kind == "start")
+    assert "-f docker-compose.vllm-omni.yml" in start.command
+
+
+def test_the_planner_seats_speech_only_where_free_vram_exists_never_on_a_full_flash_node():
+    """Flash nodes keep 1.9-3.7 GiB free and the head 10.7: only a card with 9.5 GiB takes it."""
+    nodes = [_free("3", 1.9), _free("4", 3.7), _free("5", 2.0), _free("7", 3.9, 32)]
+    result = planner.plan([_speech()], nodes, head=None)
+    (p,) = result.placements
+    assert (p.node_id, p.devices) == ("7", (1,))
+
+    # The head's 10.7 GiB would also seat it, but a card with more room is preferred
+    result = planner.plan([_speech()], [_free("2", 10.7), *nodes], head="2")
+    (p,) = result.placements
+    assert (p.node_id, p.devices) == ("7", (1,))
+
+
+def test_a_site_pin_to_the_small_card_leaves_speech_unplaced_with_a_reason():
+    tts = replace(_speech(), nodes=("7",), cards=(0,))
+    result = planner.plan([tts], [_free("7", 3.9, 32)], head=None)
+    assert not result.placements
+    (d,) = result.delegations
+    assert not d.fallback and "weights and activation" in d.reason
+
+
+def test_adding_speech_moves_nothing_that_is_already_placed():
+    pins = {
+        "qwen-image-edit-2511": {"nodes": ("7",), "cards": (1,)},
+        "qwen-image-2512": {"nodes": ("7",), "cards": (0,)},
+        "z-image-turbo": {"nodes": ("7",), "cards": (0,)},
+    }
+    nodes = [_node("2", cards=1), _node("7", cards=2, gib=140)]
+    before = planner.plan(_images(**pins), nodes, head="2")
+    after = planner.plan([*_images(**pins), replace(_speech(), nodes=("7",))], nodes, head="2")
+
+    def keep(r):
+        return sorted(
+            (p.model_id, p.node_id, p.devices) for p in r.placements if p.model_id != "qwen3-tts"
+        )
+
+    assert keep(after) == keep(before)
+    assert any(p.model_id == "qwen3-tts" for p in after.placements)

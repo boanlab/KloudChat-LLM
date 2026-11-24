@@ -83,7 +83,7 @@ def kv_bytes(spec: ModelSpec, ctx: int) -> int:
     """KV bytes for ``ctx`` across every concurrent session; zero for pooling and image runners."""
     if spec.metadata is None:
         raise ValueError(f"{spec.id}: no metadata — bind() must run first")
-    if spec.is_pooling or spec.is_image:
+    if spec.is_pooling or spec.is_omni:
         return 0
     per_token = kv_bytes_per_token(spec.metadata, Dtype.FP8)
     per_seq = sliding_bytes_per_sequence(spec.metadata, Dtype.FP8)
@@ -153,7 +153,7 @@ def charge(spec: ModelSpec, ctx: int, node: NodeSpec,
     """(gpu_util, bytes per card) a placement takes: sized from ``need``, or a
     declared ``gpu_util`` taken as is. A picture model has no vLLM share: it
     takes its weights and activation, and reports a util of 0."""
-    if spec.is_image:
+    if spec.is_omni:
         return 0.0, per_gpu_need_bytes(spec, ctx, card_bytes)
     if spec.gpu_util is None:
         return allocation(per_gpu_need_bytes(spec, ctx, card_bytes), node)
@@ -247,7 +247,7 @@ def plan(
         for spec in specs:
             if not external.get(spec.id):
                 result.delegations.append(
-                    Delegation(spec.id, "no GPU node available", not spec.is_image))
+                    Delegation(spec.id, "no GPU node available", not spec.is_omni))
         return result
 
     # Per-card budget; free bytes per card by CUDA device ordinal
@@ -280,7 +280,7 @@ def plan(
         if not candidates:
             result.delegations.append(
                 Delegation(spec.id, _why_not(spec, allowed, free, card_capacity),
-                           not spec.is_image)
+                           not spec.is_omni)
             )
             continue
         target = _worst_fit(candidates, free, incumbent=deployed.get(spec.id))
@@ -394,7 +394,7 @@ def _why_not(spec: ModelSpec, nodes: Sequence[NodeSpec], free: dict[str, list[in
         if spec.gpu_util is None
         else charge(spec, spec.ctx_floor, roomiest, roomiest_card_capacity)[1]
     )
-    at = "its weights and activation" if spec.is_image else f"its {spec.ctx_floor // 1024}K context floor"
+    at = "its weights and activation" if spec.is_omni else f"its {spec.ctx_floor // 1024}K context floor"
     if per_gpu > roomiest_card_capacity:
         return (
             f"needs {per_gpu / GB:.1f} GiB per card at {at} (TP {tp}), and the "
@@ -437,7 +437,7 @@ def _restore_context(
             here = plan_.for_node(node_id)
             if not here:
                 continue
-            growable = [p for p in here if not spec_by_id[p.model_id].is_image]
+            growable = [p for p in here if not spec_by_id[p.model_id].is_omni]
             for placement in sorted(growable, key=lambda p: p.ctx / spec_by_id[p.model_id].ctx_target):
                 spec = spec_by_id[placement.model_id]
                 # Sized as seated, not as declared
